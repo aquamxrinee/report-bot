@@ -1,45 +1,41 @@
 #!/usr/bin/env python3
 """
-Telegram бот для обработки еженедельных отчетов через Claude API
-Автоматически обрабатывает два отчета (основной + по выкупам) и заполняет шаблон
+ФИНАЛЬНЫЙ Telegram бот для обработки еженедельных отчетов
+Работает просто: отправляешь файл -> бот спрашивает тип -> готово!
 """
 
 import os
 import re
-import io
 from datetime import datetime
 from pathlib import Path
 
-from telegram import Update, Document
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import pandas as pd
 import openpyxl
+import shutil
 
 # ===== НАСТРОЙКИ =====
-TELEGRAM_BOT_TOKEN = "8846869937:AAGcYtTTr2Z_CFmoniZ-62tG9Si-yy8zNJg"  # Получи от @BotFather
-ANTHROPIC_API_KEY = "YOUR_ANTHROPIC_API_KEY"   # Получи с https://console.anthropic.com
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TOKEN")
 
 # Папка для временных файлов
-TEMP_DIR = Path("/tmp/reports")
+TEMP_DIR = Path(os.path.expanduser("~/telegram_bot_temp"))
 TEMP_DIR.mkdir(exist_ok=True)
 
-# ===== КЛАССЫ ОБРАБОТКИ =====
+print(f"📁 Используется папка: {TEMP_DIR}")
+
+
+# ===== КЛАСС ДЛЯ ОБРАБОТКИ ОТЧЕТОВ =====
 class ReportProcessor:
-    """Класс для обработки отчетов"""
+    """Обрабатывает отчеты и заполняет шаблон"""
     
-    def __init__(self):
-        self.osn_file = None
-        self.vyk_file = None
-        self.template_file = None
-        
     def process_files(self, osn_path, vyk_path, template_path):
-        """Обработать оба отчета и заполнить шаблон"""
+        """Основной метод обработки"""
         try:
-            # Читаем отчеты
             df_osn = pd.read_excel(osn_path)
             df_vyk = pd.read_excel(vyk_path)
             
-            # Парсим дату из названия файла
+            # Парсим дату из названия файла осн
             filename = Path(osn_path).name
             match = re.search(r'(\d{1,2})_(\d{2})-(\d{1,2})_(\d{2})', filename)
             if match:
@@ -48,7 +44,7 @@ class ReportProcessor:
                 date_range = datetime.now().strftime("%d.%m")
             
             # Вычисляем все значения
-            values = self._calculate_values(df_osn, df_vyk, date_range)
+            values = self._calculate_all_values(df_osn, df_vyk, date_range)
             
             # Заполняем шаблон
             self._fill_template(template_path, values)
@@ -57,8 +53,8 @@ class ReportProcessor:
         except Exception as e:
             return False, str(e)
     
-    def _calculate_values(self, df_osn, df_vyk, date_range):
-        """Вычислить все значения из отчетов"""
+    def _calculate_all_values(self, df_osn, df_vyk, date_range):
+        """Вычисляет все 29 значений"""
         values = {'B1': date_range, 'F1': date_range}
         
         # ===== ОСНОВНОЙ ОТЧЕТ - ЦАП ЦАРАПКИН =====
@@ -115,7 +111,7 @@ class ReportProcessor:
         return values
     
     def _fill_template(self, template_path, values):
-        """Заполнить шаблон значениями"""
+        """Заполняет шаблон значениями"""
         wb = openpyxl.load_workbook(template_path)
         ws = wb.active
         
@@ -127,38 +123,41 @@ class ReportProcessor:
         wb.save(template_path)
 
 
-# ===== ОБРАБОТЧИКИ TELEGRAM =====
+# ===== ОБРАБОТЧИКИ КОМАНД =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start"""
     await update.message.reply_text(
         "👋 Привет! Я бот для обработки еженедельных отчетов.\n\n"
-        "📤 Отправь мне два файла:\n"
-        "1️⃣ Основной отчет (осн.xlsx)\n"
-        "2️⃣ Отчет по выкупам (вык.xlsx)\n\n"
-        "✅ Я автоматически заполню шаблон и верну готовый файл!"
+        "📤 Как пользоваться:\n"
+        "1️⃣ Отправь мне первый файл отчета\n"
+        "2️⃣ Я спрошу: это основной или по выкупам?\n"
+        "3️⃣ Напиши /osn или /vyk\n"
+        "4️⃣ Отправь второй файл\n"
+        "5️⃣ Напиши тип второго файла\n"
+        "6️⃣ Готово! Получишь заполненный шаблон! ✅\n\n"
+        "⚠️ Файлы можно называть как угодно - просто указываешь тип!"
     )
 
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /help"""
     await update.message.reply_text(
-        "📋 Как использовать бота:\n\n"
-        "1. Отправь основной отчет (Еженедельный_XX_XX-XX_XX_осн.xlsx)\n"
-        "2. Отправь отчет по выкупам (Еженедельный_XX_XX-XX_XX_вык.xlsx)\n"
-        "3. Бот автоматически обработает оба файла\n"
-        "4. Получишь готовый шаблон с заполненными данными\n\n"
-        "⚠️ Важно: Названия файлов должны содержать даты в формате XX_XX-XX_XX"
+        "📋 Команды:\n"
+        "/start - начать\n"
+        "/help - помощь\n"
+        "/osn - текущий файл это основной отчет\n"
+        "/vyk - текущий файл это отчет по выкупам\n\n"
+        "Просто отправляй файлы и указывай тип! 📁"
     )
 
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик загруженных файлов"""
     try:
-        document: Document = update.message.document
+        document = update.message.document
         
-        # Проверяем, что это Excel файл
         if not document.file_name.endswith(('.xlsx', '.xls')):
-            await update.message.reply_text("❌ Нужен файл Excel (.xlsx или .xls)")
+            await update.message.reply_text("❌ Нужен Excel файл (.xlsx или .xls)")
             return
         
         # Скачиваем файл
@@ -166,73 +165,100 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = TEMP_DIR / document.file_name
         await file.download_to_drive(file_path)
         
-        # Сохраняем файл в контексте
+        # Инициализируем контекст пользователя
         if 'files' not in context.user_data:
             context.user_data['files'] = {}
         
-        # Определяем тип файла (осн или вык)
-        if '_осн' in document.file_name:
-            context.user_data['files']['osn'] = str(file_path)
-            await update.message.reply_text("✅ Основной отчет получен. Жду отчета по выкупам...")
-        elif '_вык' in document.file_name:
-            context.user_data['files']['vyk'] = str(file_path)
-            await update.message.reply_text("✅ Отчет по выкупам получен. Жду основного отчета...")
-        else:
-            await update.message.reply_text("⚠️ Не могу определить тип файла. Проверь название (должно быть _осн или _вык)")
-            return
+        # Сохраняем текущий файл
+        context.user_data['current_file'] = str(file_path)
         
-        # Если получены оба файла - обрабатываем
-        if 'osn' in context.user_data['files'] and 'vyk' in context.user_data['files']:
-            await process_reports(update, context)
-    
+        await update.message.reply_text(
+            f"📄 Файл получен: {document.file_name}\n\n"
+            "Какой это отчет?\n"
+            "/osn - Основной отчет\n"
+            "/vyk - Отчет по выкупам"
+        )
     except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка при обработке файла: {str(e)}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 
-async def process_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработать оба отчета"""
+async def handle_osn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /osn - это основной отчет"""
+    if 'current_file' not in context.user_data:
+        await update.message.reply_text("❌ Сначала отправь файл!")
+        return
+    
+    context.user_data['files']['osn'] = context.user_data['current_file']
+    await update.message.reply_text("✅ Основной отчет сохранен!\nТеперь отправь отчет по выкупам...")
+    
+    if 'osn' in context.user_data['files'] and 'vyk' in context.user_data['files']:
+        await process_and_send(update, context)
+
+
+async def handle_vyk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /vyk - это отчет по выкупам"""
+    if 'current_file' not in context.user_data:
+        await update.message.reply_text("❌ Сначала отправь файл!")
+        return
+    
+    context.user_data['files']['vyk'] = context.user_data['current_file']
+    await update.message.reply_text("✅ Отчет по выкупам сохранен!\nТеперь отправь основной отчет...")
+    
+    if 'osn' in context.user_data['files'] and 'vyk' in context.user_data['files']:
+        await process_and_send(update, context)
+
+
+async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает оба отчета и отправляет результат"""
     try:
         await update.message.reply_text("⏳ Обрабатываю отчеты...")
         
         osn_file = context.user_data['files']['osn']
         vyk_file = context.user_data['files']['vyk']
         
-        # Копируем шаблон из uploads или создаем новый
+        # Создаем копию шаблона
         template_file = TEMP_DIR / "шаблон_результат.xlsx"
         
-        # Попробуем найти исходный шаблон
-        original_template = Path("/mnt/user-data/uploads/шаблон.xlsx")
-        if original_template.exists():
-            import shutil
+        # Ищем исходный шаблон
+        possible_paths = [
+            Path.home() / "шаблон.xlsx",
+            Path.home() / "Desktop" / "шаблон.xlsx",
+            Path.home() / "Documents" / "шаблон.xlsx",
+            Path("/mnt/user-data/uploads/шаблон.xlsx"),
+        ]
+        
+        original_template = None
+        for path in possible_paths:
+            if path.exists():
+                original_template = path
+                break
+        
+        if original_template:
             shutil.copy(original_template, template_file)
         else:
-            await update.message.reply_text("⚠️ Не найден исходный шаблон. Создаю новый...")
-            # Создаем минимальный шаблон
+            await update.message.reply_text("⚠️ Шаблон не найден. Создаю новый...")
             openpyxl.Workbook().save(template_file)
         
-        # Обрабатываем отчеты
+        # Обрабатываем
         processor = ReportProcessor()
         success, result = processor.process_files(osn_file, vyk_file, str(template_file))
         
         if success:
-            # Отправляем готовый файл
             with open(template_file, 'rb') as f:
                 await update.message.reply_document(
                     document=f,
-                    caption="✅ Готово! Шаблон заполнен."
+                    caption="✅ Готово! Шаблон заполнен и готов к скачиванию."
                 )
             
-            # Выводим краткую статистику
-            stats = (
-                f"📊 Обработано:\n"
-                f"• Основной отчет: ЦАП + HARAKIRI\n"
-                f"• По выкупам: ЦАП + HARAKIRI\n"
-                f"• Всего ячеек заполнено: 29\n\n"
-                f"💾 Файл готов к скачиванию!"
+            await update.message.reply_text(
+                "📊 Статистика обработки:\n"
+                "• Основной отчет: ЦАП + HARAKIRI ✅\n"
+                "• По выкупам: ЦАП + HARAKIRI ✅\n"
+                "• Ячеек заполнено: 29 ✅\n\n"
+                "Спасибо за использование! 🚀"
             )
-            await update.message.reply_text(stats)
             
-            # Очищаем данные пользователя
+            # Очищаем
             context.user_data['files'] = {}
         else:
             await update.message.reply_text(f"❌ Ошибка обработки: {result}")
@@ -244,21 +270,20 @@ async def process_reports(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== ЗАПУСК БОТА =====
 def main():
     """Запуск бота"""
-    print("🤖 Запускаю Telegram бот для обработки отчетов...")
-    print(f"📁 Временная папка: {TEMP_DIR}")
+    print("🤖 Запускаю Telegram бот...")
+    print("✅ Бот готов к работе!")
     
-    # Создаем приложение
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
     # Регистрируем обработчики
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("osn", handle_osn))
+    app.add_handler(CommandHandler("vyk", handle_vyk))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     
-    # Запускаем бота
     print("✅ Бот запущен и ждет сообщений...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-    
+    app.run_polling(allowed_updates=[])
 
 
 if __name__ == '__main__':
