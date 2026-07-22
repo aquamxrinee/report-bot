@@ -258,6 +258,7 @@ def main():
     # Запускаем бота
     print("✅ Бот запущен и ждет сообщений...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
+    
 
 
 if __name__ == '__main__':
