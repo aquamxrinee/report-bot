@@ -581,8 +581,8 @@ def main():
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Установка меню команд через post_init (выполнится внутри цикла событий)
-    async def set_commands():
+    # Установка меню команд через post_init (функция принимает аргумент app)
+    async def set_commands(app):
         commands = [
             BotCommand("start", "Начать работу с ботом"),
             BotCommand("help", "Помощь и список команд"),
