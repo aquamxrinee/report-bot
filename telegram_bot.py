@@ -295,7 +295,7 @@ class ReportProcessor:
         values['Q9'] = df_vyk[filter_hara_vyk_all]['Общая сумма штрафов'].sum()
         values['B41'] = df_vyk[filter_hara_vyk_all]['Цена розничная'].sum()
 
-        # ===== ЭКВАЙРИНГ (основной отчёт) =====
+        # ===== ЭКВАЙРИНГ =====
         col_name = "Размер компенсации платёжных услуг/Комиссии за интеграцию платёжных сервисов, %"
         if col_name in df_osn.columns:
             series = df_osn[col_name]
@@ -450,6 +450,14 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     original_template = p
                     break
 
+        # Читаем коэффициенты хранения из шаблона
+        wb_coeff = openpyxl.load_workbook(original_template, data_only=True)
+        ws_coeff = wb_coeff.active
+        b23 = ws_coeff['B23'].value if ws_coeff['B23'].value is not None else 0
+        c23 = ws_coeff['C23'].value if ws_coeff['C23'].value is not None else 0
+        wb_coeff.close()
+        logger.info(f"📊 Коэффициенты хранения: B23={b23}, C23={c23}")
+
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         template_file = TEMP_DIR / f"шаблон_{timestamp}.xlsx"
 
@@ -480,48 +488,75 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption="✅ Готово! Шаблон заполнен и готов к скачиванию."
             )
 
-        # === ЧТЕНИЕ ДОПОЛНИТЕЛЬНЫХ ЯЧЕЕК ИЗ ШАБЛОНА ДЛЯ СТАТИСТИКИ ===
-        # Открываем шаблон с data_only=True, чтобы получить вычисленные значения формул
-        wb_read = openpyxl.load_workbook(template_file, data_only=True)
-        ws_read = wb_read.active
-
-        def get_cell_value(cell):
-            val = ws_read[cell].value
-            return val if val is not None else 0
-
-        b13 = get_cell_value('B13')
-        m10 = get_cell_value('M10')
-        f13 = get_cell_value('F13')
-        q10 = get_cell_value('Q10')
-        b38 = get_cell_value('B38')
-        b35 = get_cell_value('B35')
-        b50 = get_cell_value('B50')
-
-        # Основные показатели из values
-        b56 = values.get('B56', 0)
-        b59 = values.get('B59', 0)
+        # === ВЫЧИСЛЕНИЕ ДОПОЛНИТЕЛЬНЫХ МЕТРИК ===
+        b4 = values.get('B4', 0)
+        b5 = values.get('B5', 0)
+        b7 = values.get('B7', 0)
+        b9 = values.get('B9', 0)
+        b10 = values.get('B10', 0)
+        b11 = values.get('B11', 0)
+        b26 = values.get('B26', 0)
+        b29 = values.get('B29', 0)
+        b32 = values.get('B32', 0)
         b44 = values.get('B44', 0)
         b47 = values.get('B47', 0)
-        b32 = values.get('B32', 0)
         b41 = values.get('B41', 0)
-        b11 = values.get('B11', 0)
-        f11 = values.get('F11', 0)
-        b10 = values.get('B10', 0)
-        f10 = values.get('F10', 0)
 
-        # Производные метрики
+        f4 = values.get('F4', 0)
+        f5 = values.get('F5', 0)
+        f7 = values.get('F7', 0)
+        f9 = values.get('F9', 0)
+        f10 = values.get('F10', 0)
+        f11 = values.get('F11', 0)
+
+        m4 = values.get('M4', 0)
+        m5 = values.get('M5', 0)
+        m7 = values.get('M7', 0)
+        m8 = values.get('M8', 0)
+        m9 = values.get('M9', 0)
+
+        q4 = values.get('Q4', 0)
+        q5 = values.get('Q5', 0)
+        q7 = values.get('Q7', 0)
+        q8 = values.get('Q8', 0)
+        q9 = values.get('Q9', 0)
+
+        # Промежуточные
+        b6 = b4 - b5
+        f6 = f4 - f5
+        m6 = m4 - m5
+        q6 = q4 - q5
+
+        b8 = b26 * b23
+        f8 = b26 * c23
+        b12 = b29 * b23
+        f12 = b29 * c23
+
+        # Итоговые метрики
+        b13 = b6 - b7 - b8 - b9 - b10 - b11 - b12
+        f13 = f6 - f7 - f8 - f9 - f10 - f11 - f12
+        m10 = m6 - m7 - m8 - m9
+        q10 = q6 - q7 - q8 - q9
+
+        b35 = (b32 + b41) * 0.01
+        b50 = (b44 + b47) * 0.01
+        b38 = f13 - b35
+
+        # Метрики для статистики
+        b56 = values.get('B56', 0)
+        b59 = values.get('B59', 0)
+
         wb_oborot_total = b44 + b47 + b32 + b41
         wb_oborot_carp = b44 + b47
         wb_oborot_hara = b32 + b41
         k_vyvodu_carp = b13 + m10
         k_vyvodu_hara = f13 + q10
-        k_vyvodu_hara_nalog = b38
         reklama_carp = b11
         reklama_hara = f11
         shtrafy = b10 + f10
         nalog_total = b35 + b50
 
-        # Формируем сообщение
+        # === ФОРМИРУЕМ СООБЩЕНИЕ ===
         status = (
             "📊 **Статистика обработки:**\n\n"
             "• Основной отчет: ЦАП + HARAKIRI ✅\n"
@@ -533,7 +568,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"   ⚔️ Харакири: {wb_oborot_hara:,.2f} ₽\n\n"
             f"💸 **К выводу ЦАП:** {k_vyvodu_carp:,.2f} ₽\n"
             f"💸 **К выводу Харакири:** {k_vyvodu_hara:,.2f} ₽\n"
-            f"💸 **К выводу Харакири (с вычетом налога):** {k_vyvodu_hara_nalog:,.2f} ₽\n\n"
+            f"💸 **К выводу Харакири (с вычетом налога):** {b38:,.2f} ₽\n\n"
             f"📢 **Реклама за неделю:**\n"
             f"   🐱 ЦАП: {reklama_carp:,.2f} ₽\n"
             f"   ⚔️ Харакири: {reklama_hara:,.2f} ₽\n\n"
