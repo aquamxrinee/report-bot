@@ -329,7 +329,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот для обработки еженедельных отчетов.\n\n"
         "📤 Как пользоваться:\n"
-        "1️⃣ Отправь файл с названием, содержащим **'осн'** (основной) или **'вык'** (по выкупам)\n"
+        "1️⃣ Отправь файл с названием, содержащим 'осн' (основной) или 'вык' (по выкупам)\n"
         "2️⃣ Бот автоматически определит тип и попросит второй файл\n"
         "3️⃣ Готово! Получишь заполненный шаблон! ✅\n\n"
         "📊 Команды аналитики:\n"
@@ -355,6 +355,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         document = update.message.document
+        logger.info(f"📥 Получен файл: {document.file_name}")
         
         if not document.file_name.endswith(('.xlsx', '.xls')):
             await update.message.reply_text("❌ Нужен Excel файл (.xlsx или .xls)")
@@ -388,8 +389,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['current_file'] = str(file_path)
         context.user_data['current_file_hash'] = file_hash
         
-        # ===== АВТОМАТИЧЕСКОЕ ОПРЕДЕЛЕНИЕ ТИПА =====
         report_type = detect_report_type(document.file_name)
+        logger.info(f"🔍 Определен тип: {report_type}")
         
         if report_type:
             context.user_data['files'][report_type] = str(file_path)
@@ -400,7 +401,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"✅ Автоматически определен как **ОСНОВНОЙ** отчет\n\n"
                     f"📤 Теперь отправьте отчет **по выкупам** (в названии должно быть 'вык')"
                 )
-            else:  # vyk
+            else:
                 context.user_data['vyk_hash'] = file_hash
                 await update.message.reply_text(
                     f"📄 Файл получен: {document.file_name}\n"
@@ -419,7 +420,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "/vyk - Отчет по выкупам"
             )
     except Exception as e:
-        logger.error(f"Ошибка при загрузке файла: {e}")
+        logger.error(f"❌ Ошибка при загрузке файла: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def handle_osn(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -453,7 +456,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         osn_file = context.user_data['files']['osn']
         vyk_file = context.user_data['files']['vyk']
         osn_hash = context.user_data.get('osn_hash')
-        vyk_hash = context.user_data.get('vyk_hash')
         
         original_template = Path("/app/шаблон.xlsx")
         
@@ -552,4 +554,43 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = get_report_stats()
     
     if not stats or stats[0] == 0:
-        await update.message.reply_text("📭 Нет данных для
+        await update.message.reply_text("📭 Нет данных для статистики. Загрузите отчеты!")
+        return
+    
+    total, avg_carp, avg_hara, avg_carp_vyk, avg_hara_vyk, total_carp, total_hara = stats
+    
+    message = f"📊 **Общая статистика по отчетам:**\n\n"
+    message += f"📄 Всего отчетов: **{total}**\n\n"
+    message += f"**Продажи (средние):**\n"
+    message += f"   🐱 ЦАП Царапкин: **{avg_carp:,.2f} ₽**\n"
+    message += f"   ⚔️ Harakiri: **{avg_hara:,.2f} ₽**\n\n"
+    message += f"**Продажи по выкупам (средние):**\n"
+    message += f"   🐱 ЦАП Царапкин: **{avg_carp_vyk:,.2f} ₽**\n"
+    message += f"   ⚔️ Harakiri: **{avg_hara_vyk:,.2f} ₽**\n\n"
+    message += f"**Итого продаж:**\n"
+    message += f"   🐱 ЦАП Царапкин: **{total_carp:,.2f} ₽**\n"
+    message += f"   ⚔️ Harakiri: **{total_hara:,.2f} ₽**\n"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+
+# ===== ЗАПУСК БОТА =====
+def main():
+    print("🤖 Запускаю Telegram бот...")
+    run_flask()
+    print("✅ Flask сервер запущен для пингов")
+    
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("osn", handle_osn))
+    app.add_handler(CommandHandler("vyk", handle_vyk))
+    app.add_handler(CommandHandler("history", history_cmd))
+    app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    
+    print("✅ Бот запущен и ждет сообщений...")
+    app.run_polling(allowed_updates=[])
+
+if __name__ == '__main__':
+    main()
