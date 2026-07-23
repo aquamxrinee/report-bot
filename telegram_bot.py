@@ -85,7 +85,7 @@ class ReportProcessor:
             return False, str(e)
     
     def _calculate_all_values(self, df_osn, df_vyk, date_range):
-        """Вычисляет все 29 значений"""
+        """Вычисляет все 30 значений"""
         values = {'B1': date_range, 'F1': date_range}
         
         # ===== ОСНОВНОЙ ОТЧЕТ - ЦАП ЦАРАПКИН =====
@@ -115,9 +115,6 @@ class ReportProcessor:
         values['F10'] = df_osn[filter_hara_all]['Общая сумма штрафов'].sum()
         values['F11'] = df_osn[filter_hara_all]['Удержания'].sum()
         
-        # ===== НОВАЯ СТРОКА для B41 =====
-        values['B41'] = df_osn[filter_hara_all]['Цена розничная'].sum()  # Цена розничная для Harakiri
-        
         # ===== ПО ВЫКУПАМ - ЦАП ЦАРАПКИН =====
         filter_carp_vyk_sale = ((df_vyk['Бренд'] == 'Цап царапкин') | (df_vyk['Бренд'].isna())) & (df_vyk['Тип документа'] == 'Продажа')
         values['M4'] = df_vyk[filter_carp_vyk_sale]['К перечислению Продавцу за реализованный Товар'].sum()
@@ -141,6 +138,9 @@ class ReportProcessor:
         values['Q7'] = df_vyk[filter_hara_vyk_all]['Услуги по доставке товара покупателю'].sum()
         values['Q8'] = df_vyk[filter_hara_vyk_all]['Операции на приемке'].sum()
         values['Q9'] = df_vyk[filter_hara_vyk_all]['Общая сумма штрафов'].sum()
+        
+        # ===== B41 берется из df_vyk (по выкупам) для Harakiri =====
+        values['B41'] = df_vyk[filter_hara_vyk_all]['Цена розничная'].sum()
         
         return values
     
@@ -308,7 +308,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📊 Статистика обработки:\n"
                 "• Основной отчет: ЦАП + HARAKIRI ✅\n"
                 "• По выкупам: ЦАП + HARAKIRI ✅\n"
-                "• Ячеек заполнено: 30 ✅\n\n"  # Обновлено с 29 на 30
+                "• Ячеек заполнено: 30 ✅\n\n"
                 "Спасибо за использование! 🚀"
             )
             
