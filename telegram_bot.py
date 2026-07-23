@@ -328,3 +328,33 @@ def main():
 
 if __name__ == '__main__':
     main()
+    # ВАЖНО: Оригинальный шаблон НИКОГДА не перезаписывается!
+ORIGINAL_TEMPLATE = Path("/app/шаблон.xlsx")  # Только для чтения
+
+# Всегда работаем с копией
+TEMP_TEMPLATE = TEMP_DIR / f"template_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+shutil.copy(ORIGINAL_TEMPLATE, TEMP_TEMPLATE)  # Копируем
+# Заполняем копию
+processor.process_files(osn_file, vyk_file, str(TEMP_TEMPLATE))
+# Отправляем копию
+# Удаляем копию после отправки
+def save_template_with_values(template_path, values):
+    """Сохраняет шаблон с защитой от перезаписи оригинала"""
+    # Если путь ведёт в /app/ — ошибка!
+    if str(template_path).startswith("/app/"):
+        raise ValueError("❌ НЕЛЬЗЯ сохранять в /app/! Это read-only папка!")
+    
+    # Иначе сохраняем
+    wb.save(template_path)
+    def _fill_template(self, template_path, values):
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+    
+    # Заполняем значения
+    for cell, value in values.items():
+        ws[cell] = value
+    
+    # ОТКЛЮЧАЕМ ПЕРЕСЧЁТ ФОРМУЛ
+    wb.calculation.calcMode = 'manual'
+    
+    wb.save(template_path)
