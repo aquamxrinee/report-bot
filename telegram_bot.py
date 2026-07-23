@@ -115,6 +115,9 @@ class ReportProcessor:
         values['F10'] = df_osn[filter_hara_all]['Общая сумма штрафов'].sum()
         values['F11'] = df_osn[filter_hara_all]['Удержания'].sum()
         
+        # ===== НОВАЯ СТРОКА для B41 =====
+        values['B41'] = df_osn[filter_hara_all]['Цена розничная'].sum()  # Цена розничная для Harakiri
+        
         # ===== ПО ВЫКУПАМ - ЦАП ЦАРАПКИН =====
         filter_carp_vyk_sale = ((df_vyk['Бренд'] == 'Цап царапкин') | (df_vyk['Бренд'].isna())) & (df_vyk['Тип документа'] == 'Продажа')
         values['M4'] = df_vyk[filter_carp_vyk_sale]['К перечислению Продавцу за реализованный Товар'].sum()
@@ -305,7 +308,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📊 Статистика обработки:\n"
                 "• Основной отчет: ЦАП + HARAKIRI ✅\n"
                 "• По выкупам: ЦАП + HARAKIRI ✅\n"
-                "• Ячеек заполнено: 29 ✅\n\n"
+                "• Ячеек заполнено: 30 ✅\n\n"  # Обновлено с 29 на 30
                 "Спасибо за использование! 🚀"
             )
             
