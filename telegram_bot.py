@@ -11,7 +11,6 @@ import shutil
 import logging
 import sqlite3
 import hashlib
-import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -575,25 +574,28 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Не удалось удалить отчет #{report_id}.")
 
 # ===== ЗАПУСК =====
-async def main():
+def main():
     print("🤖 Запускаю Telegram бот...")
     run_flask()
     print("✅ Flask сервер запущен")
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Установка меню команд
-    commands = [
-        BotCommand("start", "Начать работу с ботом"),
-        BotCommand("help", "Помощь и список команд"),
-        BotCommand("osn", "Отметить файл как основной отчет"),
-        BotCommand("vyk", "Отметить файл как отчет по выкупам"),
-        BotCommand("history", "Показать все загруженные отчеты"),
-        BotCommand("stats", "Показать общую статистику"),
-        BotCommand("delete", "Удалить отчет из истории"),
-    ]
-    await app.bot.set_my_commands(commands)
-    print("✅ Меню команд установлено")
+    # Установка меню команд через post_init (выполнится внутри цикла событий)
+    async def set_commands():
+        commands = [
+            BotCommand("start", "Начать работу с ботом"),
+            BotCommand("help", "Помощь и список команд"),
+            BotCommand("osn", "Отметить файл как основной отчет"),
+            BotCommand("vyk", "Отметить файл как отчет по выкупам"),
+            BotCommand("history", "Показать все загруженные отчеты"),
+            BotCommand("stats", "Показать общую статистику"),
+            BotCommand("delete", "Удалить отчет из истории"),
+        ]
+        await app.bot.set_my_commands(commands)
+        print("✅ Меню команд установлено")
+
+    app.post_init = set_commands
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
@@ -606,8 +608,7 @@ async def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
 
     print("✅ Бот запущен и ждет сообщений...")
-    await app.run_polling(allowed_updates=[])
+    app.run_polling(allowed_updates=[])
 
 if __name__ == "__main__":
-    asyncio.run(main())
-    
+    main()
