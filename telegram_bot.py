@@ -504,7 +504,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         # === ВЫЧИСЛЕНИЕ ДОПОЛНИТЕЛЬНЫХ МЕТРИК ===
-        # Получаем значения с приведением к float
         def get_float(key):
             val = values.get(key, 0)
             try:
@@ -591,6 +590,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"   ⚔️ Харакири: {wb_oborot_hara:,.2f} ₽\n\n"
             f"💸 **К выводу ЦАП:** {k_vyvodu_carp:,.2f} ₽\n"
             f"💸 **К выводу Харакири:** {k_vyvodu_hara:,.2f} ₽\n"
+            f"💸 **Итого к выводу:** {k_vyvodu_carp + k_vyvodu_hara:,.2f} ₽\n"
             f"💸 **К выводу Харакири (с вычетом налога):** {b38:,.2f} ₽\n\n"
             f"📢 **Реклама за неделю:**\n"
             f"   🐱 ЦАП: {reklama_carp:,.2f} ₽\n"
