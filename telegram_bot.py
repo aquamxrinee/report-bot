@@ -34,7 +34,6 @@ DATA_DIR = Path("/data")
 TEMP_DIR = DATA_DIR / "temp"
 DB_PATH = DATA_DIR / "reports.db"
 
-# fallback на /tmp/ если том не примонтирован
 if not DATA_DIR.exists():
     print("⚠️ Том /data/ не найден, использую /tmp/")
     DATA_DIR = Path("/tmp/telegram_data")
@@ -224,7 +223,6 @@ class ReportProcessor:
             df_osn = pd.read_excel(osn_path)
             df_vyk = pd.read_excel(vyk_path)
 
-            # Извлечение даты из имени файла
             filename = Path(osn_path).name
             match = re.search(r'(\d{1,2})\.(\d{2})-(\d{1,2})\.(\d{2})', filename)
             if match:
@@ -232,7 +230,6 @@ class ReportProcessor:
             else:
                 date_range = datetime.now().strftime("%d.%m")
 
-            # Вычисление всех значений
             values = self._calculate_all_values(df_osn, df_vyk, date_range)
             self._fill_template(template_path, values)
             return values
@@ -243,9 +240,7 @@ class ReportProcessor:
     def _calculate_all_values(self, df_osn, df_vyk, date_range):
         values = {'B1': date_range, 'F1': date_range}
 
-        # ============================================================
-        # ОСНОВНОЙ ОТЧЕТ (df_osn) — ЦАП ЦАРАПКИН
-        # ============================================================
+        # ===== ОСНОВНОЙ ОТЧЕТ - ЦАП =====
         filter_carp_sale = ((df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())) & (df_osn['Тип документа'] == 'Продажа')
         values['B4'] = df_osn[filter_carp_sale]['К перечислению Продавцу за реализованный Товар'].sum()
 
@@ -262,9 +257,7 @@ class ReportProcessor:
         values['B44'] = df_osn['Цена розничная'].sum()
         values['B32'] = df_osn[filter_carp_all]['Цена розничная'].sum()
 
-        # ============================================================
-        # ОСНОВНОЙ ОТЧЕТ (df_osn) — HARAKIRI
-        # ============================================================
+        # ===== ОСНОВНОЙ ОТЧЕТ - HARAKIRI =====
         filter_hara_sale = (df_osn['Бренд'] == 'Harakiri') & (df_osn['Тип документа'] == 'Продажа')
         values['F4'] = df_osn[filter_hara_sale]['К перечислению Продавцу за реализованный Товар'].sum()
 
@@ -277,9 +270,7 @@ class ReportProcessor:
         values['F10'] = df_osn[filter_hara_all]['Общая сумма штрафов'].sum()
         values['F11'] = df_osn[filter_hara_all]['Удержания'].sum()
 
-        # ============================================================
-        # ОТЧЕТ ПО ВЫКУПАМ (df_vyk) — ЦАП ЦАРАПКИН
-        # ============================================================
+        # ===== ВЫКУПЫ - ЦАП =====
         filter_carp_vyk_sale = (df_vyk['Бренд'] == 'Цап царапкин') & (df_vyk['Тип документа'] == 'Продажа')
         values['M4'] = df_vyk[filter_carp_vyk_sale]['К перечислению Продавцу за реализованный Товар'].sum()
 
@@ -292,9 +283,7 @@ class ReportProcessor:
         values['M9'] = df_vyk['Общая сумма штрафов'].sum()
         values['B47'] = df_vyk[filter_carp_vyk_all]['Цена розничная'].sum()
 
-        # ============================================================
-        # ОТЧЕТ ПО ВЫКУПАМ (df_vyk) — HARAKIRI
-        # ============================================================
+        # ===== ВЫКУПЫ - HARAKIRI =====
         filter_hara_vyk_sale = (df_vyk['Бренд'] == 'Harakiri') & (df_vyk['Тип документа'] == 'Продажа')
         values['Q4'] = df_vyk[filter_hara_vyk_sale]['К перечислению Продавцу за реализованный Товар'].sum()
 
@@ -355,12 +344,10 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Нужен Excel файл (.xlsx или .xls)")
             return
 
-        # Скачиваем файл
         file = await context.bot.get_file(doc.file_id)
         file_path = TEMP_DIR / doc.file_name
         await file.download_to_drive(file_path)
 
-        # Проверка дубликата
         file_hash = calculate_file_hash(file_path)
         duplicate = is_file_duplicate(file_hash)
         if duplicate:
@@ -374,10 +361,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             os.remove(file_path)
             return
 
-        # Определяем тип
         report_type = detect_report_type(doc.file_name)
         if not report_type:
-            # Сохраняем файл как текущий для ручного указания
             context.user_data['current_file'] = str(file_path)
             context.user_data['current_file_hash'] = file_hash
             await update.message.reply_text(
@@ -388,7 +373,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # Сохраняем в контекст
         if 'files' not in context.user_data:
             context.user_data['files'] = {}
         context.user_data['files'][report_type] = str(file_path)
@@ -403,7 +387,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ Отчет по выкупам получен!\nТеперь отправьте основной отчет ('осн')"
             )
 
-        # Если есть оба — запускаем обработку
         if 'osn' in context.user_data['files'] and 'vyk' in context.user_data['files']:
             await process_and_send(update, context)
 
@@ -439,7 +422,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         vyk_file = context.user_data['files']['vyk']
         osn_hash = context.user_data.get('osn_hash')
 
-        # Шаблон
         original_template = Path("/app/шаблон.xlsx")
         if not original_template.exists():
             possible_paths = [Path("шаблон.xlsx"), TEMP_DIR / "template.xlsx"]
@@ -458,11 +440,9 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             wb = openpyxl.Workbook()
             wb.save(template_file)
 
-        # Обработка
         processor = ReportProcessor()
         values = processor.process_files(osn_file, vyk_file, str(template_file))
 
-        # Сохранение в БД
         if osn_hash is None:
             osn_hash = calculate_file_hash(Path(osn_file))
         saved = save_report_to_db(
@@ -472,14 +452,12 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             values=values
         )
 
-        # Отправка файла
         with open(template_file, 'rb') as f:
             await update.message.reply_document(
                 document=f,
                 caption="✅ Готово! Шаблон заполнен и готов к скачиванию."
             )
 
-        # Статус
         status = (
             "📊 Статистика обработки:\n"
             "• Основной отчет: ЦАП + HARAKIRI ✅\n"
@@ -490,7 +468,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status += "\nСпасибо за использование! 🚀"
         await update.message.reply_text(status)
 
-        # Очистка
         try:
             os.remove(template_file)
             os.remove(osn_file)
@@ -506,7 +483,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает все загруженные отчеты с продажами по брендам"""
     reports = get_all_reports()
     if not reports:
         await update.message.reply_text("📭 История пуста. Загрузите первый отчет!")
@@ -530,7 +506,6 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message, parse_mode='Markdown')
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает общую статистику по всем отчетам"""
     reports = get_all_reports()
     if not reports:
         await update.message.reply_text("📭 Нет данных для статистики. Загрузите отчеты!")
@@ -563,7 +538,6 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(message, parse_mode='Markdown')
 
 async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /delete — показывает список отчетов для удаления"""
     reports = get_all_reports()
     if not reports:
         await update.message.reply_text("📭 История пуста. Удалять нечего!")
@@ -601,14 +575,14 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Не удалось удалить отчет #{report_id}.")
 
 # ===== ЗАПУСК =====
-async def main():
+def main():
     print("🤖 Запускаю Telegram бот...")
     run_flask()
     print("✅ Flask сервер запущен")
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Настройка меню команд
+    # Установка меню команд (синхронно через asyncio.run)
     commands = [
         BotCommand("start", "Начать работу с ботом"),
         BotCommand("help", "Помощь и список команд"),
@@ -618,7 +592,7 @@ async def main():
         BotCommand("stats", "Показать общую статистику"),
         BotCommand("delete", "Удалить отчет из истории"),
     ]
-    await app.bot.set_my_commands(commands)
+    asyncio.run(app.bot.set_my_commands(commands))
     print("✅ Меню команд установлено")
 
     app.add_handler(CommandHandler("start", start))
@@ -632,7 +606,7 @@ async def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
 
     print("✅ Бот запущен и ждет сообщений...")
-    await app.run_polling(allowed_updates=[])
+    app.run_polling(allowed_updates=[])
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
