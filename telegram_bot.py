@@ -17,7 +17,7 @@ import openpyxl
 import shutil
 
 # ===== НАСТРОЙКИ =====
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TOKEN")
+TELEGRAM_BOT_TOKEN = "123456789:ABCDefGHijKlmnoPQRstUvwxyzABCDefG"
 
 # Папка для временных файлов
 TEMP_DIR = Path(os.path.expanduser("~/telegram_bot_temp"))
