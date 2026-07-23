@@ -142,12 +142,18 @@ class ReportProcessor:
         return values
     
     def _fill_template(self, template_path, values):
-        """Заполняет шаблон значениями"""
+        """Заполняет шаблон значениями, сохраняя формулы"""
         # Проверка: нельзя сохранять в /app/
         if str(template_path).startswith("/app/"):
             raise ValueError("❌ НЕЛЬЗЯ сохранять в /app/! Это read-only папка!")
         
-        wb = openpyxl.load_workbook(template_path)
+        # Загружаем шаблон, НЕ вычисляя формулы
+        wb = openpyxl.load_workbook(
+            template_path,
+            data_only=False,      # Не заменять формулы на значения
+            keep_links=False,     # Не сохранять ссылки на внешние файлы
+            keep_vba=False        # Не сохранять макросы
+        )
         ws = wb.active
         
         # Заполняем значения
@@ -156,11 +162,12 @@ class ReportProcessor:
             if isinstance(value, float) and value != int(value):
                 ws[cell].number_format = '0.00'
         
-        # ОТКЛЮЧАЕМ АВТО-ПЕРЕСЧЁТ ФОРМУЛ
-        wb.calculation.calcMode = 'manual'
+        # Отключаем авто-пересчёт при открытии
+        ws.sheet_view.calcMode = 'manual'
         
         # Сохраняем
         wb.save(template_path)
+        logger.info(f"Шаблон сохранен: {template_path}")
 
 
 # ===== ОБРАБОТЧИКИ КОМАНД =====
