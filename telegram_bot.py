@@ -5,6 +5,7 @@
 С SQLite базой данных и защитой от дубликатов
 Поддержка постоянного тома (Volume) для сохранения данных
 АВТОМАТИЧЕСКОЕ РАСПОЗНАВАНИЕ ТИПА ОТЧЕТА
+С возможностью удаления отчетов из истории
 """
 
 import os
@@ -19,8 +20,11 @@ from pathlib import Path
 import pandas as pd
 import openpyxl
 from flask import Flask
-from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, 
+    filters, ContextTypes, CallbackQueryHandler
+)
 
 # ===== НАСТРОЙКИ =====
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -158,6 +162,21 @@ def save_report_to_db(file_name, file_hash, date_period, values):
         logger.error(f"❌ Ошибка сохранения в БД: {e}")
         return False
 
+def delete_report(report_id):
+    """Удаляет отчет из БД по ID"""
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM reports WHERE id = ?', (report_id,))
+        conn.commit()
+        deleted = cursor.rowcount > 0
+        conn.close()
+        logger.info(f"🗑️ Отчет #{report_id} удален")
+        return deleted
+    except Exception as e:
+        logger.error(f"Ошибка удаления отчета {report_id}: {e}")
+        return False
+
 def get_all_reports():
     try:
         conn = sqlite3.connect(str(DB_PATH))
@@ -199,10 +218,6 @@ def get_report_stats():
 
 # ===== ОПРЕДЕЛЕНИЕ ТИПА ОТЧЕТА ПО ИМЕНИ ФАЙЛА =====
 def detect_report_type(filename):
-    """
-    Определяет тип отчета по имени файла
-    Возвращает: 'osn' или 'vyk' или None
-    """
     filename_lower = filename.lower()
     
     if 'осн' in filename_lower or 'osn' in filename_lower:
@@ -334,7 +349,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3️⃣ Готово! Получишь заполненный шаблон! ✅\n\n"
         "📊 Команды аналитики:\n"
         "/history - показать все загруженные отчеты\n"
-        "/stats - показать общую статистику по отчетам\n\n"
+        "/stats - показать общую статистику по отчетам\n"
+        "/delete - удалить отчет из истории\n\n"
         "Если автоопределение не сработало, используй /osn или /vyk вручную."
     )
 
@@ -346,7 +362,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/osn - отметить файл как основной (ручное управление)\n"
         "/vyk - отметить файл как отчет по выкупам (ручное управление)\n"
         "/history - показать все загруженные отчеты\n"
-        "/stats - показать общую статистику по отчетам\n\n"
+        "/stats - показать общую статистику по отчетам\n"
+        "/delete - удалить отчет из истории\n\n"
         "📁 Автоопределение:\n"
         "Файлы с 'осн' в названии → основной отчет\n"
         "Файлы с 'вык' в названии → отчет по выкупам"
@@ -565,32 +582,4 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message += f"   🐱 ЦАП Царапкин: **{avg_carp:,.2f} ₽**\n"
     message += f"   ⚔️ Harakiri: **{avg_hara:,.2f} ₽**\n\n"
     message += f"**Продажи по выкупам (средние):**\n"
-    message += f"   🐱 ЦАП Царапкин: **{avg_carp_vyk:,.2f} ₽**\n"
-    message += f"   ⚔️ Harakiri: **{avg_hara_vyk:,.2f} ₽**\n\n"
-    message += f"**Итого продаж:**\n"
-    message += f"   🐱 ЦАП Царапкин: **{total_carp:,.2f} ₽**\n"
-    message += f"   ⚔️ Harakiri: **{total_hara:,.2f} ₽**\n"
-    
-    await update.message.reply_text(message, parse_mode='Markdown')
-
-
-# ===== ЗАПУСК БОТА =====
-def main():
-    print("🤖 Запускаю Telegram бот...")
-    run_flask()
-    print("✅ Flask сервер запущен для пингов")
-    
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("osn", handle_osn))
-    app.add_handler(CommandHandler("vyk", handle_vyk))
-    app.add_handler(CommandHandler("history", history_cmd))
-    app.add_handler(CommandHandler("stats", stats_cmd))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    
-    print("✅ Бот запущен и ждет сообщений...")
-    app.run_polling(allowed_updates=[])
-
-if __name__ == '__main__':
-    main()
+    message += f"   🐱 ЦАП Царапкин: **{avg_carp_vyk:,.2f} ₽**
