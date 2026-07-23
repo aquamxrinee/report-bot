@@ -295,6 +295,28 @@ class ReportProcessor:
         values['Q9'] = df_vyk[filter_hara_vyk_all]['Общая сумма штрафов'].sum()
         values['B41'] = df_vyk[filter_hara_vyk_all]['Цена розничная'].sum()
 
+        # ===== ЭКВАЙРИНГ (основной отчёт) =====
+        col_name = "Размер компенсации платёжных услуг/Комиссии за интеграцию платёжных сервисов, %"
+        if col_name in df_osn.columns:
+            series = df_osn[col_name]
+            # Убираем пустые и значения <= 0
+            filtered = series[series.notna() & (series > 0)]
+            if not filtered.empty:
+                values['B56'] = filtered.mean()
+                values['B59'] = filtered.median()
+                values['B62'] = filtered.min()
+                values['B65'] = filtered.max()
+            else:
+                values['B56'] = 0
+                values['B59'] = 0
+                values['B62'] = 0
+                values['B65'] = 0
+        else:
+            values['B56'] = 0
+            values['B59'] = 0
+            values['B62'] = 0
+            values['B65'] = 0
+
         return values
 
     def _fill_template(self, template_path, values):
@@ -461,7 +483,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📊 Статистика обработки:\n"
             "• Основной отчет: ЦАП + HARAKIRI ✅\n"
             "• По выкупам: ЦАП + HARAKIRI ✅\n"
-            "• Ячеек заполнено: 30 ✅\n"
+            "• Ячеек заполнено: 34 ✅\n"  # теперь +4 (B56, B59, B62, B65)
         )
         status += "• Отчет сохранен в историю ✅\n" if saved else "• Отчет уже был в истории (дубликат) ⚠️\n"
         status += "\nСпасибо за использование! 🚀"
@@ -581,8 +603,8 @@ def main():
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Установка меню команд через post_init (функция принимает аргумент app)
-    async def set_commands(app):
+    # Установка меню команд через post_init
+    async def set_commands(app_instance):
         commands = [
             BotCommand("start", "Начать работу с ботом"),
             BotCommand("help", "Помощь и список команд"),
@@ -592,7 +614,7 @@ def main():
             BotCommand("stats", "Показать общую статистику"),
             BotCommand("delete", "Удалить отчет из истории"),
         ]
-        await app.bot.set_my_commands(commands)
+        await app_instance.bot.set_my_commands(commands)
         print("✅ Меню команд установлено")
 
     app.post_init = set_commands
