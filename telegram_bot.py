@@ -148,16 +148,37 @@ def save_report_to_db(file_name, file_hash, date_period, values):
                 carp_vyk_fines, carp_vyk_retail_price,
                 hara_vyk_sales, hara_vyk_returns, hara_vyk_delivery, hara_vyk_receiving, hara_vyk_fines,
                 hara_vyk_retail_price
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
-            file_name, file_hash, date_period,
-            values.get('B4', 0), values.get('B5', 0), values.get('B7', 0), values.get('B9', 0),
-            values.get('B10', 0), values.get('B11', 0), values.get('B26', 0), values.get('B29', 0), values.get('B32', 0),
-            values.get('F4', 0), values.get('F5', 0), values.get('F7', 0), values.get('F9', 0), 
-            values.get('F10', 0), values.get('F11', 0),
-            values.get('M4', 0), values.get('M5', 0), values.get('M7', 0), values.get('M8', 0),
-            values.get('M9', 0), values.get('B47', 0),
-            values.get('Q4', 0), values.get('Q5', 0), values.get('Q7', 0), values.get('Q8', 0), values.get('Q9', 0),
+            file_name, 
+            file_hash, 
+            date_period,
+            values.get('B4', 0), 
+            values.get('B5', 0), 
+            values.get('B7', 0), 
+            values.get('B9', 0),
+            values.get('B10', 0), 
+            values.get('B11', 0), 
+            values.get('B26', 0), 
+            values.get('B29', 0), 
+            values.get('B32', 0),
+            values.get('F4', 0), 
+            values.get('F5', 0), 
+            values.get('F7', 0), 
+            values.get('F9', 0), 
+            values.get('F10', 0), 
+            values.get('F11', 0),
+            values.get('M4', 0), 
+            values.get('M5', 0), 
+            values.get('M7', 0), 
+            values.get('M8', 0),
+            values.get('M9', 0), 
+            values.get('B47', 0),
+            values.get('Q4', 0), 
+            values.get('Q5', 0), 
+            values.get('Q7', 0), 
+            values.get('Q8', 0), 
+            values.get('Q9', 0),
             values.get('B41', 0)
         ))
         conn.commit()
@@ -267,7 +288,7 @@ class ReportProcessor:
             return False, str(e)
     
     def _calculate_all_values(self, df_osn, df_vyk, date_range):
-        """Вычисляет все 31 значение"""
+        """Вычисляет все значения"""
         values = {'B1': date_range, 'F1': date_range}
         
         # ===== ОСНОВНОЙ ОТЧЕТ - ЦАП ЦАРАПКИН =====
