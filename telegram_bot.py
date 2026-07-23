@@ -24,7 +24,7 @@ if not TELEGRAM_BOT_TOKEN:
     raise ValueError("❌ Токен не найден! Установите переменную TELEGRAM_BOT_TOKEN в Railway")
 
 # Папка для временных файлов (в Railway доступна для записи)
-TEMP_DIR = Path("/tmp/telegram_bot_temp")  # /tmp — единственная папка для записи в Railway
+TEMP_DIR = Path("/tmp/telegram_bot_temp")
 TEMP_DIR.mkdir(exist_ok=True)
 
 # Настройка логирования
@@ -143,14 +143,23 @@ class ReportProcessor:
     
     def _fill_template(self, template_path, values):
         """Заполняет шаблон значениями"""
+        # Проверка: нельзя сохранять в /app/
+        if str(template_path).startswith("/app/"):
+            raise ValueError("❌ НЕЛЬЗЯ сохранять в /app/! Это read-only папка!")
+        
         wb = openpyxl.load_workbook(template_path)
         ws = wb.active
         
+        # Заполняем значения
         for cell, value in values.items():
             ws[cell] = value
             if isinstance(value, float) and value != int(value):
                 ws[cell].number_format = '0.00'
         
+        # ОТКЛЮЧАЕМ АВТО-ПЕРЕСЧЁТ ФОРМУЛ
+        wb.calculation.calcMode = 'manual'
+        
+        # Сохраняем
         wb.save(template_path)
 
 
@@ -248,23 +257,25 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         osn_file = context.user_data['files']['osn']
         vyk_file = context.user_data['files']['vyk']
         
-        # Создаем копию шаблона
-        template_file = TEMP_DIR / "шаблон_результат.xlsx"
+        # ВАЖНО: Используем оригинальный шаблон из /app/
+        original_template = Path("/app/шаблон.xlsx")
         
-        # Ищем исходный шаблон — в Railway используем встроенный шаблон
-        # Загружаем шаблон из репозитория или создаём новый
-        possible_paths = [
-            Path("/app/шаблон.xlsx"),  # Если шаблон лежит в папке проекта
-            TEMP_DIR / "template.xlsx",  # Если загружен через бота
-        ]
+        # Если шаблона нет, ищем в других местах
+        if not original_template.exists():
+            possible_paths = [
+                Path("шаблон.xlsx"),
+                TEMP_DIR / "template.xlsx",
+            ]
+            for path in possible_paths:
+                if path.exists():
+                    original_template = path
+                    break
         
-        original_template = None
-        for path in possible_paths:
-            if path.exists():
-                original_template = path
-                break
+        # Создаем уникальное имя для временного файла
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        template_file = TEMP_DIR / f"шаблон_{timestamp}.xlsx"
         
-        if original_template:
+        if original_template.exists():
             shutil.copy(original_template, template_file)
             logger.info(f"Шаблон скопирован из {original_template}")
         else:
@@ -291,7 +302,13 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Спасибо за использование! 🚀"
             )
             
-            # Очищаем
+            # Удаляем временный файл
+            try:
+                os.remove(template_file)
+            except:
+                pass
+            
+            # Очищаем контекст пользователя
             context.user_data['files'] = {}
         else:
             await update.message.reply_text(f"❌ Ошибка обработки: {result}")
@@ -322,39 +339,9 @@ def main():
     
     print("✅ Бот запущен и ждет сообщений...")
     
-    # Запускаем бота (этот метод блокирующий)
+    # Запускаем бота
     app.run_polling(allowed_updates=[])
 
 
 if __name__ == '__main__':
     main()
-    # ВАЖНО: Оригинальный шаблон НИКОГДА не перезаписывается!
-ORIGINAL_TEMPLATE = Path("/app/шаблон.xlsx")  # Только для чтения
-
-# Всегда работаем с копией
-TEMP_TEMPLATE = TEMP_DIR / f"template_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-shutil.copy(ORIGINAL_TEMPLATE, TEMP_TEMPLATE)  # Копируем
-# Заполняем копию
-processor.process_files(osn_file, vyk_file, str(TEMP_TEMPLATE))
-# Отправляем копию
-# Удаляем копию после отправки
-def save_template_with_values(template_path, values):
-    """Сохраняет шаблон с защитой от перезаписи оригинала"""
-    # Если путь ведёт в /app/ — ошибка!
-    if str(template_path).startswith("/app/"):
-        raise ValueError("❌ НЕЛЬЗЯ сохранять в /app/! Это read-only папка!")
-    
-    # Иначе сохраняем
-    wb.save(template_path)
-    def _fill_template(self, template_path, values):
-    wb = openpyxl.load_workbook(template_path)
-    ws = wb.active
-    
-    # Заполняем значения
-    for cell, value in values.items():
-        ws[cell] = value
-    
-    # ОТКЛЮЧАЕМ ПЕРЕСЧЁТ ФОРМУЛ
-    wb.calculation.calcMode = 'manual'
-    
-    wb.save(template_path)
