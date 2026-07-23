@@ -450,12 +450,20 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     original_template = p
                     break
 
-        # Читаем коэффициенты хранения из шаблона
+        # Читаем коэффициенты хранения из шаблона (приводим к float)
         wb_coeff = openpyxl.load_workbook(original_template, data_only=True)
         ws_coeff = wb_coeff.active
-        b23 = ws_coeff['B23'].value if ws_coeff['B23'].value is not None else 0
-        c23 = ws_coeff['C23'].value if ws_coeff['C23'].value is not None else 0
+        b23_val = ws_coeff['B23'].value
+        c23_val = ws_coeff['C23'].value
         wb_coeff.close()
+        try:
+            b23 = float(b23_val) if b23_val is not None else 0.0
+        except (ValueError, TypeError):
+            b23 = 0.0
+        try:
+            c23 = float(c23_val) if c23_val is not None else 0.0
+        except (ValueError, TypeError):
+            c23 = 0.0
         logger.info(f"📊 Коэффициенты хранения: B23={b23}, C23={c23}")
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -470,6 +478,13 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         processor = ReportProcessor()
         values = processor.process_files(osn_file, vyk_file, str(template_file))
+
+        # Приводим все числовые значения из values к float
+        for key in values:
+            try:
+                values[key] = float(values[key])
+            except (ValueError, TypeError):
+                values[key] = 0.0
 
         # Сохранение в БД
         if osn_hash is None:
@@ -489,37 +504,45 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         # === ВЫЧИСЛЕНИЕ ДОПОЛНИТЕЛЬНЫХ МЕТРИК ===
-        b4 = values.get('B4', 0)
-        b5 = values.get('B5', 0)
-        b7 = values.get('B7', 0)
-        b9 = values.get('B9', 0)
-        b10 = values.get('B10', 0)
-        b11 = values.get('B11', 0)
-        b26 = values.get('B26', 0)
-        b29 = values.get('B29', 0)
-        b32 = values.get('B32', 0)
-        b44 = values.get('B44', 0)
-        b47 = values.get('B47', 0)
-        b41 = values.get('B41', 0)
+        # Получаем значения с приведением к float
+        def get_float(key):
+            val = values.get(key, 0)
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                return 0.0
 
-        f4 = values.get('F4', 0)
-        f5 = values.get('F5', 0)
-        f7 = values.get('F7', 0)
-        f9 = values.get('F9', 0)
-        f10 = values.get('F10', 0)
-        f11 = values.get('F11', 0)
+        b4 = get_float('B4')
+        b5 = get_float('B5')
+        b7 = get_float('B7')
+        b9 = get_float('B9')
+        b10 = get_float('B10')
+        b11 = get_float('B11')
+        b26 = get_float('B26')
+        b29 = get_float('B29')
+        b32 = get_float('B32')
+        b44 = get_float('B44')
+        b47 = get_float('B47')
+        b41 = get_float('B41')
 
-        m4 = values.get('M4', 0)
-        m5 = values.get('M5', 0)
-        m7 = values.get('M7', 0)
-        m8 = values.get('M8', 0)
-        m9 = values.get('M9', 0)
+        f4 = get_float('F4')
+        f5 = get_float('F5')
+        f7 = get_float('F7')
+        f9 = get_float('F9')
+        f10 = get_float('F10')
+        f11 = get_float('F11')
 
-        q4 = values.get('Q4', 0)
-        q5 = values.get('Q5', 0)
-        q7 = values.get('Q7', 0)
-        q8 = values.get('Q8', 0)
-        q9 = values.get('Q9', 0)
+        m4 = get_float('M4')
+        m5 = get_float('M5')
+        m7 = get_float('M7')
+        m8 = get_float('M8')
+        m9 = get_float('M9')
+
+        q4 = get_float('Q4')
+        q5 = get_float('Q5')
+        q7 = get_float('Q7')
+        q8 = get_float('Q8')
+        q9 = get_float('Q9')
 
         # Промежуточные
         b6 = b4 - b5
@@ -543,8 +566,8 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         b38 = f13 - b35
 
         # Метрики для статистики
-        b56 = values.get('B56', 0)
-        b59 = values.get('B59', 0)
+        b56 = get_float('B56')
+        b59 = get_float('B59')
 
         wb_oborot_total = b44 + b47 + b32 + b41
         wb_oborot_carp = b44 + b47
