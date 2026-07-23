@@ -67,11 +67,16 @@ class ReportProcessor:
             
             # Парсим дату из названия файла осн
             filename = Path(osn_path).name
-            match = re.search(r'(\d{1,2})_(\d{2})-(\d{1,2})_(\d{2})', filename)
+            logger.info(f"📄 Имя файла: {filename}")
+            
+            # Новый паттерн: ищем дату в формате ДД.ММ-ДД.ММ
+            match = re.search(r'(\d{1,2})\.(\d{2})-(\d{1,2})\.(\d{2})', filename)
             if match:
                 date_range = f"{match.group(1)}.{match.group(2)}-{match.group(3)}.{match.group(4)}"
+                logger.info(f"✅ Дата извлечена из имени файла: {date_range}")
             else:
                 date_range = datetime.now().strftime("%d.%m")
+                logger.warning(f"⚠️ Дата НЕ найдена в имени файла. Использую текущую: {date_range}")
             
             # Вычисляем все значения
             values = self._calculate_all_values(df_osn, df_vyk, date_range)
@@ -104,7 +109,7 @@ class ReportProcessor:
         values['B29'] = df_osn[filter_carp_all]['Разовое изменение срока перечисления денежных средств'].sum()
         values['B44'] = df_osn['Цена розничная'].sum()
         
-        # ===== НОВАЯ СТРОКА для B32 (основной отчет - ЦАП ЦАРАПКИН) =====
+        # ===== B32 (основной отчет - ЦАП ЦАРАПКИН) =====
         values['B32'] = df_osn[filter_carp_all]['Цена розничная'].sum()
         
         # ===== ОСНОВНОЙ ОТЧЕТ - HARAKIRI =====
@@ -311,7 +316,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📊 Статистика обработки:\n"
                 "• Основной отчет: ЦАП + HARAKIRI ✅\n"
                 "• По выкупам: ЦАП + HARAKIRI ✅\n"
-                "• Ячеек заполнено: 31 ✅\n\n"  # Обновлено с 30 на 31
+                "• Ячеек заполнено: 31 ✅\n\n"
                 "Спасибо за использование! 🚀"
             )
             
