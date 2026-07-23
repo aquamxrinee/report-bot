@@ -299,7 +299,6 @@ class ReportProcessor:
         col_name = "Размер компенсации платёжных услуг/Комиссии за интеграцию платёжных сервисов, %"
         if col_name in df_osn.columns:
             series = df_osn[col_name]
-            # Убираем пустые и значения <= 0
             filtered = series[series.notna() & (series > 0)]
             if not filtered.empty:
                 values['B56'] = filtered.mean()
@@ -464,6 +463,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         processor = ReportProcessor()
         values = processor.process_files(osn_file, vyk_file, str(template_file))
 
+        # Сохранение в БД
         if osn_hash is None:
             osn_hash = calculate_file_hash(Path(osn_file))
         saved = save_report_to_db(
@@ -473,22 +473,78 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             values=values
         )
 
+        # Отправка файла
         with open(template_file, 'rb') as f:
             await update.message.reply_document(
                 document=f,
                 caption="✅ Готово! Шаблон заполнен и готов к скачиванию."
             )
 
-        status = (
-            "📊 Статистика обработки:\n"
-            "• Основной отчет: ЦАП + HARAKIRI ✅\n"
-            "• По выкупам: ЦАП + HARAKIRI ✅\n"
-            "• Ячеек заполнено: 34 ✅\n"  # теперь +4 (B56, B59, B62, B65)
-        )
-        status += "• Отчет сохранен в историю ✅\n" if saved else "• Отчет уже был в истории (дубликат) ⚠️\n"
-        status += "\nСпасибо за использование! 🚀"
-        await update.message.reply_text(status)
+        # === ЧТЕНИЕ ДОПОЛНИТЕЛЬНЫХ ЯЧЕЕК ИЗ ШАБЛОНА ДЛЯ СТАТИСТИКИ ===
+        # Открываем шаблон с data_only=True, чтобы получить вычисленные значения формул
+        wb_read = openpyxl.load_workbook(template_file, data_only=True)
+        ws_read = wb_read.active
 
+        def get_cell_value(cell):
+            val = ws_read[cell].value
+            return val if val is not None else 0
+
+        b13 = get_cell_value('B13')
+        m10 = get_cell_value('M10')
+        f13 = get_cell_value('F13')
+        q10 = get_cell_value('Q10')
+        b38 = get_cell_value('B38')
+        b35 = get_cell_value('B35')
+        b50 = get_cell_value('B50')
+
+        # Основные показатели из values
+        b56 = values.get('B56', 0)
+        b59 = values.get('B59', 0)
+        b44 = values.get('B44', 0)
+        b47 = values.get('B47', 0)
+        b32 = values.get('B32', 0)
+        b41 = values.get('B41', 0)
+        b11 = values.get('B11', 0)
+        f11 = values.get('F11', 0)
+        b10 = values.get('B10', 0)
+        f10 = values.get('F10', 0)
+
+        # Производные метрики
+        wb_oborot_total = b44 + b47 + b32 + b41
+        wb_oborot_carp = b44 + b47
+        wb_oborot_hara = b32 + b41
+        k_vyvodu_carp = b13 + m10
+        k_vyvodu_hara = f13 + q10
+        k_vyvodu_hara_nalog = b38
+        reklama_carp = b11
+        reklama_hara = f11
+        shtrafy = b10 + f10
+        nalog_total = b35 + b50
+
+        # Формируем сообщение
+        status = (
+            "📊 **Статистика обработки:**\n\n"
+            "• Основной отчет: ЦАП + HARAKIRI ✅\n"
+            "• По выкупам: ЦАП + HARAKIRI ✅\n\n"
+            f"💳 **Средний эквайринг по неделе:** {b56:,.2f} %\n"
+            f"📊 **Медианный эквайринг по неделе:** {b59:,.2f} %\n\n"
+            f"💰 **ВБшный оборот общий:** {wb_oborot_total:,.2f} ₽\n"
+            f"   🐱 ЦАП: {wb_oborot_carp:,.2f} ₽\n"
+            f"   ⚔️ Харакири: {wb_oborot_hara:,.2f} ₽\n\n"
+            f"💸 **К выводу ЦАП:** {k_vyvodu_carp:,.2f} ₽\n"
+            f"💸 **К выводу Харакири:** {k_vyvodu_hara:,.2f} ₽\n"
+            f"💸 **К выводу Харакири (с вычетом налога):** {k_vyvodu_hara_nalog:,.2f} ₽\n\n"
+            f"📢 **Реклама за неделю:**\n"
+            f"   🐱 ЦАП: {reklama_carp:,.2f} ₽\n"
+            f"   ⚔️ Харакири: {reklama_hara:,.2f} ₽\n\n"
+            f"⚠️ **Штрафы:** {shtrafy:,.2f} ₽\n"
+            f"🧾 **Налог за неделю общий:** {nalog_total:,.2f} ₽\n\n"
+            "✅ Отчет сохранен в историю"
+        )
+
+        await update.message.reply_text(status, parse_mode='Markdown')
+
+        # Очистка временных файлов
         try:
             os.remove(template_file)
             os.remove(osn_file)
