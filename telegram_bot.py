@@ -575,14 +575,14 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Не удалось удалить отчет #{report_id}.")
 
 # ===== ЗАПУСК =====
-def main():
+async def main():
     print("🤖 Запускаю Telegram бот...")
     run_flask()
     print("✅ Flask сервер запущен")
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Установка меню команд (синхронно через asyncio.run)
+    # Установка меню команд
     commands = [
         BotCommand("start", "Начать работу с ботом"),
         BotCommand("help", "Помощь и список команд"),
@@ -592,7 +592,7 @@ def main():
         BotCommand("stats", "Показать общую статистику"),
         BotCommand("delete", "Удалить отчет из истории"),
     ]
-    asyncio.run(app.bot.set_my_commands(commands))
+    await app.bot.set_my_commands(commands)
     print("✅ Меню команд установлено")
 
     app.add_handler(CommandHandler("start", start))
@@ -606,7 +606,8 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
 
     print("✅ Бот запущен и ждет сообщений...")
-    app.run_polling(allowed_updates=[])
+    await app.run_polling(allowed_updates=[])
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
+    
