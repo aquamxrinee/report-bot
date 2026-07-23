@@ -85,7 +85,7 @@ class ReportProcessor:
             return False, str(e)
     
     def _calculate_all_values(self, df_osn, df_vyk, date_range):
-        """Вычисляет все 30 значений"""
+        """Вычисляет все 31 значение"""
         values = {'B1': date_range, 'F1': date_range}
         
         # ===== ОСНОВНОЙ ОТЧЕТ - ЦАП ЦАРАПКИН =====
@@ -103,6 +103,9 @@ class ReportProcessor:
         values['B26'] = df_osn[filter_carp_all]['Хранение'].sum()
         values['B29'] = df_osn[filter_carp_all]['Разовое изменение срока перечисления денежных средств'].sum()
         values['B44'] = df_osn['Цена розничная'].sum()
+        
+        # ===== НОВАЯ СТРОКА для B32 (основной отчет - ЦАП ЦАРАПКИН) =====
+        values['B32'] = df_osn[filter_carp_all]['Цена розничная'].sum()
         
         # ===== ОСНОВНОЙ ОТЧЕТ - HARAKIRI =====
         filter_hara_sale = (df_osn['Бренд'] == 'Harakiri') & (df_osn['Тип документа'] == 'Продажа')
@@ -308,7 +311,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "📊 Статистика обработки:\n"
                 "• Основной отчет: ЦАП + HARAKIRI ✅\n"
                 "• По выкупам: ЦАП + HARAKIRI ✅\n"
-                "• Ячеек заполнено: 30 ✅\n\n"
+                "• Ячеек заполнено: 31 ✅\n\n"  # Обновлено с 30 на 31
                 "Спасибо за использование! 🚀"
             )
             
