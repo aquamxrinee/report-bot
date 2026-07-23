@@ -11,13 +11,14 @@ import shutil
 import logging
 import sqlite3
 import hashlib
+import asyncio
 from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import openpyxl
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     filters, ContextTypes, CallbackQueryHandler
@@ -342,7 +343,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help - помощь\n"
         "/history - история отчетов\n"
         "/stats - статистика\n"
-        "/delete - удалить отчет"
+        "/delete - удалить отчет\n"
+        "/osn - отметить файл как основной (вручную)\n"
+        "/vyk - отметить файл как отчет по выкупам (вручную)"
     )
 
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -598,12 +601,25 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"❌ Не удалось удалить отчет #{report_id}.")
 
 # ===== ЗАПУСК =====
-def main():
+async def main():
     print("🤖 Запускаю Telegram бот...")
     run_flask()
     print("✅ Flask сервер запущен")
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    # Настройка меню команд
+    commands = [
+        BotCommand("start", "Начать работу с ботом"),
+        BotCommand("help", "Помощь и список команд"),
+        BotCommand("osn", "Отметить файл как основной отчет"),
+        BotCommand("vyk", "Отметить файл как отчет по выкупам"),
+        BotCommand("history", "Показать все загруженные отчеты"),
+        BotCommand("stats", "Показать общую статистику"),
+        BotCommand("delete", "Удалить отчет из истории"),
+    ]
+    await app.bot.set_my_commands(commands)
+    print("✅ Меню команд установлено")
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
@@ -616,7 +632,7 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
 
     print("✅ Бот запущен и ждет сообщений...")
-    app.run_polling(allowed_updates=[])
+    await app.run_polling(allowed_updates=[])
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
