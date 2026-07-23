@@ -582,4 +582,80 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message += f"   🐱 ЦАП Царапкин: **{avg_carp:,.2f} ₽**\n"
     message += f"   ⚔️ Harakiri: **{avg_hara:,.2f} ₽**\n\n"
     message += f"**Продажи по выкупам (средние):**\n"
-    message += f"   🐱 ЦАП Царапкин: **{avg_carp_vyk:,.2f} ₽**
+    message += f"   🐱 ЦАП Царапкин: **{avg_carp_vyk:,.2f} ₽**\n"
+    message += f"   ⚔️ Harakiri: **{avg_hara_vyk:,.2f} ₽**\n\n"
+    message += f"**Итого продаж:**\n"
+    message += f"   🐱 ЦАП Царапкин: **{total_carp:,.2f} ₽**\n"
+    message += f"   ⚔️ Harakiri: **{total_hara:,.2f} ₽**\n"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /delete - показывает список отчетов для удаления"""
+    reports = get_all_reports()
+    
+    if not reports:
+        await update.message.reply_text("📭 История пуста. Удалять нечего!")
+        return
+    
+    keyboard = []
+    for report in reports[:10]:
+        report_id, name, period, processed_at, carp_sales, hara_sales, carp_vyk, hara_vyk = report
+        short_name = name[:25] + "..." if len(name) > 25 else name
+        button_text = f"❌ {short_name} ({period})"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"delete_{report_id}")])
+    
+    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="delete_cancel")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "🗑️ **Выберите отчет для удаления:**\n\n"
+        "⚠️ Внимание: удаление необратимо!",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает нажатие на кнопки удаления"""
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    
+    if data == "delete_cancel":
+        await query.edit_message_text("✅ Удаление отменено.")
+        return
+    
+    if data.startswith("delete_"):
+        report_id = int(data.split("_")[1])
+        
+        if delete_report(report_id):
+            await query.edit_message_text(f"✅ Отчет #{report_id} успешно удален из истории!")
+        else:
+            await query.edit_message_text(f"❌ Не удалось удалить отчет #{report_id}. Возможно, он уже был удален.")
+
+# ===== ЗАПУСК БОТА =====
+def main():
+    print("🤖 Запускаю Telegram бот...")
+    run_flask()
+    print("✅ Flask сервер запущен для пингов")
+    
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("osn", handle_osn))
+    app.add_handler(CommandHandler("vyk", handle_vyk))
+    app.add_handler(CommandHandler("history", history_cmd))
+    app.add_handler(CommandHandler("stats", stats_cmd))
+    app.add_handler(CommandHandler("delete", delete_cmd))
+    
+    app.add_handler(CallbackQueryHandler(delete_callback, pattern="^delete_"))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    
+    print("✅ Бот запущен и ждет сообщений...")
+    app.run_polling(allowed_updates=[])
+
+if __name__ == '__main__':
+    main()
