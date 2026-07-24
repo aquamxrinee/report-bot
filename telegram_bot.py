@@ -270,7 +270,6 @@ def get_article_stats_for_report(report_id, brand=None):
         return {}
 
 def get_report_date_range():
-    """Возвращает (min_start_date, max_end_date) из всех отчетов."""
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
