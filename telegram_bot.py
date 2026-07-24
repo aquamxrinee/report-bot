@@ -231,10 +231,125 @@ class ReportProcessor:
 
             values = self._calculate_all_values(df_osn, df_vyk, date_range)
             self._fill_template(template_path, values)
-            return values
+            
+            # Собираем детальную статистику по артикулам
+            articles = self._get_articles_stats(df_osn, df_vyk)
+            
+            return values, articles
         except Exception as e:
             logger.error(f"Ошибка обработки: {e}")
             raise
+
+    def _get_articles_stats(self, df_osn, df_vyk):
+        """
+        Агрегирует данные по артикулам из основного отчёта и отчёта по выкупам.
+        Возвращает словарь:
+        {
+            'Цап царапкин': {
+                'sales': {article: {'quantity': int, 'revenue': float, 'returns': int, 'return_revenue': float}},
+                'vyk': {...}
+            },
+            'Harakiri': {...}
+        }
+        """
+        result = {}
+        # Определяем список возможных колонок для количества и артикула
+        qty_cols = ['Количество', 'Количество товара', 'Кол-во', 'Quantity']
+        article_cols = ['Артикул', 'Артикул товара', 'Номенклатура', 'SKU']
+        
+        # Проверяем, есть ли нужные колонки в df_osn
+        qty_col = None
+        art_col = None
+        for col in qty_cols:
+            if col in df_osn.columns:
+                qty_col = col
+                break
+        for col in article_cols:
+            if col in df_osn.columns:
+                art_col = col
+                break
+        
+        if qty_col is None or art_col is None:
+            logger.warning("Не найдены колонки для количества или артикула")
+            return {}
+        
+        # Обрабатываем основной отчёт
+        for bren in ['Цап царапкин', 'Harakiri']:
+            if bren == 'Цап царапкин':
+                mask = (df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())
+            else:
+                mask = (df_osn['Бренд'] == 'Harakiri')
+            
+            df_bren = df_osn[mask]
+            if df_bren.empty:
+                continue
+            
+            # Продажи
+            sales = df_bren[df_bren['Тип документа'] == 'Продажа']
+            sales_agg = sales.groupby(art_col).agg(
+                quantity=(qty_col, 'sum'),
+                revenue=('К перечислению Продавцу за реализованный Товар', 'sum')
+            ).to_dict('index')
+            
+            # Возвраты
+            returns = df_bren[df_bren['Тип документа'] == 'Возврат']
+            returns_agg = returns.groupby(art_col).agg(
+                return_quantity=(qty_col, 'sum'),
+                return_revenue=('К перечислению Продавцу за реализованный Товар', 'sum')
+            ).to_dict('index')
+            
+            # Объединяем
+            articles = {}
+            all_articles = set(sales_agg.keys()) | set(returns_agg.keys())
+            for art in all_articles:
+                articles[art] = {
+                    'quantity': sales_agg.get(art, {}).get('quantity', 0),
+                    'revenue': sales_agg.get(art, {}).get('revenue', 0),
+                    'return_quantity': returns_agg.get(art, {}).get('return_quantity', 0),
+                    'return_revenue': returns_agg.get(art, {}).get('return_revenue', 0)
+                }
+            result[bren] = {'sales': articles}
+        
+        # Аналогично для df_vyk (отчёт по выкупам) — добавим в ту же структуру
+        for bren in ['Цап царапкин', 'Harakiri']:
+            if bren == 'Цап царапкин':
+                mask = (df_vyk['Бренд'] == 'Цап царапкин') | (df_vyk['Бренд'].isna())
+            else:
+                mask = (df_vyk['Бренд'] == 'Harakiri')
+            
+            df_bren = df_vyk[mask]
+            if df_bren.empty:
+                continue
+            
+            sales = df_bren[df_bren['Тип документа'] == 'Продажа']
+            sales_agg = sales.groupby(art_col).agg(
+                quantity=(qty_col, 'sum'),
+                revenue=('К перечислению Продавцу за реализованный Товар', 'sum')
+            ).to_dict('index')
+            
+            returns = df_bren[df_bren['Тип документа'] == 'Возврат']
+            returns_agg = returns.groupby(art_col).agg(
+                return_quantity=(qty_col, 'sum'),
+                return_revenue=('К перечислению Продавцу за реализованный Товар', 'sum')
+            ).to_dict('index')
+            
+            # Объединяем
+            articles = {}
+            all_articles = set(sales_agg.keys()) | set(returns_agg.keys())
+            for art in all_articles:
+                articles[art] = {
+                    'quantity': sales_agg.get(art, {}).get('quantity', 0),
+                    'revenue': sales_agg.get(art, {}).get('revenue', 0),
+                    'return_quantity': returns_agg.get(art, {}).get('return_quantity', 0),
+                    'return_revenue': returns_agg.get(art, {}).get('return_revenue', 0)
+                }
+            # Если бренд уже есть в result, добавляем ключ 'vyk', иначе создаём
+            if bren in result:
+                result[bren]['vyk'] = articles
+            else:
+                result[bren] = {'vyk': articles}
+        
+        return result
 
     def _calculate_all_values(self, df_osn, df_vyk, date_range):
         values = {'B1': date_range, 'F1': date_range}
@@ -477,7 +592,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             wb.save(template_file)
 
         processor = ReportProcessor()
-        values = processor.process_files(osn_file, vyk_file, str(template_file))
+        values, articles_data = processor.process_files(osn_file, vyk_file, str(template_file))
 
         # Приводим все числовые значения из values к float
         for key in values:
@@ -578,6 +693,29 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         shtrafy = b10 + f10
         nalog_total = b35 + b50
 
+        # === КОЛИЧЕСТВО ЗАКАЗОВ ПО БРЕНДАМ ===
+        # Пытаемся извлечь количество из articles_data
+        carp_orders = 0
+        hara_orders = 0
+        carp_orders_vyk = 0
+        hara_orders_vyk = 0
+
+        # Суммируем quantity по артикулам для каждого бренда
+        if 'Цап царапкин' in articles_data:
+            for art, data in articles_data['Цап царапкин'].get('sales', {}).items():
+                carp_orders += data.get('quantity', 0)
+            for art, data in articles_data['Цап царапкин'].get('vyk', {}).items():
+                carp_orders_vyk += data.get('quantity', 0)
+        if 'Harakiri' in articles_data:
+            for art, data in articles_data['Harakiri'].get('sales', {}).items():
+                hara_orders += data.get('quantity', 0)
+            for art, data in articles_data['Harakiri'].get('vyk', {}).items():
+                hara_orders_vyk += data.get('quantity', 0)
+
+        # Сохраняем детальные данные в контекст (для кнопки)
+        context.user_data['articles_data'] = articles_data
+        context.user_data['current_period'] = values.get('B1', '')
+
         # === ФОРМИРУЕМ СООБЩЕНИЕ ===
         status = (
             "📊 **Статистика обработки:**\n\n"
@@ -588,6 +726,12 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 **ВБшный оборот общий:** {wb_oborot_total:,.2f} ₽\n"
             f"   🐱 ЦАП: {wb_oborot_carp:,.2f} ₽\n"
             f"   ⚔️ Харакири: {wb_oborot_hara:,.2f} ₽\n\n"
+            f"📦 **Количество заказов (осн):**\n"
+            f"   🐱 ЦАП: {carp_orders} шт.\n"
+            f"   ⚔️ Харакири: {hara_orders} шт.\n"
+            f"📦 **Количество заказов (вык):**\n"
+            f"   🐱 ЦАП: {carp_orders_vyk} шт.\n"
+            f"   ⚔️ Харакири: {hara_orders_vyk} шт.\n\n"
             f"💸 **К выводу ЦАП:** {k_vyvodu_carp:,.2f} ₽\n"
             f"💸 **К выводу Харакири:** {k_vyvodu_hara:,.2f} ₽\n"
             f"💸 **Итого к выводу:** {k_vyvodu_carp + k_vyvodu_hara:,.2f} ₽\n"
@@ -601,6 +745,16 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         await update.message.reply_text(status, parse_mode='Markdown')
+
+        # Отправляем кнопку для деталей по артикулам
+        keyboard = [
+            [InlineKeyboardButton("📦 Детали по артикулам", callback_data="show_articles")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "Нажмите кнопку, чтобы увидеть детальную статистику по артикулам:",
+            reply_markup=reply_markup
+        )
 
         # Очистка временных файлов
         try:
@@ -617,97 +771,97 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Критическая ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reports = get_all_reports()
-    if not reports:
-        await update.message.reply_text("📭 История пуста. Загрузите первый отчет!")
-        return
-
-    message = "📊 **История загруженных отчетов:**\n\n"
-    for report in reports[:10]:
-        (id_, name, period, processed_at,
-         carp_sales, hara_sales, carp_vyk, hara_vyk) = report
-        message += f"📄 **{name}**\n"
-        message += f"   📅 Период: {period}\n"
-        message += f"   🕐 Загружен: {processed_at[:16]}\n"
-        message += f"   🐱 ЦАП (осн): {carp_sales:,.2f} ₽\n"
-        message += f"   ⚔️ Harakiri (осн): {hara_sales:,.2f} ₽\n"
-        message += f"   🐱 ЦАП (вык): {carp_vyk:,.2f} ₽\n"
-        message += f"   ⚔️ Harakiri (вык): {hara_vyk:,.2f} ₽\n\n"
-
-    if len(reports) > 10:
-        message += f"… и еще {len(reports) - 10} отчетов. Всего: {len(reports)}"
-
-    await update.message.reply_text(message, parse_mode='Markdown')
-
-async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reports = get_all_reports()
-    if not reports:
-        await update.message.reply_text("📭 Нет данных для статистики. Загрузите отчеты!")
-        return
-
-    total = len(reports)
-    total_carp = sum(r[4] for r in reports)
-    total_hara = sum(r[5] for r in reports)
-    total_carp_vyk = sum(r[6] for r in reports)
-    total_hara_vyk = sum(r[7] for r in reports)
-
-    avg_carp = total_carp / total if total > 0 else 0
-    avg_hara = total_hara / total if total > 0 else 0
-    avg_carp_vyk = total_carp_vyk / total if total > 0 else 0
-    avg_hara_vyk = total_hara_vyk / total if total > 0 else 0
-
-    message = f"📊 **Общая статистика по отчетам:**\n\n"
-    message += f"📄 Всего отчетов: **{total}**\n\n"
-    message += f"**Продажи (средние):**\n"
-    message += f"   🐱 ЦАП (осн): **{avg_carp:,.2f} ₽**\n"
-    message += f"   ⚔️ Harakiri (осн): **{avg_hara:,.2f} ₽**\n"
-    message += f"   🐱 ЦАП (вык): **{avg_carp_vyk:,.2f} ₽**\n"
-    message += f"   ⚔️ Harakiri (вык): **{avg_hara_vyk:,.2f} ₽**\n\n"
-    message += f"**Итого продаж:**\n"
-    message += f"   🐱 ЦАП (осн): **{total_carp:,.2f} ₽**\n"
-    message += f"   ⚔️ Harakiri (осн): **{total_hara:,.2f} ₽**\n"
-    message += f"   🐱 ЦАП (вык): **{total_carp_vyk:,.2f} ₽**\n"
-    message += f"   ⚔️ Harakiri (вык): **{total_hara_vyk:,.2f} ₽**\n"
-
-    await update.message.reply_text(message, parse_mode='Markdown')
-
-async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reports = get_all_reports()
-    if not reports:
-        await update.message.reply_text("📭 История пуста. Удалять нечего!")
-        return
-
-    keyboard = []
-    for report in reports[:10]:
-        report_id, name, period, _, _, _, _, _ = report
-        short_name = name[:25] + "..." if len(name) > 25 else name
-        keyboard.append([InlineKeyboardButton(
-            f"❌ {short_name} ({period})",
-            callback_data=f"delete_{report_id}"
-        )])
-    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="delete_cancel")])
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "🗑️ **Выберите отчет для удаления:**\n⚠️ Удаление необратимо!",
-        reply_markup=reply_markup,
-        parse_mode='Markdown'
-    )
-
-async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик кнопки 'Детали по артикулам'"""
     query = update.callback_query
     await query.answer()
-    data = query.data
-    if data == "delete_cancel":
-        await query.edit_message_text("✅ Удаление отменено.")
+    
+    articles_data = context.user_data.get('articles_data', {})
+    period = context.user_data.get('current_period', '')
+    
+    if not articles_data:
+        await query.edit_message_text("❌ Нет данных по артикулам для этого отчета.")
         return
-    if data.startswith("delete_"):
-        report_id = int(data.split("_")[1])
-        if delete_report(report_id):
-            await query.edit_message_text(f"✅ Отчет #{report_id} успешно удален!")
-        else:
-            await query.edit_message_text(f"❌ Не удалось удалить отчет #{report_id}.")
+    
+    # Формируем сообщение
+    message = f"📦 **Детальная статистика по артикулам**\nПериод: {period}\n\n"
+    
+    # Сортируем артикулы по выручке (убывание) и показываем топ-10
+    all_articles = []
+    for bren, data in articles_data.items():
+        for art, stats in data.get('sales', {}).items():
+            all_articles.append({
+                'brand': bren,
+                'article': art,
+                'quantity': stats.get('quantity', 0),
+                'revenue': stats.get('revenue', 0),
+                'return_quantity': stats.get('return_quantity', 0),
+                'return_revenue': stats.get('return_revenue', 0)
+            })
+    
+    # Сортируем по выручке
+    all_articles.sort(key=lambda x: x['revenue'], reverse=True)
+    
+    # Ограничим 10
+    top_articles = all_articles[:10]
+    
+    if not top_articles:
+        await query.edit_message_text("❌ Нет данных по артикулам.")
+        return
+    
+    for item in top_articles:
+        message += (
+            f"**{item['brand']}** — {item['article']}\n"
+            f"   Продано: {item['quantity']} шт. | Выручка: {item['revenue']:,.2f} ₽\n"
+            f"   Возвраты: {item['return_quantity']} шт. | Сумма возвратов: {item['return_revenue']:,.2f} ₽\n\n"
+        )
+    
+    if len(all_articles) > 10:
+        message += f"… и еще {len(all_articles) - 10} артикулов. Используйте `/articles` для полного списка."
+    
+    await query.edit_message_text(message, parse_mode='Markdown')
+
+async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /articles — выводит полный список артикулов (можно добавить пагинацию)"""
+    articles_data = context.user_data.get('articles_data', {})
+    period = context.user_data.get('current_period', '')
+    
+    if not articles_data:
+        await update.message.reply_text("❌ Нет данных по артикулам. Сначала загрузите отчет.")
+        return
+    
+    # Аналогично, но без ограничения
+    message = f"📦 **Полная статистика по артикулам**\nПериод: {period}\n\n"
+    all_articles = []
+    for bren, data in articles_data.items():
+        for art, stats in data.get('sales', {}).items():
+            all_articles.append({
+                'brand': bren,
+                'article': art,
+                'quantity': stats.get('quantity', 0),
+                'revenue': stats.get('revenue', 0),
+                'return_quantity': stats.get('return_quantity', 0),
+                'return_revenue': stats.get('return_revenue', 0)
+            })
+    
+    all_articles.sort(key=lambda x: x['revenue'], reverse=True)
+    
+    if not all_articles:
+        await update.message.reply_text("❌ Нет данных.")
+        return
+    
+    for item in all_articles:
+        message += (
+            f"**{item['brand']}** — {item['article']}\n"
+            f"   Продано: {item['quantity']} шт. | Выручка: {item['revenue']:,.2f} ₽\n"
+            f"   Возвраты: {item['return_quantity']} шт. | Сумма возвратов: {item['return_revenue']:,.2f} ₽\n\n"
+        )
+    
+    # Telegram имеет ограничение на длину сообщения ~4096 символов, обрезаем если нужно
+    if len(message) > 4000:
+        message = message[:3900] + "\n… (сообщение обрезано)"
+    
+    await update.message.reply_text(message, parse_mode='Markdown')
 
 # ===== ЗАПУСК =====
 def main():
@@ -727,6 +881,7 @@ def main():
             BotCommand("history", "Показать все загруженные отчеты"),
             BotCommand("stats", "Показать общую статистику"),
             BotCommand("delete", "Удалить отчет из истории"),
+            BotCommand("articles", "Показать полную статистику по артикулам"),
         ]
         await app_instance.bot.set_my_commands(commands)
         print("✅ Меню команд установлено")
@@ -740,7 +895,8 @@ def main():
     app.add_handler(CommandHandler("history", history_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("delete", delete_cmd))
-    app.add_handler(CallbackQueryHandler(delete_callback, pattern="^delete_"))
+    app.add_handler(CommandHandler("articles", articles_full_cmd))
+    app.add_handler(CallbackQueryHandler(articles_callback, pattern="^show_articles$"))
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
 
     print("✅ Бот запущен и ждет сообщений...")
