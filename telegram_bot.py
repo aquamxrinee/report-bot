@@ -2,7 +2,7 @@
 """
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
-Полная версия с инлайн-меню, историей, артикулами, аналитикой.
+Полная версия с инлайн-меню, историей, артикулами, аналитикой, удалением из истории.
 """
 
 import os
@@ -119,11 +119,6 @@ def is_file_duplicate(file_hash):
         return None
 
 def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, values, metrics, articles):
-    """
-    Сохраняет отчёт и артикулы.
-    articles: словарь {brand: {'sales': {art: {quantity, revenue}}, 'vyk': {art: {quantity, revenue}}}}
-    Сохраняем все артикулы (sales + vyk) как отдельные записи.
-    """
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
@@ -154,32 +149,28 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                 except:
                     pass
 
-        # Сохраняем артикулы – объединяем sales и vyk для каждого бренда
+        # Сохраняем артикулы (объединяем sales и vyk)
         if articles:
             inserted = 0
             for brand, data in articles.items():
-                # Собираем все артикулы из sales и vyk
                 all_arts = {}
-                # sales
                 for art, stats in data.get('sales', {}).items():
                     if art not in all_arts:
                         all_arts[art] = {'quantity': 0, 'revenue': 0}
                     all_arts[art]['quantity'] += stats.get('quantity', 0)
                     all_arts[art]['revenue'] += stats.get('revenue', 0)
-                # vyk
                 for art, stats in data.get('vyk', {}).items():
                     if art not in all_arts:
                         all_arts[art] = {'quantity': 0, 'revenue': 0}
                     all_arts[art]['quantity'] += stats.get('quantity', 0)
                     all_arts[art]['revenue'] += stats.get('revenue', 0)
-                # Вставляем в БД
                 for art, stats in all_arts.items():
                     cursor.execute('''
                         INSERT INTO article_stats (report_id, brand, article, quantity, revenue)
                         VALUES (?, ?, ?, ?, ?)
                     ''', (report_id, brand, art, stats['quantity'], stats['revenue']))
                     inserted += 1
-            logger.info(f"📦 Вставлено {inserted} записей артикулов (суммарно по основному + выкупам)")
+            logger.info(f"📦 Вставлено {inserted} записей артикулов")
         else:
             logger.warning("⚠️ Нет артикулов для сохранения")
 
@@ -207,6 +198,16 @@ def delete_report(report_id):
         return deleted
     except:
         return False
+
+def delete_reports(report_ids):
+    """Удаляет несколько отчётов по списку ID"""
+    if not report_ids:
+        return 0
+    deleted = 0
+    for rid in report_ids:
+        if delete_report(rid):
+            deleted += 1
+    return deleted
 
 def get_all_reports(page=0, per_page=10):
     try:
@@ -488,7 +489,6 @@ def get_main_menu():
         [InlineKeyboardButton("📂 История", callback_data="menu_history")],
         [InlineKeyboardButton("📦 Артикулы", callback_data="menu_articles")],
         [InlineKeyboardButton("📊 Аналитика по артикулам", callback_data="menu_analytics")],
-        [InlineKeyboardButton("🗑️ Удалить отчёт", callback_data="menu_delete")],
         [InlineKeyboardButton("❓ Помощь", callback_data="menu_help")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -510,7 +510,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/osn — отметить файл как основной (вручную)\n"
         "/vyk — отметить файл как выкупы (вручную)\n"
         "/stats — общая статистика\n"
-        "/delete — удалить отчет\n"
         "/articles — детали по артикулам (текущий отчет)\n\n"
         "Также можно использовать кнопки меню.",
         parse_mode='Markdown',
@@ -534,17 +533,14 @@ async def menu_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     context.user_data['history_page'] = 0
+    context.user_data['history_delete_mode'] = False  # режим удаления выключен
+    context.user_data['history_selected_for_delete'] = []
     await show_history_page(query, context, page=0)
 
 async def menu_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await articles_full_cmd(update, context, is_callback=True)
-
-async def menu_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await delete_cmd(update, context, is_callback=True)
 
 async def menu_help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -687,7 +683,6 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
         ]))
         return
 
-    # Агрегируем артикулы по всем выбранным отчётам
     articles_agg = {}
     total_orders = 0
     total_revenue = 0
@@ -707,7 +702,6 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
         ]))
         return
 
-    # Находим предыдущий период той же длины
     first_report_start = reports_data[0][1]
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -738,7 +732,7 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
     msg += f"💰 Общая выручка: {total_revenue:,.2f} ₽\n\n"
 
     sorted_articles = sorted(articles_agg.items(), key=lambda x: x[1]['revenue'], reverse=True)
-    top_articles = sorted_articles[:20]  # увеличил до 20
+    top_articles = sorted_articles[:20]
 
     msg += "**Топ-20 артикулов по выручке:**\n"
     for art, data in top_articles:
@@ -766,7 +760,7 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# === ИСТОРИЯ С ПАГИНАЦИЕЙ ===
+# ===== ИСТОРИЯ С ВОЗМОЖНОСТЬЮ УДАЛЕНИЯ =====
 async def show_history_page(query, context, page):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
@@ -774,6 +768,9 @@ async def show_history_page(query, context, page):
             [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
         ]))
         return
+
+    delete_mode = context.user_data.get('history_delete_mode', False)
+    selected_for_delete = context.user_data.get('history_selected_for_delete', [])
 
     total_pages = (total + 9) // 10 if total > 0 else 1
     current_page = page
@@ -787,9 +784,15 @@ async def show_history_page(query, context, page):
     keyboard = []
     for r in reports:
         report_id, file_name, date_period, start_date, end_date, processed_at = r
-        short_name = file_name if len(file_name) <= 25 else file_name[:22] + "..."
-        button_text = f"📄 {short_name} ({date_period})"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"history_report_{report_id}")])
+        if delete_mode:
+            checked = "✅" if report_id in selected_for_delete else "⬜"
+            button_text = f"{checked} {file_name} ({date_period})"
+            callback_data = f"history_toggle_delete_{report_id}"
+        else:
+            short_name = file_name if len(file_name) <= 25 else file_name[:22] + "..."
+            button_text = f"📄 {short_name} ({date_period})"
+            callback_data = f"history_report_{report_id}"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
     nav_buttons = []
     if current_page > 0:
@@ -799,8 +802,61 @@ async def show_history_page(query, context, page):
     if nav_buttons:
         keyboard.append(nav_buttons)
 
+    if delete_mode:
+        keyboard.append([InlineKeyboardButton("🗑️ Удалить выбранные", callback_data="history_confirm_delete")])
+        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="history_cancel_delete")])
+    else:
+        keyboard.append([InlineKeyboardButton("🗑️ Удалить отчеты", callback_data="history_enable_delete")])
+
     keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def history_toggle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data.startswith("history_toggle_delete_"):
+        report_id = int(data.split("_")[3])
+        selected = context.user_data.get('history_selected_for_delete', [])
+        if report_id in selected:
+            selected.remove(report_id)
+        else:
+            selected.append(report_id)
+        context.user_data['history_selected_for_delete'] = selected
+        page = context.user_data.get('history_page', 0)
+        await show_history_page(query, context, page)
+
+async def history_enable_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data['history_delete_mode'] = True
+    context.user_data['history_selected_for_delete'] = []
+    page = context.user_data.get('history_page', 0)
+    await show_history_page(query, context, page)
+
+async def history_cancel_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data['history_delete_mode'] = False
+    context.user_data['history_selected_for_delete'] = []
+    page = context.user_data.get('history_page', 0)
+    await show_history_page(query, context, page)
+
+async def history_confirm_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    selected = context.user_data.get('history_selected_for_delete', [])
+    if not selected:
+        await query.answer("⚠️ Не выбрано ни одного отчёта.", show_alert=True)
+        return
+    # Удаляем выбранные отчёты
+    deleted = delete_reports(selected)
+    context.user_data['history_delete_mode'] = False
+    context.user_data['history_selected_for_delete'] = []
+    page = context.user_data.get('history_page', 0)
+    await show_history_page(query, context, page)
+    # Отправляем уведомление об удалении
+    await query.message.reply_text(f"🗑️ Удалено {deleted} отчётов.")
 
 async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -808,6 +864,7 @@ async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
     if data.startswith("history_page_"):
         page = int(data.split("_")[2])
+        context.user_data['history_page'] = page
         await show_history_page(query, context, page)
 
 # === ПЕРЕХОД К ОТЧЁТУ (callback) ===
@@ -914,7 +971,7 @@ async def resend_report(query, context, report_id):
     except:
         pass
 
-# === СТАТИСТИКА И УДАЛЕНИЕ ===
+# === СТАТИСТИКА ===
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reports, total = get_all_reports()
     if not reports:
@@ -929,47 +986,6 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
         ]))
-
-async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, is_callback=False):
-    reports, total = get_all_reports()
-    if not reports:
-        text = "📭 История пуста."
-        if is_callback:
-            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-            ]))
-        else:
-            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-            ]))
-        return
-
-    keyboard = []
-    for r in reports:
-        report_id, file_name, date_period, start_date, end_date, processed_at = r
-        keyboard.append([InlineKeyboardButton(f"❌ {file_name} ({date_period})", callback_data=f"del_{report_id}")])
-    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="back_to_menu")])
-    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    if is_callback:
-        await update.callback_query.edit_message_text("🗑️ Выберите отчет для удаления:", reply_markup=reply_markup)
-    else:
-        await update.message.reply_text("🗑️ Выберите отчет для удаления:", reply_markup=reply_markup)
-
-async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data.startswith("del_"):
-        rid = int(data.split("_")[1])
-        if delete_report(rid):
-            await query.edit_message_text("✅ Отчет удален.", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-            ]))
-        else:
-            await query.edit_message_text("❌ Ошибка удаления.", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-            ]))
 
 # === АРТИКУЛЫ ===
 async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, is_callback=False):
@@ -1533,7 +1549,6 @@ def main():
             BotCommand("osn", "Отметить как основной"),
             BotCommand("vyk", "Отметить как выкупы"),
             BotCommand("stats", "Статистика"),
-            BotCommand("delete", "Удалить отчет"),
             BotCommand("articles", "Все артикулы"),
         ])
     app.post_init = set_commands
@@ -1543,14 +1558,12 @@ def main():
     app.add_handler(CommandHandler("osn", handle_osn))
     app.add_handler(CommandHandler("vyk", handle_vyk))
     app.add_handler(CommandHandler("stats", stats_cmd))
-    app.add_handler(CommandHandler("delete", delete_cmd))
     app.add_handler(CommandHandler("articles", articles_full_cmd))
 
     # Callbacks для меню
     app.add_handler(CallbackQueryHandler(menu_stats_callback, pattern="^menu_stats$"))
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_articles_callback, pattern="^menu_articles$"))
-    app.add_handler(CallbackQueryHandler(menu_delete_callback, pattern="^menu_delete$"))
     app.add_handler(CallbackQueryHandler(menu_help_callback, pattern="^menu_help$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
@@ -1562,10 +1575,13 @@ def main():
     app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
     app.add_handler(CallbackQueryHandler(analytics_show_callback, pattern="^analytics_show$"))
 
-    # Callbacks для истории и удаления
+    # Callbacks для истории (включая удаление)
     app.add_handler(CallbackQueryHandler(history_page_callback, pattern="^history_page_"))
     app.add_handler(CallbackQueryHandler(history_report_callback, pattern="^history_report_"))
-    app.add_handler(CallbackQueryHandler(delete_callback, pattern="^del_"))
+    app.add_handler(CallbackQueryHandler(history_toggle_delete_callback, pattern="^history_toggle_delete_"))
+    app.add_handler(CallbackQueryHandler(history_enable_delete_callback, pattern="^history_enable_delete$"))
+    app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
+    app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
 
     # Callbacks для артикулов
     app.add_handler(CallbackQueryHandler(articles_callback, pattern="^show_articles$"))
