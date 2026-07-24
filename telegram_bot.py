@@ -102,7 +102,7 @@ def init_db():
             FOREIGN KEY(report_id) REFERENCES reports(id) ON DELETE CASCADE
         )
     ''')
-    # Таблица настроек новостей (для каждого пользователя)
+    # Таблица настроек новостей
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS news_settings (
             user_id INTEGER PRIMARY KEY,
@@ -168,7 +168,6 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                 except:
                     pass
 
-        # Сохраняем артикулы (объединяем sales и vyk)
         if articles:
             inserted = 0
             for brand, data in articles.items():
@@ -392,7 +391,6 @@ NEWS_CACHE = {}
 CACHE_EXPIRY = timedelta(hours=2)  # кэш на 2 часа
 
 def fetch_news(query, limit=10):
-    """Получает новости с NewsAPI по поисковому запросу, использует кэш."""
     if not NEWS_API_KEY:
         return []
     cache_key = query
@@ -448,7 +446,6 @@ def format_news_digest(articles, prefix="📰 **Новости**"):
 scheduler = BackgroundScheduler()
 
 async def send_news_digest(context, user_id, time_of_day):
-    """Отправляет новостную сводку указанному пользователю."""
     settings = get_news_settings(user_id)
     if not settings['enabled']:
         return
@@ -700,7 +697,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stats — общая статистика\n"
         "/articles — детали по артикулам (текущий отчет)\n"
         "/news_now — получить новости прямо сейчас\n"
-        "/set_news — настроить новостные сводки\n\n"
+        "/set_news — настроить новостные сводки\n"
+        "/set_news_query — изменить поисковый запрос\n\n"
         "Также можно использовать кнопки меню.",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
@@ -792,7 +790,6 @@ async def news_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 async def news_query_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    # Просим пользователя ввести новый запрос (можно использовать команду /set_news_query)
     await query.edit_message_text(
         "📝 Введите новый поисковый запрос для новостей.\n"
         "Например: `Wildberries OR ВБ`\n"
@@ -1242,50 +1239,119 @@ async def resend_report(query, context, report_id):
     tax_hara = wb_hara * 0.01
     k_hara_after_tax = k_hara - tax_hara
 
-    msg += f"💳 **Средний эквайринг:** {avg_acquiring:,.2f} %\n"
-    msg += f"📊 **Медианный эквайринг:** {median_acquiring:,.2f} %\n\n"
+    # Функция форматирования изменения
+    def fmt_change(current, previous, unit='₽', is_percent=False):
+        if previous is None:
+            return ""
+        if is_percent:
+            diff_pp = current - previous
+            diff_percent = (diff_pp / previous * 100) if previous != 0 else 0
+            return f"(было {previous:.2f}%, {diff_pp:+.2f} п.п., {diff_percent:+.1f}%)"
+        else:
+            diff_abs = current - previous
+            diff_percent = (diff_abs / previous * 100) if previous != 0 else 0
+            return f"(было {previous:,.2f} {unit}, {diff_abs:+.2f} {unit}, {diff_percent:+.1f}%)"
 
-    msg += f"💰 **ВБшный оборот общий:** {wb_total:,.2f} ₽\n"
-    msg += f"   🐱 ЦАП: {wb_carp:,.2f} ₽\n"
-    msg += f"   ⚔️ Харакири: {wb_hara:,.2f} ₽\n\n"
-
-    msg += f"📦 **Заказы (осн):** ЦАП {carp_orders:,.0f} шт., Харакири {hara_orders:,.0f} шт.\n"
-    msg += f"📦 **Заказы (вык):** ЦАП {carp_vyk_orders:,.0f} шт., Харакири {hara_vyk_orders:,.0f} шт.\n\n"
-
-    msg += f"💸 **К выводу ЦАП:** {k_carp:,.2f} ₽\n"
-    msg += f"💸 **К выводу Харакири:** {k_hara:,.2f} ₽\n"
-    msg += f"💸 **Итого к выводу:** {k_total:,.2f} ₽\n"
-    msg += f"💸 **Харакири (с вычетом налога):** {k_hara_after_tax:,.2f} ₽\n\n"
-
-    msg += f"📢 **Реклама:** ЦАП {reklama_carp:,.2f} ₽, Харакири {reklama_hara:,.2f} ₽\n"
-    msg += f"⚠️ **Штрафы:** {shtrafy:,.2f} ₽\n"
-    msg += f"🧾 **Налог общий:** {nalog:,.2f} ₽\n"
-
+    msg += f"💳 **Средний эквайринг:** {avg_acquiring:.2f}%"
     if prev_metrics:
-        msg += "\n📈 **Сравнение с предыдущим периодом:**\n"
-        def delta(current, previous):
-            if previous == 0:
-                return "∞" if current != 0 else "0%"
-            return f"{((current - previous) / previous * 100):+.1f}%"
+        prev_avg = prev_metrics.get('avg_acquiring', 0)
+        msg += " " + fmt_change(avg_acquiring, prev_avg, is_percent=True)
+    msg += "\n"
+    msg += f"📊 **Медианный эквайринг:** {median_acquiring:.2f}%"
+    if prev_metrics:
+        prev_med = prev_metrics.get('median_acquiring', 0)
+        msg += " " + fmt_change(median_acquiring, prev_med, is_percent=True)
+    msg += "\n\n"
 
-        msg += f"   💳 Эквайринг (ср.): {delta(avg_acquiring, prev_metrics.get('avg_acquiring', 0))}\n"
-        msg += f"   💰 Оборот общий: {delta(wb_total, prev_metrics.get('wb_total', 0))}\n"
-        msg += f"   🐱 Оборот ЦАП: {delta(wb_carp, prev_metrics.get('wb_carp', 0))}\n"
-        msg += f"   ⚔️ Оборот Харакири: {delta(wb_hara, prev_metrics.get('wb_hara', 0))}\n"
-        msg += f"   💸 Вывод ЦАП: {delta(k_carp, prev_metrics.get('k_vyvodu_carp', 0))}\n"
-        msg += f"   💸 Вывод Харакири: {delta(k_hara, prev_metrics.get('k_vyvodu_hara', 0))}\n"
-        msg += f"   📢 Реклама ЦАП: {delta(reklama_carp, prev_metrics.get('reklama_carp', 0))}\n"
-        msg += f"   📢 Реклама Харакири: {delta(reklama_hara, prev_metrics.get('reklama_hara', 0))}\n"
-        msg += f"   ⚠️ Штрафы: {delta(shtrafy, prev_metrics.get('shtrafy', 0))}\n"
-        msg += f"   🧾 Налог общий: {delta(nalog, prev_metrics.get('nalog', 0))}\n"
-        msg += f"   📦 Заказы ЦАП (осн): {delta(carp_orders, prev_metrics.get('carp_orders', 0))}\n"
-        msg += f"   📦 Заказы Харакири (осн): {delta(hara_orders, prev_metrics.get('hara_orders', 0))}\n"
-    else:
-        msg += "\n📈 **Сравнение с предыдущим периодом:** нет данных."
+    msg += f"💰 **ВБшный оборот общий:** {wb_total:,.2f} ₽"
+    if prev_metrics:
+        prev_wb = prev_metrics.get('wb_total', 0)
+        msg += " " + fmt_change(wb_total, prev_wb, '₽')
+    msg += "\n"
+    msg += f"   🐱 ЦАП: {wb_carp:,.2f} ₽"
+    if prev_metrics:
+        prev_carp = prev_metrics.get('wb_carp', 0)
+        msg += " " + fmt_change(wb_carp, prev_carp, '₽')
+    msg += "\n"
+    msg += f"   ⚔️ Харакири: {wb_hara:,.2f} ₽"
+    if prev_metrics:
+        prev_hara = prev_metrics.get('wb_hara', 0)
+        msg += " " + fmt_change(wb_hara, prev_hara, '₽')
+    msg += "\n\n"
+
+    msg += f"📦 **Заказы (осн):** ЦАП {carp_orders:.0f} шт."
+    if prev_metrics:
+        prev_carp_ord = prev_metrics.get('carp_orders', 0)
+        diff = carp_orders - prev_carp_ord
+        diff_percent = (diff / prev_carp_ord * 100) if prev_carp_ord != 0 else 0
+        msg += f" (было {prev_carp_ord:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
+    msg += f", Харакири {hara_orders:.0f} шт."
+    if prev_metrics:
+        prev_hara_ord = prev_metrics.get('hara_orders', 0)
+        diff = hara_orders - prev_hara_ord
+        diff_percent = (diff / prev_hara_ord * 100) if prev_hara_ord != 0 else 0
+        msg += f" (было {prev_hara_ord:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
+    msg += "\n"
+    msg += f"📦 **Заказы (вык):** ЦАП {carp_vyk_orders:.0f} шт."
+    if prev_metrics:
+        prev_carp_vyk = prev_metrics.get('carp_vyk_orders', 0)
+        diff = carp_vyk_orders - prev_carp_vyk
+        diff_percent = (diff / prev_carp_vyk * 100) if prev_carp_vyk != 0 else 0
+        msg += f" (было {prev_carp_vyk:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
+    msg += f", Харакири {hara_vyk_orders:.0f} шт."
+    if prev_metrics:
+        prev_hara_vyk = prev_metrics.get('hara_vyk_orders', 0)
+        diff = hara_vyk_orders - prev_hara_vyk
+        diff_percent = (diff / prev_hara_vyk * 100) if prev_hara_vyk != 0 else 0
+        msg += f" (было {prev_hara_vyk:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
+    msg += "\n\n"
+
+    msg += f"💸 **К выводу ЦАП:** {k_carp:,.2f} ₽"
+    if prev_metrics:
+        prev_k_carp = prev_metrics.get('k_vyvodu_carp', 0)
+        msg += " " + fmt_change(k_carp, prev_k_carp, '₽')
+    msg += "\n"
+    msg += f"💸 **К выводу Харакири:** {k_hara:,.2f} ₽"
+    if prev_metrics:
+        prev_k_hara = prev_metrics.get('k_vyvodu_hara', 0)
+        msg += " " + fmt_change(k_hara, prev_k_hara, '₽')
+    msg += "\n"
+    msg += f"💸 **Итого к выводу:** {k_total:,.2f} ₽"
+    if prev_metrics:
+        prev_k_total = prev_metrics.get('k_vyvodu_total', 0)
+        msg += " " + fmt_change(k_total, prev_k_total, '₽')
+    msg += "\n"
+    msg += f"💸 **Харакири (с вычетом налога):** {k_hara_after_tax:,.2f} ₽"
+    if prev_metrics:
+        prev_k_hara_after = prev_metrics.get('k_vyvodu_hara', 0) - (prev_metrics.get('wb_hara', 0) * 0.01)
+        msg += " " + fmt_change(k_hara_after_tax, prev_k_hara_after, '₽')
+    msg += "\n\n"
+
+    msg += f"📢 **Реклама:** ЦАП {reklama_carp:,.2f} ₽"
+    if prev_metrics:
+        prev_reklama_carp = prev_metrics.get('reklama_carp', 0)
+        msg += " " + fmt_change(reklama_carp, prev_reklama_carp, '₽')
+    msg += f", Харакири {reklama_hara:,.2f} ₽"
+    if prev_metrics:
+        prev_reklama_hara = prev_metrics.get('reklama_hara', 0)
+        msg += " " + fmt_change(reklama_hara, prev_reklama_hara, '₽')
+    msg += "\n"
+
+    msg += f"⚠️ **Штрафы:** {shtrafy:,.2f} ₽"
+    if prev_metrics:
+        prev_shtrafy = prev_metrics.get('shtrafy', 0)
+        msg += " " + fmt_change(shtrafy, prev_shtrafy, '₽')
+    msg += "\n"
+
+    msg += f"🧾 **Налог общий:** {nalog:,.2f} ₽"
+    if prev_metrics:
+        prev_nalog = prev_metrics.get('nalog', 0)
+        msg += " " + fmt_change(nalog, prev_nalog, '₽')
+    msg += "\n"
 
     await query.message.reply_text(msg, parse_mode='Markdown')
 
-    # Восстановление шаблона
+    # Восстановление шаблона (без изменений)
     template_path = Path("/app/шаблон.xlsx")
     if not template_path.exists():
         for p in [Path("шаблон.xlsx"), TEMP_DIR / "template.xlsx"]:
@@ -1767,6 +1833,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not start_date:
             start_date = end_date = datetime.now().strftime("%Y-%m-%d")
 
+        # === ВЫЧИСЛЕНИЕ МЕТРИК ===
         def f(key):
             return values.get(key, 0.0)
 
@@ -1847,54 +1914,133 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['current_period'] = date_period
         context.user_data['current_report_id'] = report_id
 
+        # Получение предыдущего отчёта для сравнения
         prev_id = get_previous_report_id(report_id)
         prev_metrics = get_report_metrics(prev_id) if prev_id else None
 
+        # Функция форматирования изменения
+        def fmt_change(current, previous, unit='₽', is_percent=False):
+            if previous is None:
+                return ""
+            if is_percent:
+                diff_pp = current - previous
+                diff_percent = (diff_pp / previous * 100) if previous != 0 else 0
+                return f"(было {previous:.2f}%, {diff_pp:+.2f} п.п., {diff_percent:+.1f}%)"
+            else:
+                diff_abs = current - previous
+                diff_percent = (diff_abs / previous * 100) if previous != 0 else 0
+                return f"(было {previous:,.2f} {unit}, {diff_abs:+.2f} {unit}, {diff_percent:+.1f}%)"
+
+        # Основное сообщение
+        msg = "📊 **Статистика обработки:**\n\n"
+        msg += "• Основной отчет: ЦАП + HARAKIRI ✅\n"
+        msg += "• По выкупам: ЦАП + HARAKIRI ✅\n\n"
+
+        # Эквайринг
+        avg_acquiring = values.get('B56', 0)
+        msg += f"💳 **Средний эквайринг:** {avg_acquiring:.2f} %"
+        if prev_metrics:
+            prev_avg = prev_metrics.get('avg_acquiring', 0)
+            msg += " " + fmt_change(avg_acquiring, prev_avg, is_percent=True)
+        msg += "\n"
+        median_acquiring = values.get('B59', 0)
+        msg += f"📊 **Медианный эквайринг:** {median_acquiring:.2f} %"
+        if prev_metrics:
+            prev_med = prev_metrics.get('median_acquiring', 0)
+            msg += " " + fmt_change(median_acquiring, prev_med, is_percent=True)
+        msg += "\n\n"
+
+        # Обороты
+        msg += f"💰 **ВБшный оборот общий:** {wb_total:,.2f} ₽"
+        if prev_metrics:
+            prev_wb = prev_metrics.get('wb_total', 0)
+            msg += " " + fmt_change(wb_total, prev_wb, '₽')
+        msg += "\n"
+        msg += f"   🐱 ЦАП: {wb_carp:,.2f} ₽"
+        if prev_metrics:
+            prev_carp = prev_metrics.get('wb_carp', 0)
+            msg += " " + fmt_change(wb_carp, prev_carp, '₽')
+        msg += "\n"
+        msg += f"   ⚔️ Харакири: {wb_hara:,.2f} ₽"
+        if prev_metrics:
+            prev_hara = prev_metrics.get('wb_hara', 0)
+            msg += " " + fmt_change(wb_hara, prev_hara, '₽')
+        msg += "\n\n"
+
+        # Заказы
+        msg += f"📦 **Заказы (осн):** ЦАП {carp_orders:.0f} шт."
+        if prev_metrics:
+            prev_carp_ord = prev_metrics.get('carp_orders', 0)
+            diff = carp_orders - prev_carp_ord
+            diff_percent = (diff / prev_carp_ord * 100) if prev_carp_ord != 0 else 0
+            msg += f" (было {prev_carp_ord:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
+        msg += f", Харакири {hara_orders:.0f} шт."
+        if prev_metrics:
+            prev_hara_ord = prev_metrics.get('hara_orders', 0)
+            diff = hara_orders - prev_hara_ord
+            diff_percent = (diff / prev_hara_ord * 100) if prev_hara_ord != 0 else 0
+            msg += f" (было {prev_hara_ord:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
+        msg += "\n"
+        msg += f"📦 **Заказы (вык):** ЦАП {carp_vyk_orders:.0f} шт."
+        if prev_metrics:
+            prev_carp_vyk = prev_metrics.get('carp_vyk_orders', 0)
+            diff = carp_vyk_orders - prev_carp_vyk
+            diff_percent = (diff / prev_carp_vyk * 100) if prev_carp_vyk != 0 else 0
+            msg += f" (было {prev_carp_vyk:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
+        msg += f", Харакири {hara_vyk_orders:.0f} шт."
+        if prev_metrics:
+            prev_hara_vyk = prev_metrics.get('hara_vyk_orders', 0)
+            diff = hara_vyk_orders - prev_hara_vyk
+            diff_percent = (diff / prev_hara_vyk * 100) if prev_hara_vyk != 0 else 0
+            msg += f" (было {prev_hara_vyk:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
+        msg += "\n\n"
+
+        # Выводы
         tax_hara = wb_hara * 0.01
         k_hara_after_tax = k_hara - tax_hara
 
-        msg = (
-            "📊 **Статистика обработки:**\n\n"
-            "• Основной отчет: ЦАП + HARAKIRI ✅\n"
-            "• По выкупам: ЦАП + HARAKIRI ✅\n\n"
-            f"💳 **Средний эквайринг:** {values.get('B56', 0):,.2f} %\n"
-            f"📊 **Медианный эквайринг:** {values.get('B59', 0):,.2f} %\n\n"
-            f"💰 **ВБшный оборот общий:** {wb_total:,.2f} ₽\n"
-            f"   🐱 ЦАП: {wb_carp:,.2f} ₽\n"
-            f"   ⚔️ Харакири: {wb_hara:,.2f} ₽\n\n"
-            f"📦 **Заказы (осн):** ЦАП {carp_orders:,.0f} шт., Харакири {hara_orders:,.0f} шт.\n"
-            f"📦 **Заказы (вык):** ЦАП {carp_vyk_orders:,.0f} шт., Харакири {hara_vyk_orders:,.0f} шт.\n\n"
-            f"💸 **К выводу ЦАП:** {k_carp:,.2f} ₽\n"
-            f"💸 **К выводу Харакири:** {k_hara:,.2f} ₽\n"
-            f"💸 **Итого к выводу:** {k_carp + k_hara:,.2f} ₽\n"
-            f"💸 **Харакири (с вычетом налога):** {k_hara_after_tax:,.2f} ₽\n\n"
-            f"📢 **Реклама:** ЦАП {reklama_carp:,.2f} ₽, Харакири {reklama_hara:,.2f} ₽\n"
-            f"⚠️ **Штрафы:** {shtrafy:,.2f} ₽\n"
-            f"🧾 **Налог общий:** {nalog:,.2f} ₽\n"
-        )
-
+        msg += f"💸 **К выводу ЦАП:** {k_carp:,.2f} ₽"
         if prev_metrics:
-            msg += "\n📈 **Сравнение с предыдущим периодом:**\n"
-            def delta(current, previous):
-                if previous == 0:
-                    return "∞" if current != 0 else "0%"
-                return f"{((current - previous) / previous * 100):+.1f}%"
+            prev_k_carp = prev_metrics.get('k_vyvodu_carp', 0)
+            msg += " " + fmt_change(k_carp, prev_k_carp, '₽')
+        msg += "\n"
+        msg += f"💸 **К выводу Харакири:** {k_hara:,.2f} ₽"
+        if prev_metrics:
+            prev_k_hara = prev_metrics.get('k_vyvodu_hara', 0)
+            msg += " " + fmt_change(k_hara, prev_k_hara, '₽')
+        msg += "\n"
+        msg += f"💸 **Итого к выводу:** {k_carp + k_hara:,.2f} ₽"
+        if prev_metrics:
+            prev_k_total = prev_metrics.get('k_vyvodu_total', 0)
+            msg += " " + fmt_change(k_carp + k_hara, prev_k_total, '₽')
+        msg += "\n"
+        msg += f"💸 **Харакири (с вычетом налога):** {k_hara_after_tax:,.2f} ₽"
+        if prev_metrics:
+            prev_k_hara_after = prev_metrics.get('k_vyvodu_hara', 0) - (prev_metrics.get('wb_hara', 0) * 0.01)
+            msg += " " + fmt_change(k_hara_after_tax, prev_k_hara_after, '₽')
+        msg += "\n\n"
 
-            msg += f"   💳 Эквайринг (ср.): {delta(avg_acquiring, prev_metrics.get('avg_acquiring', 0))}\n"
-            msg += f"   💰 Оборот общий: {delta(wb_total, prev_metrics.get('wb_total', 0))}\n"
-            msg += f"   🐱 Оборот ЦАП: {delta(wb_carp, prev_metrics.get('wb_carp', 0))}\n"
-            msg += f"   ⚔️ Оборот Харакири: {delta(wb_hara, prev_metrics.get('wb_hara', 0))}\n"
-            msg += f"   💸 Вывод ЦАП: {delta(k_carp, prev_metrics.get('k_vyvodu_carp', 0))}\n"
-            msg += f"   💸 Вывод Харакири: {delta(k_hara, prev_metrics.get('k_vyvodu_hara', 0))}\n"
-            msg += f"   📢 Реклама ЦАП: {delta(reklama_carp, prev_metrics.get('reklama_carp', 0))}\n"
-            msg += f"   📢 Реклама Харакири: {delta(reklama_hara, prev_metrics.get('reklama_hara', 0))}\n"
-            msg += f"   ⚠️ Штрафы: {delta(shtrafy, prev_metrics.get('shtrafy', 0))}\n"
-            msg += f"   🧾 Налог общий: {delta(nalog, prev_metrics.get('nalog', 0))}\n"
-            msg += f"   📦 Заказы ЦАП (осн): {delta(carp_orders, prev_metrics.get('carp_orders', 0))}\n"
-            msg += f"   📦 Заказы Харакири (осн): {delta(hara_orders, prev_metrics.get('hara_orders', 0))}\n"
-        else:
-            msg += "\n📈 **Сравнение с предыдущим периодом:** нет данных."
+        # Реклама
+        msg += f"📢 **Реклама:** ЦАП {reklama_carp:,.2f} ₽"
+        if prev_metrics:
+            prev_reklama_carp = prev_metrics.get('reklama_carp', 0)
+            msg += " " + fmt_change(reklama_carp, prev_reklama_carp, '₽')
+        msg += f", Харакири {reklama_hara:,.2f} ₽"
+        if prev_metrics:
+            prev_reklama_hara = prev_metrics.get('reklama_hara', 0)
+            msg += " " + fmt_change(reklama_hara, prev_reklama_hara, '₽')
+        msg += "\n"
 
+        msg += f"⚠️ **Штрафы:** {shtrafy:,.2f} ₽"
+        if prev_metrics:
+            prev_shtrafy = prev_metrics.get('shtrafy', 0)
+            msg += " " + fmt_change(shtrafy, prev_shtrafy, '₽')
+        msg += "\n"
+
+        msg += f"🧾 **Налог общий:** {nalog:,.2f} ₽"
+        if prev_metrics:
+            prev_nalog = prev_metrics.get('nalog', 0)
+            msg += " " + fmt_change(nalog, prev_nalog, '₽')
         msg += "\n\n✅ Отчет сохранен"
 
         await update.message.reply_text(msg, parse_mode='Markdown')
@@ -1957,7 +2103,7 @@ def main():
     app.add_handler(CommandHandler("set_news", set_news_cmd))
     app.add_handler(CommandHandler("set_news_query", set_news_query_cmd))
 
-    # Callbacks
+    # Callbacks для меню
     app.add_handler(CallbackQueryHandler(menu_stats_callback, pattern="^menu_stats$"))
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_articles_callback, pattern="^menu_articles$"))
@@ -1966,7 +2112,7 @@ def main():
     app.add_handler(CallbackQueryHandler(menu_news_callback, pattern="^menu_news$"))
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
 
-    # Новости
+    # Callbacks для новостей
     app.add_handler(CallbackQueryHandler(news_now_callback, pattern="^news_now$"))
     app.add_handler(CallbackQueryHandler(news_settings_callback, pattern="^news_settings$"))
     app.add_handler(CallbackQueryHandler(news_toggle_callback, pattern="^news_toggle$"))
@@ -1974,14 +2120,14 @@ def main():
     app.add_handler(CallbackQueryHandler(news_time_callback, pattern="^news_time$"))
     app.add_handler(CallbackQueryHandler(news_time_set_callback, pattern="^news_time_"))
 
-    # Аналитика
+    # Callbacks для аналитики
     app.add_handler(CallbackQueryHandler(analytics_toggle_callback, pattern="^analytics_toggle_"))
     app.add_handler(CallbackQueryHandler(analytics_page_callback, pattern="^analytics_page_"))
     app.add_handler(CallbackQueryHandler(analytics_select_all_callback, pattern="^analytics_select_all$"))
     app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
     app.add_handler(CallbackQueryHandler(analytics_show_callback, pattern="^analytics_show$"))
 
-    # История
+    # Callbacks для истории
     app.add_handler(CallbackQueryHandler(history_page_callback, pattern="^history_page_"))
     app.add_handler(CallbackQueryHandler(history_report_callback, pattern="^history_report_"))
     app.add_handler(CallbackQueryHandler(history_toggle_delete_callback, pattern="^history_toggle_delete_"))
@@ -1989,7 +2135,7 @@ def main():
     app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
     app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
 
-    # Артикулы
+    # Callbacks для артикулов
     app.add_handler(CallbackQueryHandler(articles_callback, pattern="^show_articles$"))
     app.add_handler(CallbackQueryHandler(growth_callback, pattern="^growth$"))
     app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline$"))
@@ -1998,9 +2144,9 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Планировщик новостей
-    scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[app])
-    scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])
+    # Планировщик новостей (время в UTC, для МСК нужно добавить 3 часа)
+    scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[app])   # 8:30 UTC = 11:30 MSK
+    scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])  # 20:40 UTC = 23:40 MSK
     scheduler.start()
 
     print("✅ Бот готов")
