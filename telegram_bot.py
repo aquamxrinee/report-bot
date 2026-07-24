@@ -54,7 +54,6 @@ print(f"📊 БД: {DB_PATH}")
 def init_db():
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-    # Основная таблица отчетов
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,7 +92,6 @@ def init_db():
             hara_vyk_retail_price NUMERIC DEFAULT 0
         )
     ''')
-    # Добавляем колонки start_date и end_date, если их нет
     cursor.execute("PRAGMA table_info(reports)")
     columns = [col[1] for col in cursor.fetchall()]
     if 'start_date' not in columns:
@@ -101,7 +99,6 @@ def init_db():
     if 'end_date' not in columns:
         cursor.execute("ALTER TABLE reports ADD COLUMN end_date TEXT")
 
-    # Таблица для детальной статистики по артикулам
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS article_stats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,7 +136,6 @@ def is_file_duplicate(file_hash):
         return None
 
 def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, values, articles):
-    """Сохраняет отчет и детали по артикулам"""
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
@@ -173,15 +169,14 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
         ))
         report_id = cursor.lastrowid
 
-        # Сохраняем артикулы, если они есть
+        # Сохраняем артикулы
         if articles:
             for brand, data in articles.items():
                 for key, stats in data.get('sales', {}).items():
-                    # key = article name
                     cursor.execute('''
                         INSERT INTO article_stats (report_id, brand, article, quantity, revenue)
                         VALUES (?, ?, ?, ?, ?)
-                    ''', (report_id, brand, key, stats['quantity'], stats['revenue']))
+                    ''', (report_id, brand, key, stats.get('quantity', 0), stats.get('revenue', 0)))
         conn.commit()
         conn.close()
         return True
@@ -195,7 +190,6 @@ def delete_report(report_id):
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
-        # Сначала удаляем связанные артикулы (каскадное удаление сработает, если есть внешний ключ)
         cursor.execute('DELETE FROM article_stats WHERE report_id = ?', (report_id,))
         cursor.execute('DELETE FROM reports WHERE id = ?', (report_id,))
         conn.commit()
@@ -221,7 +215,6 @@ def get_all_reports():
         return []
 
 def get_previous_reports(current_start_date, limit=12):
-    """Возвращает список предыдущих отчетов (id, start_date, end_date) до указанной даты, отсортированных по start_date DESC"""
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
@@ -239,7 +232,6 @@ def get_previous_reports(current_start_date, limit=12):
         return []
 
 def get_article_stats_for_report(report_id, brand=None):
-    """Возвращает словарь {article: {'quantity': q, 'revenue': r}} для отчёта, опционально по бренду"""
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
@@ -263,31 +255,6 @@ def get_article_stats_for_report(report_id, brand=None):
     except:
         return {}
 
-def get_articles_for_comparison(current_articles, previous_reports_ids):
-    """
-    Для каждого артикула из current_articles вычисляет средние показатели по предыдущим отчетам
-    Возвращает словарь: {article: {'avg_quantity': q, 'avg_revenue': r}}
-    """
-    if not previous_reports_ids:
-        return {}
-    all_prev_articles = {}
-    for rid in previous_reports_ids:
-        stats = get_article_stats_for_report(rid)
-        for art, data in stats.items():
-            if art not in all_prev_articles:
-                all_prev_articles[art] = {'quantity': [], 'revenue': []}
-            all_prev_articles[art]['quantity'].append(data['quantity'])
-            all_prev_articles[art]['revenue'].append(data['revenue'])
-    # Усредняем
-    result = {}
-    for art, vals in all_prev_articles.items():
-        if vals['quantity']:
-            result[art] = {
-                'avg_quantity': sum(vals['quantity']) / len(vals['quantity']),
-                'avg_revenue': sum(vals['revenue']) / len(vals['revenue'])
-            }
-    return result
-
 # ===== ОПРЕДЕЛЕНИЕ ТИПА ФАЙЛА =====
 def detect_report_type(filename):
     name = filename.lower()
@@ -298,14 +265,11 @@ def detect_report_type(filename):
     return None
 
 def parse_date_from_period(date_period):
-    """Парсит строку 'dd.mm-dd.mm' и возвращает (start_date, end_date) в формате YYYY-MM-DD"""
     try:
         parts = date_period.split('-')
         start = parts[0].strip()
         end = parts[1].strip()
-        # Предполагаем текущий год, если не указан
         year = datetime.now().year
-        # Преобразуем в дату
         start_dt = datetime.strptime(start + f".{year}", "%d.%m.%Y")
         end_dt = datetime.strptime(end + f".{year}", "%d.%m.%Y")
         return start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
@@ -335,6 +299,10 @@ class ReportProcessor:
         df_osn = pd.read_excel(osn_path)
         df_vyk = pd.read_excel(vyk_path)
 
+        # Логируем колонки для отладки
+        logger.info(f"Колонки основного отчёта: {df_osn.columns.tolist()}")
+        logger.info(f"Колонки отчёта по выкупам: {df_vyk.columns.tolist()}")
+
         filename = Path(osn_path).name
         match = re.search(r'(\d{1,2})\.(\d{2})-(\d{1,2})\.(\d{2})', filename)
         date_range = f"{match.group(1)}.{match.group(2)}-{match.group(3)}.{match.group(4)}" if match else datetime.now().strftime("%d.%m")
@@ -347,9 +315,11 @@ class ReportProcessor:
 
     def _get_articles_stats(self, df_osn, df_vyk):
         result = {}
-        qty_cols = ['Кол-во', 'Количество', 'Количество товара', 'Кол-во (шт.)', 'Кол-во шт']
-        article_cols = ['Артикул поставщика', 'Артикул', 'Артикул товара', 'Номенклатура', 'SKU', 'Артикул (поставщика)']
+        # Расширенные списки возможных названий
+        qty_cols = ['Кол-во', 'Количество', 'Количество товара', 'Кол-во (шт.)', 'Кол-во шт', 'Quantity', 'Количество, шт']
+        article_cols = ['Артикул поставщика', 'Артикул', 'Артикул товара', 'Номенклатура', 'SKU', 'Артикул (поставщика)', 'Артикул поставщика (WB)']
 
+        # Ищем в обоих датафреймах
         qty_col = None
         art_col = None
         for col in qty_cols:
@@ -361,9 +331,14 @@ class ReportProcessor:
                 art_col = col
                 break
 
-        if qty_col is None or art_col is None:
-            logger.warning("Колонки количества или артикула не найдены")
+        if qty_col is None:
+            logger.warning("❌ Колонка количества не найдена. Доступные колонки: " + str(df_osn.columns.tolist()))
             return result
+        if art_col is None:
+            logger.warning("❌ Колонка артикула не найдена. Доступные колонки: " + str(df_osn.columns.tolist()))
+            return result
+
+        logger.info(f"✅ Найдены колонки: количество='{qty_col}', артикул='{art_col}'")
 
         for df, key in [(df_osn, 'sales'), (df_vyk, 'vyk')]:
             for bren, mask_func in [
@@ -389,6 +364,8 @@ class ReportProcessor:
                 if bren not in result:
                     result[bren] = {}
                 result[bren][key] = articles
+
+        logger.info(f"📦 Собрано артикулов: {sum(len(v.get('sales', {})) for v in result.values())}")
         return result
 
     def _calculate_all_values(self, df_osn, df_vyk, date_range):
@@ -590,12 +567,12 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except:
                 values[k] = 0.0
 
-        # Парсим даты периода
+        # Парсим даты
         start_date, end_date = parse_date_from_period(date_period)
         if not start_date:
             start_date = end_date = datetime.now().strftime("%Y-%m-%d")
 
-        # Сохраняем в БД (включая артикулы)
+        # Сохраняем в БД
         if osn_hash is None:
             osn_hash = calculate_file_hash(Path(osn_file))
         saved = save_report_to_db(
@@ -612,7 +589,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(out_file, 'rb') as f:
             await update.message.reply_document(f, caption="✅ Готово!")
 
-        # === ВЫЧИСЛЯЕМ МЕТРИКИ ===
+        # === МЕТРИКИ ===
         def f(key):
             return values.get(key, 0.0)
 
@@ -656,12 +633,10 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         carp_vyk_orders = sum(a.get('quantity', 0) for a in articles.get('Цап царапкин', {}).get('vyk', {}).values())
         hara_vyk_orders = sum(a.get('quantity', 0) for a in articles.get('Harakiri', {}).get('vyk', {}).values())
 
-        # Сохраняем в контекст для /articles
+        # Сохраняем в контекст
         context.user_data['articles_data'] = articles
         context.user_data['current_period'] = date_period
-        context.user_data['current_report_id'] = None  # пока не знаем id, но потом получим
-
-        # Получаем ID сохранённого отчёта (последний вставленный)
+        # Получаем ID отчёта
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
         cursor.execute("SELECT last_insert_rowid()")
@@ -780,7 +755,6 @@ async def articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Нет данных по артикулам.")
         return
 
-    # Преобразуем в список для сортировки
     all_items = [(art, data['quantity'], data['revenue']) for art, data in articles.items()]
     all_items.sort(key=lambda x: x[2], reverse=True)
     top = all_items[:10]
@@ -792,7 +766,6 @@ async def articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(all_items) > 10:
         msg += f"\n… и еще {len(all_items)-10}. Используйте /articles для полного списка."
 
-    # Добавляем кнопку "Детальное сравнение"
     keyboard = [[InlineKeyboardButton("📊 Детальное сравнение", callback_data="compare_articles")]]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
@@ -818,11 +791,9 @@ async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += "\n… (сообщение обрезано)"
             break
 
-    # Добавляем кнопку "Детальное сравнение"
     keyboard = [[InlineKeyboardButton("📊 Детальное сравнение", callback_data="compare_articles")]]
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# === СРАВНЕНИЕ ===
 async def compare_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -831,7 +802,6 @@ async def compare_articles_callback(update: Update, context: ContextTypes.DEFAUL
         await query.edit_message_text("❌ Нет данных для сравнения.")
         return
 
-    # Получаем текущий отчёт
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute("SELECT start_date FROM reports WHERE id = ?", (report_id,))
@@ -843,23 +813,17 @@ async def compare_articles_callback(update: Update, context: ContextTypes.DEFAUL
     current_start = row[0]
     conn.close()
 
-    # Получаем предыдущие отчёты (до current_start)
     prev_reports = get_previous_reports(current_start, limit=12)
-
     if not prev_reports:
         await query.edit_message_text("❌ Нет предыдущих отчетов для сравнения.")
         return
 
-    # Идентификаторы предыдущих отчетов
     prev_ids = [r[0] for r in prev_reports]
-
-    # Получаем текущие артикулы
     current_articles = get_article_stats_for_report(report_id)
     if not current_articles:
         await query.edit_message_text("❌ Нет данных по артикулам в текущем отчете.")
         return
 
-    # Считаем средние по предыдущим периодам (2, 4, 12 недель)
     periods = {
         '2 недели': prev_ids[:2],
         'месяц': prev_ids[:4],
@@ -872,7 +836,6 @@ async def compare_articles_callback(update: Update, context: ContextTypes.DEFAUL
         if not ids:
             msg += f"**{period_name}:** Нет данных\n\n"
             continue
-        # Получаем все артикулы за эти периоды и усредняем
         all_articles = {}
         for pid in ids:
             arts = get_article_stats_for_report(pid)
@@ -881,16 +844,15 @@ async def compare_articles_callback(update: Update, context: ContextTypes.DEFAUL
                     all_articles[art] = {'qty': [], 'rev': []}
                 all_articles[art]['qty'].append(data['quantity'])
                 all_articles[art]['rev'].append(data['revenue'])
-        # Усредняем
         avg_articles = {}
         for art, vals in all_articles.items():
             avg_articles[art] = {
                 'avg_quantity': sum(vals['qty']) / len(vals['qty']),
                 'avg_revenue': sum(vals['rev']) / len(vals['rev'])
             }
-        # Сравниваем с текущими
         msg += f"**{period_name}** (среднее по {len(ids)} отчетам):\n"
-        for art, data in sorted(current_articles.items(), key=lambda x: x[1]['revenue'], reverse=True)[:5]:
+        top_cur = sorted(current_articles.items(), key=lambda x: x[1]['revenue'], reverse=True)[:5]
+        for art, data in top_cur:
             cur_q = data['quantity']
             cur_r = data['revenue']
             if art in avg_articles:
@@ -912,7 +874,6 @@ def main():
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Меню команд
     async def set_commands(app_instance):
         await app_instance.bot.set_my_commands([
             BotCommand("start", "Начать"),
