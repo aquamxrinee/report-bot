@@ -12,7 +12,7 @@ import shutil
 import logging
 import sqlite3
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -169,14 +169,13 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
         ))
         report_id = cursor.lastrowid
 
-        # Сохраняем артикулы
         if articles:
             for brand, data in articles.items():
-                for key, stats in data.get('sales', {}).items():
+                for art, stats in data.get('sales', {}).items():
                     cursor.execute('''
                         INSERT INTO article_stats (report_id, brand, article, quantity, revenue)
                         VALUES (?, ?, ?, ?, ?)
-                    ''', (report_id, brand, key, stats.get('quantity', 0), stats.get('revenue', 0)))
+                    ''', (report_id, brand, art, stats.get('quantity', 0), stats.get('revenue', 0)))
         conn.commit()
         conn.close()
         return True
@@ -299,9 +298,9 @@ class ReportProcessor:
         df_osn = pd.read_excel(osn_path)
         df_vyk = pd.read_excel(vyk_path)
 
-        # Логируем колонки для отладки
-        logger.info(f"Колонки основного отчёта: {df_osn.columns.tolist()}")
-        logger.info(f"Колонки отчёта по выкупам: {df_vyk.columns.tolist()}")
+        # Логируем колонки
+        logger.info(f"Колонки основного: {df_osn.columns.tolist()}")
+        logger.info(f"Колонки выкупов: {df_vyk.columns.tolist()}")
 
         filename = Path(osn_path).name
         match = re.search(r'(\d{1,2})\.(\d{2})-(\d{1,2})\.(\d{2})', filename)
@@ -314,32 +313,43 @@ class ReportProcessor:
         return values, articles, date_range
 
     def _get_articles_stats(self, df_osn, df_vyk):
+        """Ищет колонки регистронезависимо и без пробелов"""
         result = {}
-        # Расширенные списки возможных названий
-        qty_cols = ['Кол-во', 'Количество', 'Количество товара', 'Кол-во (шт.)', 'Кол-во шт', 'Quantity', 'Количество, шт']
-        article_cols = ['Артикул поставщика', 'Артикул', 'Артикул товара', 'Номенклатура', 'SKU', 'Артикул (поставщика)', 'Артикул поставщика (WB)']
 
-        # Ищем в обоих датафреймах
+        # Нормализуем названия колонок (убираем пробелы, приводим к нижнему регистру)
+        def normalize_cols(df):
+            return {str(col).strip().lower(): col for col in df.columns}
+
+        cols_osn = normalize_cols(df_osn)
+        cols_vyk = normalize_cols(df_vyk)
+        # Объединяем словари (приоритет у osn)
+        all_cols = {**cols_vyk, **cols_osn}
+
+        # Варианты названий (в нижнем регистре, без пробелов)
+        qty_variants = ['количество', 'кол-во', 'количество товара', 'кол-во (шт.)', 'кол-во шт', 'quantity', 'количество,шт']
+        art_variants = ['артикул поставщика', 'артикул', 'артикул товара', 'номенклатура', 'sku', 'артикул(поставщика)']
+
         qty_col = None
         art_col = None
-        for col in qty_cols:
-            if col in df_osn.columns or col in df_vyk.columns:
-                qty_col = col
+        for v in qty_variants:
+            if v in all_cols:
+                qty_col = all_cols[v]
                 break
-        for col in article_cols:
-            if col in df_osn.columns or col in df_vyk.columns:
-                art_col = col
+        for v in art_variants:
+            if v in all_cols:
+                art_col = all_cols[v]
                 break
 
         if qty_col is None:
-            logger.warning("❌ Колонка количества не найдена. Доступные колонки: " + str(df_osn.columns.tolist()))
+            logger.warning(f"❌ Колонка количества не найдена. Доступные нормализованные: {list(all_cols.keys())}")
             return result
         if art_col is None:
-            logger.warning("❌ Колонка артикула не найдена. Доступные колонки: " + str(df_osn.columns.tolist()))
+            logger.warning(f"❌ Колонка артикула не найдена. Доступные нормализованные: {list(all_cols.keys())}")
             return result
 
         logger.info(f"✅ Найдены колонки: количество='{qty_col}', артикул='{art_col}'")
 
+        # Обрабатываем оба датафрейма
         for df, key in [(df_osn, 'sales'), (df_vyk, 'vyk')]:
             for bren, mask_func in [
                 ('Цап царапкин', lambda d: (d['Бренд'] == 'Цап царапкин') | (d['Бренд'].isna())),
@@ -349,6 +359,7 @@ class ReportProcessor:
                 df_bren = df[mask]
                 if df_bren.empty:
                     continue
+                # Продажи с количеством > 0
                 sales = df_bren[(df_bren['Тип документа'] == 'Продажа') & (df_bren[qty_col] > 0)]
                 agg_sales = sales.groupby(art_col).agg(
                     quantity=(qty_col, 'sum'),
