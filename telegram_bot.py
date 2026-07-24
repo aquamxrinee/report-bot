@@ -2,7 +2,7 @@
 """
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
-Полная версия с главным меню и кнопкой "Назад".
+Полная версия с инлайн-меню и кнопкой "Назад".
 """
 
 import os
@@ -17,7 +17,7 @@ from pathlib import Path
 import pandas as pd
 import openpyxl
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     filters, ContextTypes, CallbackQueryHandler
@@ -460,21 +460,23 @@ class ReportProcessor:
         ws.sheet_view.calcMode = 'manual'
         wb.save(template_path)
 
-# ===== ГЛАВНОЕ МЕНЮ =====
+# ===== ГЛАВНОЕ МЕНЮ (инлайн) =====
 def get_main_menu():
     keyboard = [
-        [KeyboardButton("📊 Статистика"), KeyboardButton("📂 История")],
-        [KeyboardButton("📦 Артикулы"), KeyboardButton("🗑️ Удалить отчёт")],
-        [KeyboardButton("❓ Помощь")]
+        [InlineKeyboardButton("📊 Статистика", callback_data="menu_stats")],
+        [InlineKeyboardButton("📂 История", callback_data="menu_history")],
+        [InlineKeyboardButton("📦 Артикулы", callback_data="menu_articles")],
+        [InlineKeyboardButton("🗑️ Удалить отчёт", callback_data="menu_delete")],
+        [InlineKeyboardButton("❓ Помощь", callback_data="menu_help")]
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    return InlineKeyboardMarkup(keyboard)
 
 # ===== КОМАНДЫ БОТА =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот для обработки еженедельных отчетов WB.\n\n"
         "📤 Отправь файлы с 'осн' и 'вык' в названии — я автоматически их обработаю.\n"
-        "📊 Используй кнопки меню для быстрого доступа к командам.",
+        "📊 Используй меню ниже для быстрого доступа к командам.",
         reply_markup=get_main_menu()
     )
 
@@ -494,7 +496,547 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_menu()
     )
 
-# === ОБРАБОТКА ФАЙЛОВ ===
+# === ОБРАБОТЧИКИ МЕНЮ (инлайн) ===
+async def menu_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    reports, total = get_all_reports()
+    if not reports:
+        text = "📭 Нет данных."
+    else:
+        text = f"📊 Всего отчетов: {total}. Используйте /history для деталей."
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    ]))
+
+async def menu_history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data['history_page'] = 0
+    await show_history_page(query, context, page=0)
+
+async def menu_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await articles_full_cmd(update, context, is_callback=True)
+
+async def menu_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await delete_cmd(update, context, is_callback=True)
+
+async def menu_help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await help_cmd(update, context)
+
+# === ОБРАБОТЧИК "НАЗАД В МЕНЮ" ===
+async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "🏠 Главное меню. Выберите действие:",
+        reply_markup=get_main_menu()
+    )
+
+# === ИСТОРИЯ С ПАГИНАЦИЕЙ (адаптирована для callback) ===
+async def show_history_page(query, context, page):
+    reports, total = get_all_reports(page=page, per_page=10)
+    if not reports:
+        await query.edit_message_text("📭 История пуста.", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        ]))
+        return
+
+    total_pages = (total + 9) // 10 if total > 0 else 1
+    current_page = page
+
+    min_date, max_date = get_report_date_range()
+    msg = f"📊 **Всего отчетов: {total}**\n"
+    if min_date and max_date:
+        msg += f"📅 Данные доступны с **{min_date}** по **{max_date}**\n"
+    msg += f"\n*Страница {current_page+1} из {total_pages}*\n"
+
+    keyboard = []
+    for r in reports:
+        report_id, file_name, date_period, start_date, end_date, processed_at = r
+        short_name = file_name if len(file_name) <= 25 else file_name[:22] + "..."
+        button_text = f"📄 {short_name} ({date_period})"
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"history_report_{report_id}")])
+
+    nav_buttons = []
+    if current_page > 0:
+        nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"history_page_{current_page-1}"))
+    if current_page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"history_page_{current_page+1}"))
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+
+    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data.startswith("history_page_"):
+        page = int(data.split("_")[2])
+        await show_history_page(query, context, page)
+
+# === ПЕРЕХОД К ОТЧЁТУ (callback) ===
+async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data.startswith("history_report_"):
+        report_id = int(data.split("_")[2])
+        await resend_report(query, context, report_id)
+
+async def resend_report(query, context, report_id):
+    values = get_report_values(report_id)
+    metrics = get_report_metrics(report_id)
+    if not values or not metrics:
+        await query.edit_message_text("❌ Данные отчёта не найдены.", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        ]))
+        return
+
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('SELECT file_name, date_period FROM reports WHERE id = ?', (report_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        await query.edit_message_text("❌ Отчёт не найден.", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        ]))
+        return
+    file_name, date_period = row
+
+    template_path = Path("/app/шаблон.xlsx")
+    if not template_path.exists():
+        for p in [Path("шаблон.xlsx"), TEMP_DIR / "template.xlsx"]:
+            if p.exists():
+                template_path = p
+                break
+    if not template_path.exists():
+        wb = openpyxl.Workbook()
+        template_path = TEMP_DIR / "template.xlsx"
+        wb.save(template_path)
+
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    out_file = TEMP_DIR / f"шаблон_{timestamp}.xlsx"
+    shutil.copy(template_path, out_file)
+
+    wb = openpyxl.load_workbook(out_file, data_only=False, keep_links=False, keep_vba=False)
+    ws = wb.active
+    for cell, val in values.items():
+        ws[cell] = val
+        if isinstance(val, float) and val != int(val):
+            ws[cell].number_format = '0.00'
+    ws.sheet_view.calcMode = 'manual'
+    wb.save(out_file)
+
+    # Отправляем файл
+    with open(out_file, 'rb') as f:
+        await query.message.reply_document(f, caption="✅ Шаблон восстановлен")
+
+    msg = (
+        "📊 **Статистика отчёта**\n\n"
+        f"📄 **{file_name}**\n"
+        f"📅 Период: {date_period}\n\n"
+        f"💳 **Средний эквайринг:** {metrics.get('avg_acquiring', 0):,.2f} %\n"
+        f"📊 **Медианный эквайринг:** {metrics.get('median_acquiring', 0):,.2f} %\n\n"
+        f"💰 **ВБшный оборот общий:** {metrics.get('wb_total', 0):,.2f} ₽\n"
+        f"   🐱 ЦАП: {metrics.get('wb_carp', 0):,.2f} ₽\n"
+        f"   ⚔️ Харакири: {metrics.get('wb_hara', 0):,.2f} ₽\n\n"
+        f"📦 **Заказы (осн):** ЦАП {metrics.get('carp_orders', 0)} шт., Харакири {metrics.get('hara_orders', 0)} шт.\n"
+        f"📦 **Заказы (вык):** ЦАП {metrics.get('carp_vyk_orders', 0)} шт., Харакири {metrics.get('hara_vyk_orders', 0)} шт.\n\n"
+        f"💸 **К выводу ЦАП:** {metrics.get('k_vyvodu_carp', 0):,.2f} ₽\n"
+        f"💸 **К выводу Харакири:** {metrics.get('k_vyvodu_hara', 0):,.2f} ₽\n"
+        f"💸 **Итого к выводу:** {metrics.get('k_vyvodu_total', 0):,.2f} ₽\n"
+        f"💸 **Харакири (с налогом):** {metrics.get('b38', 0):,.2f} ₽\n\n"
+        f"📢 **Реклама:** ЦАП {metrics.get('reklama_carp', 0):,.2f} ₽, Харакири {metrics.get('reklama_hara', 0):,.2f} ₽\n"
+        f"⚠️ **Штрафы:** {metrics.get('shtrafy', 0):,.2f} ₽\n"
+        f"🧾 **Налог общий:** {metrics.get('nalog', 0):,.2f} ₽\n"
+    )
+    await query.message.reply_text(msg, parse_mode='Markdown')
+
+    articles = get_article_stats_for_report(report_id)
+    if articles:
+        context.user_data['articles_data'] = articles
+        context.user_data['current_period'] = date_period
+        context.user_data['current_report_id'] = report_id
+        keyboard = [
+            [InlineKeyboardButton("📦 Детали по артикулам", callback_data="show_articles")],
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        ]
+        await query.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await query.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        ]))
+
+    try:
+        os.remove(out_file)
+    except:
+        pass
+
+    # Удаляем предыдущее сообщение с историей (чтобы не засорять чат)
+    try:
+        await query.delete_message()
+    except:
+        pass
+
+# === СТАТИСТИКА И УДАЛЕНИЕ (переделаны для callback) ===
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reports, total = get_all_reports()
+    if not reports:
+        text = "📭 Нет данных."
+    else:
+        text = f"📊 Всего отчетов: {total}. Используйте /history для деталей."
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        ]))
+    else:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        ]))
+
+async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, is_callback=False):
+    reports, total = get_all_reports()
+    if not reports:
+        text = "📭 История пуста."
+        if is_callback:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+            ]))
+        else:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+            ]))
+        return
+
+    keyboard = []
+    for r in reports:
+        report_id, file_name, date_period, start_date, end_date, processed_at = r
+        keyboard.append([InlineKeyboardButton(f"❌ {file_name} ({date_period})", callback_data=f"del_{report_id}")])
+    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="back_to_menu")])
+    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if is_callback:
+        await update.callback_query.edit_message_text("🗑️ Выберите отчет для удаления:", reply_markup=reply_markup)
+    else:
+        await update.message.reply_text("🗑️ Выберите отчет для удаления:", reply_markup=reply_markup)
+
+async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data.startswith("del_"):
+        rid = int(data.split("_")[1])
+        if delete_report(rid):
+            await query.edit_message_text("✅ Отчет удален.", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+            ]))
+        else:
+            await query.edit_message_text("❌ Ошибка удаления.", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+            ]))
+
+# === АРТИКУЛЫ (адаптированы) ===
+async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, is_callback=False):
+    report_id = context.user_data.get('current_report_id')
+    if not report_id:
+        text = "❌ Нет данных. Сначала загрузите отчет."
+        if is_callback:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+            ]))
+        else:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+            ]))
+        return
+
+    current_articles = get_article_stats_for_report(report_id)
+    if not current_articles:
+        text = "❌ Нет данных по артикулам."
+        if is_callback:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+            ]))
+        else:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+            ]))
+        return
+
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute("SELECT start_date FROM reports WHERE id = ?", (report_id,))
+    row = cursor.fetchone()
+    prev_start_date = row[0] if row else None
+    conn.close()
+
+    previous_articles = {}
+    if prev_start_date:
+        prev_reports = get_previous_reports(prev_start_date, limit=1)
+        if prev_reports:
+            prev_id = prev_reports[0][0]
+            previous_articles = get_article_stats_for_report(prev_id)
+
+    all_items = []
+    for art, data in current_articles.items():
+        cur_q = data['quantity']
+        cur_r = data['revenue']
+        prev_q = previous_articles.get(art, {}).get('quantity', 0)
+        prev_r = previous_articles.get(art, {}).get('revenue', 0)
+        change_q = cur_q - prev_q
+        change_r_percent = ((cur_r - prev_r) / prev_r * 100) if prev_r else 0 if cur_q == 0 else float('inf')
+        all_items.append((art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r))
+
+    all_items.sort(key=lambda x: x[2], reverse=True)
+    period = context.user_data.get('current_period', '')
+
+    msg = f"📦 **Все артикулы** ({period})\n\n"
+    for art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r in all_items:
+        if prev_q == 0 and cur_q == 0:
+            delta_str = "нет данных"
+        elif prev_q == 0:
+            delta_str = f"🆕 +{cur_q} шт."
+        else:
+            arrow = "📈" if change_q > 0 else "📉" if change_q < 0 else "➖"
+            delta_str = f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
+        msg += f"**{art}**\n   Продажи: {cur_q} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
+        if len(msg) > 4000:
+            msg += "\n… (сообщение обрезано)"
+            break
+
+    keyboard = [
+        [InlineKeyboardButton("📈 Топ-10 по росту", callback_data="growth")],
+        [InlineKeyboardButton("📉 Топ-10 по падению", callback_data="decline")],
+        [InlineKeyboardButton("📊 Детальное сравнение", callback_data="compare_articles")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if is_callback:
+        await update.callback_query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
+
+async def articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    report_id = context.user_data.get('current_report_id')
+    if not report_id:
+        await query.edit_message_text("❌ Нет данных по артикулам для текущего отчета.")
+        return
+
+    current_articles = get_article_stats_for_report(report_id)
+    if not current_articles:
+        await query.edit_message_text("❌ Нет данных по артикулам.")
+        return
+
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute("SELECT start_date FROM reports WHERE id = ?", (report_id,))
+    row = cursor.fetchone()
+    prev_start_date = row[0] if row else None
+    conn.close()
+
+    previous_articles = {}
+    if prev_start_date:
+        prev_reports = get_previous_reports(prev_start_date, limit=1)
+        if prev_reports:
+            prev_id = prev_reports[0][0]
+            previous_articles = get_article_stats_for_report(prev_id)
+
+    all_items = []
+    for art, data in current_articles.items():
+        cur_q = data['quantity']
+        cur_r = data['revenue']
+        prev_q = previous_articles.get(art, {}).get('quantity', 0)
+        prev_r = previous_articles.get(art, {}).get('revenue', 0)
+        change_q = cur_q - prev_q
+        change_r_percent = ((cur_r - prev_r) / prev_r * 100) if prev_r else 0 if cur_q == 0 else float('inf')
+        all_items.append((art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r))
+
+    all_items.sort(key=lambda x: x[2], reverse=True)
+    top = all_items[:10]
+    period = context.user_data.get('current_period', '')
+
+    msg = f"📦 **Топ-10 артикулов** ({period})\n\n"
+    for art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r in top:
+        if prev_q == 0 and cur_q == 0:
+            delta_str = "нет данных"
+        elif prev_q == 0:
+            delta_str = f"🆕 +{cur_q} шт."
+        else:
+            arrow = "📈" if change_q > 0 else "📉" if change_q < 0 else "➖"
+            delta_str = f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
+        msg += f"**{art}**\n   Продажи: {cur_q} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
+
+    if len(all_items) > 10:
+        msg += f"… и еще {len(all_items)-10}. Используйте /articles для полного списка."
+
+    keyboard = [
+        [InlineKeyboardButton("📈 Топ-10 по росту", callback_data="growth")],
+        [InlineKeyboardButton("📉 Топ-10 по падению", callback_data="decline")],
+        [InlineKeyboardButton("📊 Детальное сравнение", callback_data="compare_articles")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    ]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+# === ОБРАБОТЧИКИ РОСТА И ПАДЕНИЯ ===
+async def growth_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _show_sorted_articles(update, context, reverse=True)
+
+async def decline_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _show_sorted_articles(update, context, reverse=False)
+
+async def _show_sorted_articles(update, context, reverse=True):
+    query = update.callback_query
+    await query.answer()
+    report_id = context.user_data.get('current_report_id')
+    if not report_id:
+        await query.edit_message_text("❌ Нет данных для текущего отчета.")
+        return
+
+    current_articles = get_article_stats_for_report(report_id)
+    if not current_articles:
+        await query.edit_message_text("❌ Нет данных по артикулам.")
+        return
+
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute("SELECT start_date FROM reports WHERE id = ?", (report_id,))
+    row = cursor.fetchone()
+    prev_start_date = row[0] if row else None
+    conn.close()
+
+    previous_articles = {}
+    if prev_start_date:
+        prev_reports = get_previous_reports(prev_start_date, limit=1)
+        if prev_reports:
+            prev_id = prev_reports[0][0]
+            previous_articles = get_article_stats_for_report(prev_id)
+
+    items = []
+    for art, data in current_articles.items():
+        cur_q = data['quantity']
+        cur_r = data['revenue']
+        prev_q = previous_articles.get(art, {}).get('quantity', 0)
+        prev_r = previous_articles.get(art, {}).get('revenue', 0)
+        if prev_q == 0 and cur_q == 0:
+            continue
+        change_q = cur_q - prev_q
+        change_r_percent = ((cur_r - prev_r) / prev_r * 100) if prev_r else 0 if cur_q == 0 else float('inf')
+        items.append((art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r))
+
+    items.sort(key=lambda x: x[4], reverse=reverse)
+    top = items[:10]
+    period = context.user_data.get('current_period', '')
+
+    label = "росту" if reverse else "падению"
+    msg = f"📈 **Топ-10 по {label}** ({period})\n\n"
+    for art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r in top:
+        if prev_q == 0:
+            delta_str = f"🆕 +{cur_q} шт."
+        else:
+            arrow = "📈" if change_q > 0 else "📉" if change_q < 0 else "➖"
+            delta_str = f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
+        msg += f"**{art}**\n   Продажи: {cur_q} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
+
+    if not top:
+        msg = "Нет данных для отображения."
+
+    keyboard = [
+        [InlineKeyboardButton("◀️ Назад к списку", callback_data="show_articles")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    ]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+# === ДЕТАЛЬНОЕ СРАВНЕНИЕ ===
+async def compare_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    report_id = context.user_data.get('current_report_id')
+    if not report_id:
+        await query.edit_message_text("❌ Нет данных для сравнения.")
+        return
+
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute("SELECT start_date FROM reports WHERE id = ?", (report_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        await query.edit_message_text("❌ Ошибка: отчёт не найден.")
+        return
+    current_start = row[0]
+    conn.close()
+
+    prev_reports = get_previous_reports(current_start, limit=12)
+    if not prev_reports:
+        await query.edit_message_text("❌ Нет предыдущих отчетов для сравнения.")
+        return
+
+    prev_ids = [r[0] for r in prev_reports]
+    current_articles = get_article_stats_for_report(report_id)
+    if not current_articles:
+        await query.edit_message_text("❌ Нет данных по артикулам в текущем отчете.")
+        return
+
+    periods = {
+        '2 недели': prev_ids[:2],
+        'месяц': prev_ids[:4],
+        'квартал': prev_ids[:12]
+    }
+
+    msg = f"📊 **Сравнение со средними показателями**\n(период: {context.user_data.get('current_period', '')})\n\n"
+
+    for period_name, ids in periods.items():
+        if not ids:
+            msg += f"**{period_name}:** Нет данных\n\n"
+            continue
+        all_articles = {}
+        for pid in ids:
+            arts = get_article_stats_for_report(pid)
+            for art, data in arts.items():
+                if art not in all_articles:
+                    all_articles[art] = {'qty': [], 'rev': []}
+                all_articles[art]['qty'].append(data['quantity'])
+                all_articles[art]['rev'].append(data['revenue'])
+        avg_articles = {}
+        for art, vals in all_articles.items():
+            avg_articles[art] = {
+                'avg_quantity': sum(vals['qty']) / len(vals['qty']),
+                'avg_revenue': sum(vals['rev']) / len(vals['rev'])
+            }
+        msg += f"**{period_name}** (среднее по {len(ids)} отчетам):\n"
+        top_cur = sorted(current_articles.items(), key=lambda x: x[1]['revenue'], reverse=True)[:5]
+        for art, data in top_cur:
+            cur_q = data['quantity']
+            cur_r = data['revenue']
+            if art in avg_articles:
+                avg_q = avg_articles[art]['avg_quantity']
+                avg_r = avg_articles[art]['avg_revenue']
+                change_q = ((cur_q - avg_q) / avg_q * 100) if avg_q else 0
+                change_r = ((cur_r - avg_r) / avg_r * 100) if avg_r else 0
+                msg += f"• {art}: {cur_q} шт. (Δ {change_q:+.1f}%) | {cur_r:,.2f} ₽ (Δ {change_r:+.1f}%)\n"
+            else:
+                msg += f"• {art}: {cur_q} шт. (новинка) | {cur_r:,.2f} ₽\n"
+        msg += "\n"
+
+    keyboard = [
+        [InlineKeyboardButton("◀️ Назад к списку", callback_data="show_articles")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    ]
+    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+# === ОБРАБОТКА ФАЙЛОВ (без изменений) ===
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         doc = update.message.document
@@ -735,510 +1277,12 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Критическая ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-# === ИСТОРИЯ С ПАГИНАЦИЕЙ ===
-async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data['history_page'] = 0
-    await show_history_page(update, context, page=0)
-
-async def show_history_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
-    reports, total = get_all_reports(page=page, per_page=10)
-    if not reports:
-        await update.message.reply_text("📭 История пуста.", reply_markup=get_main_menu())
-        return
-
-    total_pages = (total + 9) // 10 if total > 0 else 1
-    current_page = page
-
-    min_date, max_date = get_report_date_range()
-    date_range_str = f"{min_date} — {max_date}" if min_date and max_date else "данные отсутствуют"
-
-    msg = f"📊 **Всего отчетов: {total}**\n"
-    if min_date and max_date:
-        msg += f"📅 Данные доступны с **{min_date}** по **{max_date}**\n"
-    msg += f"\n*Страница {current_page+1} из {total_pages}*\n"
-
-    keyboard = []
-    for r in reports:
-        report_id, file_name, date_period, start_date, end_date, processed_at = r
-        short_name = file_name if len(file_name) <= 25 else file_name[:22] + "..."
-        button_text = f"📄 {short_name} ({date_period})"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"history_report_{report_id}")])
-
-    nav_buttons = []
-    if current_page > 0:
-        nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"history_page_{current_page-1}"))
-    if current_page < total_pages - 1:
-        nav_buttons.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"history_page_{current_page+1}"))
-    if nav_buttons:
-        keyboard.append(nav_buttons)
-
-    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-    await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
-
-async def show_history_page_from_query(query, context, page):
-    reports, total = get_all_reports(page=page, per_page=10)
-    if not reports:
-        await query.edit_message_text("📭 История пуста.")
-        return
-
-    total_pages = (total + 9) // 10 if total > 0 else 1
-    current_page = page
-
-    min_date, max_date = get_report_date_range()
-    msg = f"📊 **Всего отчетов: {total}**\n"
-    if min_date and max_date:
-        msg += f"📅 Данные доступны с **{min_date}** по **{max_date}**\n"
-    msg += f"\n*Страница {current_page+1} из {total_pages}*\n"
-
-    keyboard = []
-    for r in reports:
-        report_id, file_name, date_period, start_date, end_date, processed_at = r
-        short_name = file_name if len(file_name) <= 25 else file_name[:22] + "..."
-        button_text = f"📄 {short_name} ({date_period})"
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"history_report_{report_id}")])
-
-    nav_buttons = []
-    if current_page > 0:
-        nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"history_page_{current_page-1}"))
-    if current_page < total_pages - 1:
-        nav_buttons.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"history_page_{current_page+1}"))
-    if nav_buttons:
-        keyboard.append(nav_buttons)
-
-    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-    await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
-
-async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data.startswith("history_page_"):
-        page = int(data.split("_")[2])
-        await show_history_page_from_query(query, context, page)
-
-async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data.startswith("history_report_"):
-        report_id = int(data.split("_")[2])
-        await resend_report(update, context, report_id)
-
-async def resend_report(update: Update, context: ContextTypes.DEFAULT_TYPE, report_id: int):
-    values = get_report_values(report_id)
-    metrics = get_report_metrics(report_id)
-    if not values or not metrics:
-        await update.effective_message.reply_text("❌ Данные отчёта не найдены.", reply_markup=get_main_menu())
-        return
-
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('SELECT file_name, date_period FROM reports WHERE id = ?', (report_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if not row:
-        await update.effective_message.reply_text("❌ Отчёт не найден.", reply_markup=get_main_menu())
-        return
-    file_name, date_period = row
-
-    template_path = Path("/app/шаблон.xlsx")
-    if not template_path.exists():
-        for p in [Path("шаблон.xlsx"), TEMP_DIR / "template.xlsx"]:
-            if p.exists():
-                template_path = p
-                break
-    if not template_path.exists():
-        wb = openpyxl.Workbook()
-        template_path = TEMP_DIR / "template.xlsx"
-        wb.save(template_path)
-
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    out_file = TEMP_DIR / f"шаблон_{timestamp}.xlsx"
-    shutil.copy(template_path, out_file)
-
-    wb = openpyxl.load_workbook(out_file, data_only=False, keep_links=False, keep_vba=False)
-    ws = wb.active
-    for cell, val in values.items():
-        ws[cell] = val
-        if isinstance(val, float) and val != int(val):
-            ws[cell].number_format = '0.00'
-    ws.sheet_view.calcMode = 'manual'
-    wb.save(out_file)
-
-    with open(out_file, 'rb') as f:
-        await update.effective_message.reply_document(f, caption="✅ Шаблон восстановлен")
-
-    msg = (
-        "📊 **Статистика отчёта**\n\n"
-        f"📄 **{file_name}**\n"
-        f"📅 Период: {date_period}\n\n"
-        f"💳 **Средний эквайринг:** {metrics.get('avg_acquiring', 0):,.2f} %\n"
-        f"📊 **Медианный эквайринг:** {metrics.get('median_acquiring', 0):,.2f} %\n\n"
-        f"💰 **ВБшный оборот общий:** {metrics.get('wb_total', 0):,.2f} ₽\n"
-        f"   🐱 ЦАП: {metrics.get('wb_carp', 0):,.2f} ₽\n"
-        f"   ⚔️ Харакири: {metrics.get('wb_hara', 0):,.2f} ₽\n\n"
-        f"📦 **Заказы (осн):** ЦАП {metrics.get('carp_orders', 0)} шт., Харакири {metrics.get('hara_orders', 0)} шт.\n"
-        f"📦 **Заказы (вык):** ЦАП {metrics.get('carp_vyk_orders', 0)} шт., Харакири {metrics.get('hara_vyk_orders', 0)} шт.\n\n"
-        f"💸 **К выводу ЦАП:** {metrics.get('k_vyvodu_carp', 0):,.2f} ₽\n"
-        f"💸 **К выводу Харакири:** {metrics.get('k_vyvodu_hara', 0):,.2f} ₽\n"
-        f"💸 **Итого к выводу:** {metrics.get('k_vyvodu_total', 0):,.2f} ₽\n"
-        f"💸 **Харакири (с налогом):** {metrics.get('b38', 0):,.2f} ₽\n\n"
-        f"📢 **Реклама:** ЦАП {metrics.get('reklama_carp', 0):,.2f} ₽, Харакири {metrics.get('reklama_hara', 0):,.2f} ₽\n"
-        f"⚠️ **Штрафы:** {metrics.get('shtrafy', 0):,.2f} ₽\n"
-        f"🧾 **Налог общий:** {metrics.get('nalog', 0):,.2f} ₽\n"
-    )
-    await update.effective_message.reply_text(msg, parse_mode='Markdown')
-
-    articles = get_article_stats_for_report(report_id)
-    if articles:
-        context.user_data['articles_data'] = articles
-        context.user_data['current_period'] = date_period
-        context.user_data['current_report_id'] = report_id
-        keyboard = [
-            [InlineKeyboardButton("📦 Детали по артикулам", callback_data="show_articles")],
-            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-        ]
-        await update.effective_message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-    try:
-        os.remove(out_file)
-    except:
-        pass
-
-# === СТАТИСТИКА И УДАЛЕНИЕ ===
-async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reports, total = get_all_reports()
-    if not reports:
-        await update.message.reply_text("📭 Нет данных.", reply_markup=get_main_menu())
-        return
-    await update.message.reply_text(f"📊 Всего отчетов: {total}. Используйте /history для деталей.", reply_markup=get_main_menu())
-
-async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reports, total = get_all_reports()
-    if not reports:
-        await update.message.reply_text("📭 История пуста.", reply_markup=get_main_menu())
-        return
-    keyboard = []
-    for r in reports:
-        report_id, file_name, date_period, start_date, end_date, processed_at = r
-        keyboard.append([InlineKeyboardButton(f"❌ {file_name} ({date_period})", callback_data=f"del_{report_id}")])
-    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="del_cancel")])
-    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
-    await update.message.reply_text("🗑️ Выберите отчет для удаления:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data == "del_cancel":
-        await query.edit_message_text("✅ Отменено.")
-        # Показываем меню
-        await query.message.reply_text("Выберите действие:", reply_markup=get_main_menu())
-        return
-    if data.startswith("del_"):
-        rid = int(data.split("_")[1])
-        if delete_report(rid):
-            await query.edit_message_text(f"✅ Отчет #{rid} удален.")
-        else:
-            await query.edit_message_text("❌ Ошибка удаления.")
-        # После удаления показываем меню
-        await query.message.reply_text("Выберите действие:", reply_markup=get_main_menu())
-
-# === АРТИКУЛЫ (сравнение с прошлой неделей, рост/падение) ===
-async def articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    report_id = context.user_data.get('current_report_id')
-    if not report_id:
-        await query.edit_message_text("❌ Нет данных по артикулам для текущего отчета.")
-        return
-
-    current_articles = get_article_stats_for_report(report_id)
-    if not current_articles:
-        await query.edit_message_text("❌ Нет данных по артикулам.")
-        return
-
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("SELECT start_date FROM reports WHERE id = ?", (report_id,))
-    row = cursor.fetchone()
-    prev_start_date = row[0] if row else None
-    conn.close()
-
-    previous_articles = {}
-    if prev_start_date:
-        prev_reports = get_previous_reports(prev_start_date, limit=1)
-        if prev_reports:
-            prev_id = prev_reports[0][0]
-            previous_articles = get_article_stats_for_report(prev_id)
-
-    all_items = []
-    for art, data in current_articles.items():
-        cur_q = data['quantity']
-        cur_r = data['revenue']
-        prev_q = previous_articles.get(art, {}).get('quantity', 0)
-        prev_r = previous_articles.get(art, {}).get('revenue', 0)
-        change_q = cur_q - prev_q
-        change_r_percent = ((cur_r - prev_r) / prev_r * 100) if prev_r else 0 if cur_q == 0 else float('inf')
-        all_items.append((art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r))
-
-    all_items.sort(key=lambda x: x[2], reverse=True)
-    top = all_items[:10]
-    period = context.user_data.get('current_period', '')
-
-    msg = f"📦 **Топ-10 артикулов** ({period})\n\n"
-    for art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r in top:
-        if prev_q == 0 and cur_q == 0:
-            delta_str = "нет данных"
-        elif prev_q == 0:
-            delta_str = f"🆕 +{cur_q} шт."
-        else:
-            arrow = "📈" if change_q > 0 else "📉" if change_q < 0 else "➖"
-            delta_str = f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
-        msg += f"**{art}**\n   Продажи: {cur_q} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
-
-    if len(all_items) > 10:
-        msg += f"… и еще {len(all_items)-10}. Используйте /articles для полного списка."
-
-    keyboard = [
-        [InlineKeyboardButton("📈 Топ-10 по росту", callback_data="growth")],
-        [InlineKeyboardButton("📉 Топ-10 по падению", callback_data="decline")],
-        [InlineKeyboardButton("📊 Детальное сравнение", callback_data="compare_articles")],
-        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-    ]
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    report_id = context.user_data.get('current_report_id')
-    if not report_id:
-        await update.message.reply_text("❌ Нет данных. Сначала загрузите отчет.", reply_markup=get_main_menu())
-        return
-
-    current_articles = get_article_stats_for_report(report_id)
-    if not current_articles:
-        await update.message.reply_text("❌ Нет данных по артикулам.", reply_markup=get_main_menu())
-        return
-
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("SELECT start_date FROM reports WHERE id = ?", (report_id,))
-    row = cursor.fetchone()
-    prev_start_date = row[0] if row else None
-    conn.close()
-
-    previous_articles = {}
-    if prev_start_date:
-        prev_reports = get_previous_reports(prev_start_date, limit=1)
-        if prev_reports:
-            prev_id = prev_reports[0][0]
-            previous_articles = get_article_stats_for_report(prev_id)
-
-    all_items = []
-    for art, data in current_articles.items():
-        cur_q = data['quantity']
-        cur_r = data['revenue']
-        prev_q = previous_articles.get(art, {}).get('quantity', 0)
-        prev_r = previous_articles.get(art, {}).get('revenue', 0)
-        change_q = cur_q - prev_q
-        change_r_percent = ((cur_r - prev_r) / prev_r * 100) if prev_r else 0 if cur_q == 0 else float('inf')
-        all_items.append((art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r))
-
-    all_items.sort(key=lambda x: x[2], reverse=True)
-    period = context.user_data.get('current_period', '')
-
-    msg = f"📦 **Все артикулы** ({period})\n\n"
-    for art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r in all_items:
-        if prev_q == 0 and cur_q == 0:
-            delta_str = "нет данных"
-        elif prev_q == 0:
-            delta_str = f"🆕 +{cur_q} шт."
-        else:
-            arrow = "📈" if change_q > 0 else "📉" if change_q < 0 else "➖"
-            delta_str = f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
-        msg += f"**{art}**\n   Продажи: {cur_q} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
-        if len(msg) > 4000:
-            msg += "\n… (сообщение обрезано)"
-            break
-
-    keyboard = [
-        [InlineKeyboardButton("📈 Топ-10 по росту", callback_data="growth")],
-        [InlineKeyboardButton("📉 Топ-10 по падению", callback_data="decline")],
-        [InlineKeyboardButton("📊 Детальное сравнение", callback_data="compare_articles")],
-        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-    ]
-    await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-async def growth_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _show_sorted_articles(update, context, reverse=True)
-
-async def decline_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _show_sorted_articles(update, context, reverse=False)
-
-async def _show_sorted_articles(update, context, reverse=True):
-    query = update.callback_query
-    await query.answer()
-    report_id = context.user_data.get('current_report_id')
-    if not report_id:
-        await query.edit_message_text("❌ Нет данных для текущего отчета.")
-        return
-
-    current_articles = get_article_stats_for_report(report_id)
-    if not current_articles:
-        await query.edit_message_text("❌ Нет данных по артикулам.")
-        return
-
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("SELECT start_date FROM reports WHERE id = ?", (report_id,))
-    row = cursor.fetchone()
-    prev_start_date = row[0] if row else None
-    conn.close()
-
-    previous_articles = {}
-    if prev_start_date:
-        prev_reports = get_previous_reports(prev_start_date, limit=1)
-        if prev_reports:
-            prev_id = prev_reports[0][0]
-            previous_articles = get_article_stats_for_report(prev_id)
-
-    items = []
-    for art, data in current_articles.items():
-        cur_q = data['quantity']
-        cur_r = data['revenue']
-        prev_q = previous_articles.get(art, {}).get('quantity', 0)
-        prev_r = previous_articles.get(art, {}).get('revenue', 0)
-        if prev_q == 0 and cur_q == 0:
-            continue
-        change_q = cur_q - prev_q
-        change_r_percent = ((cur_r - prev_r) / prev_r * 100) if prev_r else 0 if cur_q == 0 else float('inf')
-        items.append((art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r))
-
-    items.sort(key=lambda x: x[4], reverse=reverse)
-    top = items[:10]
-    period = context.user_data.get('current_period', '')
-
-    label = "росту" if reverse else "падению"
-    msg = f"📈 **Топ-10 по {label}** ({period})\n\n"
-    for art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r in top:
-        if prev_q == 0:
-            delta_str = f"🆕 +{cur_q} шт."
-        else:
-            arrow = "📈" if change_q > 0 else "📉" if change_q < 0 else "➖"
-            delta_str = f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
-        msg += f"**{art}**\n   Продажи: {cur_q} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
-
-    if not top:
-        msg = "Нет данных для отображения."
-
-    keyboard = [
-        [InlineKeyboardButton("◀️ Назад к списку", callback_data="show_articles")],
-        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-    ]
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-async def compare_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    report_id = context.user_data.get('current_report_id')
-    if not report_id:
-        await query.edit_message_text("❌ Нет данных для сравнения.")
-        return
-
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("SELECT start_date FROM reports WHERE id = ?", (report_id,))
-    row = cursor.fetchone()
-    if not row:
-        conn.close()
-        await query.edit_message_text("❌ Ошибка: отчёт не найден.")
-        return
-    current_start = row[0]
-    conn.close()
-
-    prev_reports = get_previous_reports(current_start, limit=12)
-    if not prev_reports:
-        await query.edit_message_text("❌ Нет предыдущих отчетов для сравнения.")
-        return
-
-    prev_ids = [r[0] for r in prev_reports]
-    current_articles = get_article_stats_for_report(report_id)
-    if not current_articles:
-        await query.edit_message_text("❌ Нет данных по артикулам в текущем отчете.")
-        return
-
-    periods = {
-        '2 недели': prev_ids[:2],
-        'месяц': prev_ids[:4],
-        'квартал': prev_ids[:12]
-    }
-
-    msg = f"📊 **Сравнение со средними показателями**\n(период: {context.user_data.get('current_period', '')})\n\n"
-
-    for period_name, ids in periods.items():
-        if not ids:
-            msg += f"**{period_name}:** Нет данных\n\n"
-            continue
-        all_articles = {}
-        for pid in ids:
-            arts = get_article_stats_for_report(pid)
-            for art, data in arts.items():
-                if art not in all_articles:
-                    all_articles[art] = {'qty': [], 'rev': []}
-                all_articles[art]['qty'].append(data['quantity'])
-                all_articles[art]['rev'].append(data['revenue'])
-        avg_articles = {}
-        for art, vals in all_articles.items():
-            avg_articles[art] = {
-                'avg_quantity': sum(vals['qty']) / len(vals['qty']),
-                'avg_revenue': sum(vals['rev']) / len(vals['rev'])
-            }
-        msg += f"**{period_name}** (среднее по {len(ids)} отчетам):\n"
-        top_cur = sorted(current_articles.items(), key=lambda x: x[1]['revenue'], reverse=True)[:5]
-        for art, data in top_cur:
-            cur_q = data['quantity']
-            cur_r = data['revenue']
-            if art in avg_articles:
-                avg_q = avg_articles[art]['avg_quantity']
-                avg_r = avg_articles[art]['avg_revenue']
-                change_q = ((cur_q - avg_q) / avg_q * 100) if avg_q else 0
-                change_r = ((cur_r - avg_r) / avg_r * 100) if avg_r else 0
-                msg += f"• {art}: {cur_q} шт. (Δ {change_q:+.1f}%) | {cur_r:,.2f} ₽ (Δ {change_r:+.1f}%)\n"
-            else:
-                msg += f"• {art}: {cur_q} шт. (новинка) | {cur_r:,.2f} ₽\n"
-        msg += "\n"
-
-    keyboard = [
-        [InlineKeyboardButton("◀️ Назад к списку", callback_data="show_articles")],
-        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-    ]
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-# === ОБРАБОТЧИК "НАЗАД В МЕНЮ" ===
-async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "Вы вернулись в главное меню. Выберите действие:",
-        reply_markup=get_main_menu()
-    )
-
-# === ОБРАБОТЧИК ТЕКСТОВЫХ КОМАНД ИЗ МЕНЮ ===
+# ===== ОБРАБОТЧИК ТЕКСТА (для ручных команд) =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if text == "📊 Статистика":
-        await stats_cmd(update, context)
-    elif text == "📂 История":
-        await history_cmd(update, context)
-    elif text == "📦 Артикулы":
-        await articles_full_cmd(update, context)
-    elif text == "🗑️ Удалить отчёт":
-        await delete_cmd(update, context)
-    elif text == "❓ Помощь":
-        await help_cmd(update, context)
-    else:
-        await update.message.reply_text("Используйте кнопки меню или введите команду.")
+    if text.startswith('/'):
+        return  # обрабатывается командами
+    await update.message.reply_text("Используйте кнопки меню или команды.", reply_markup=get_main_menu())
 
 # ===== ЗАПУСК =====
 def main():
@@ -1264,20 +1308,31 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("osn", handle_osn))
     app.add_handler(CommandHandler("vyk", handle_vyk))
-    app.add_handler(CommandHandler("history", history_cmd))
+    app.add_handler(CommandHandler("history", history_cmd))  # пока оставим, но можно убрать
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("delete", delete_cmd))
     app.add_handler(CommandHandler("articles", articles_full_cmd))
 
+    # Callbacks для меню
+    app.add_handler(CallbackQueryHandler(menu_stats_callback, pattern="^menu_stats$"))
+    app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
+    app.add_handler(CallbackQueryHandler(menu_articles_callback, pattern="^menu_articles$"))
+    app.add_handler(CallbackQueryHandler(menu_delete_callback, pattern="^menu_delete$"))
+    app.add_handler(CallbackQueryHandler(menu_help_callback, pattern="^menu_help$"))
+    app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
+
+    # Callbacks для истории и удаления
     app.add_handler(CallbackQueryHandler(history_page_callback, pattern="^history_page_"))
     app.add_handler(CallbackQueryHandler(history_report_callback, pattern="^history_report_"))
+    app.add_handler(CallbackQueryHandler(delete_callback, pattern="^del_"))
+
+    # Callbacks для артикулов
     app.add_handler(CallbackQueryHandler(articles_callback, pattern="^show_articles$"))
     app.add_handler(CallbackQueryHandler(growth_callback, pattern="^growth$"))
     app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline$"))
     app.add_handler(CallbackQueryHandler(compare_articles_callback, pattern="^compare_articles$"))
-    app.add_handler(CallbackQueryHandler(delete_callback, pattern="^del_"))
-    app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
 
+    # Обработчики файлов и текста
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
