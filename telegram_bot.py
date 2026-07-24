@@ -2,7 +2,8 @@
 """
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
-Полная версия с инлайн-меню, историей, артикулами, аналитикой, удалением из истории.
+Полная версия с инлайн-меню, историей, артикулами, аналитикой, удалением из истории,
+а также с ежедневными новостными сводками по теме Wildberries (NewsAPI).
 """
 
 import os
@@ -11,22 +12,30 @@ import shutil
 import logging
 import sqlite3
 import hashlib
-from datetime import datetime
+import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import openpyxl
+import requests
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     filters, ContextTypes, CallbackQueryHandler
 )
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 # ===== НАСТРОЙКИ =====
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("❌ Токен не найден!")
+
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+if not NEWS_API_KEY:
+    print("⚠️ NEWS_API_KEY не найден. Новостные функции будут отключены.")
 
 DATA_DIR = Path("/data")
 TEMP_DIR = DATA_DIR / "temp"
@@ -91,6 +100,16 @@ def init_db():
             quantity INTEGER,
             revenue REAL,
             FOREIGN KEY(report_id) REFERENCES reports(id) ON DELETE CASCADE
+        )
+    ''')
+    # Таблица настроек новостей (для каждого пользователя)
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS news_settings (
+            user_id INTEGER PRIMARY KEY,
+            enabled INTEGER DEFAULT 1,
+            query TEXT DEFAULT 'Wildberries OR ВБ OR Вайлдбериз OR Wildberries.ru',
+            morning_time TEXT DEFAULT '08:30',
+            evening_time TEXT DEFAULT '20:40'
         )
     ''')
     conn.commit()
@@ -248,7 +267,6 @@ def get_report_metrics(report_id):
         return {}
 
 def get_previous_report_id(report_id):
-    """Возвращает ID предыдущего отчёта (по start_date) или None."""
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
@@ -316,6 +334,157 @@ def get_report_date_range():
         return row[0], row[1]
     except:
         return None, None
+
+# ===== НАСТРОЙКИ НОВОСТЕЙ (БД) =====
+def get_news_settings(user_id):
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute('SELECT enabled, query, morning_time, evening_time FROM news_settings WHERE user_id = ?', (user_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {'enabled': bool(row[0]), 'query': row[1], 'morning_time': row[2], 'evening_time': row[3]}
+        else:
+            return {'enabled': True, 'query': 'Wildberries OR ВБ OR Вайлдбериз OR Wildberries.ru', 'morning_time': '08:30', 'evening_time': '20:40'}
+    except:
+        return {'enabled': True, 'query': 'Wildberries OR ВБ OR Вайлдбериз OR Wildberries.ru', 'morning_time': '08:30', 'evening_time': '20:40'}
+
+def set_news_settings(user_id, enabled=None, query=None, morning_time=None, evening_time=None):
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute('SELECT user_id FROM news_settings WHERE user_id = ?', (user_id,))
+        if cursor.fetchone():
+            updates = []
+            params = []
+            if enabled is not None:
+                updates.append("enabled = ?")
+                params.append(1 if enabled else 0)
+            if query is not None:
+                updates.append("query = ?")
+                params.append(query)
+            if morning_time is not None:
+                updates.append("morning_time = ?")
+                params.append(morning_time)
+            if evening_time is not None:
+                updates.append("evening_time = ?")
+                params.append(evening_time)
+            if updates:
+                params.append(user_id)
+                cursor.execute(f"UPDATE news_settings SET {', '.join(updates)} WHERE user_id = ?", params)
+        else:
+            cursor.execute('''
+                INSERT INTO news_settings (user_id, enabled, query, morning_time, evening_time)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (user_id, 1 if enabled is None else (1 if enabled else 0),
+                  query or 'Wildberries OR ВБ OR Вайлдбериз OR Wildberries.ru',
+                  morning_time or '08:30', evening_time or '20:40'))
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        logger.error(f"Ошибка сохранения настроек новостей: {e}")
+        return False
+
+# ===== НОВОСТИ (NewsAPI) =====
+NEWS_CACHE = {}
+CACHE_EXPIRY = timedelta(hours=2)  # кэш на 2 часа
+
+def fetch_news(query, limit=10):
+    """Получает новости с NewsAPI по поисковому запросу, использует кэш."""
+    if not NEWS_API_KEY:
+        return []
+    cache_key = query
+    now = datetime.now()
+    if cache_key in NEWS_CACHE and now - NEWS_CACHE[cache_key]['timestamp'] < CACHE_EXPIRY:
+        return NEWS_CACHE[cache_key]['articles'][:limit]
+
+    url = 'https://newsapi.org/v2/everything'
+    params = {
+        'q': query,
+        'apiKey': NEWS_API_KEY,
+        'pageSize': limit,
+        'language': 'ru',
+        'sortBy': 'publishedAt'
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        data = resp.json()
+        if data.get('status') == 'ok':
+            articles = data.get('articles', [])
+            articles = [a for a in articles if a.get('title')]
+            NEWS_CACHE[cache_key] = {'articles': articles, 'timestamp': now}
+            return articles[:limit]
+        else:
+            logger.error(f"NewsAPI error: {data.get('message')}")
+            return []
+    except Exception as e:
+        logger.error(f"Ошибка запроса к NewsAPI: {e}")
+        return []
+
+def format_news_digest(articles, prefix="📰 **Новости**"):
+    if not articles:
+        return "Нет свежих новостей по вашей теме."
+    digest = f"{prefix}\n\n"
+    for i, article in enumerate(articles, 1):
+        title = article.get('title', '')
+        source = article.get('source', {}).get('name', '')
+        url = article.get('url', '')
+        published = article.get('publishedAt', '')
+        if published:
+            try:
+                dt = datetime.fromisoformat(published.replace('Z', '+00:00'))
+                published = dt.strftime('%H:%M')
+            except:
+                published = ''
+        digest += f"{i}. [{title}]({url}) — *{source}*"
+        if published:
+            digest += f" ({published})"
+        digest += "\n"
+    return digest
+
+# ===== ПЛАНИРОВЩИК =====
+scheduler = BackgroundScheduler()
+
+async def send_news_digest(context, user_id, time_of_day):
+    """Отправляет новостную сводку указанному пользователю."""
+    settings = get_news_settings(user_id)
+    if not settings['enabled']:
+        return
+    query = settings['query']
+    articles = fetch_news(query, limit=10)
+    prefix = f"🌅 **Утренняя сводка**" if time_of_day == 'morning' else f"🌇 **Вечерняя сводка**"
+    text = format_news_digest(articles, prefix)
+    try:
+        await context.bot.send_message(chat_id=user_id, text=text, parse_mode='Markdown')
+        logger.info(f"Новостная сводка ({time_of_day}) отправлена пользователю {user_id}")
+    except Exception as e:
+        logger.error(f"Ошибка отправки новостей пользователю {user_id}: {e}")
+
+async def scheduled_morning_digest(context):
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute('SELECT user_id FROM news_settings WHERE enabled = 1')
+        users = cursor.fetchall()
+        conn.close()
+    except:
+        users = []
+    for (user_id,) in users:
+        await send_news_digest(context, user_id, 'morning')
+
+async def scheduled_evening_digest(context):
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute('SELECT user_id FROM news_settings WHERE enabled = 1')
+        users = cursor.fetchall()
+        conn.close()
+    except:
+        users = []
+    for (user_id,) in users:
+        await send_news_digest(context, user_id, 'evening')
 
 # ===== ОПРЕДЕЛЕНИЕ ТИПА ФАЙЛА =====
 def detect_report_type(filename):
@@ -506,6 +675,7 @@ def get_main_menu():
         [InlineKeyboardButton("📂 История", callback_data="menu_history")],
         [InlineKeyboardButton("📦 Артикулы", callback_data="menu_articles")],
         [InlineKeyboardButton("📊 Аналитика по артикулам", callback_data="menu_analytics")],
+        [InlineKeyboardButton("📰 Новости", callback_data="menu_news")],
         [InlineKeyboardButton("❓ Помощь", callback_data="menu_help")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -515,7 +685,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот для обработки еженедельных отчетов WB.\n\n"
         "📤 Отправь файлы с 'осн' и 'вык' в названии — я автоматически их обработаю.\n"
-        "📊 Используй меню ниже для быстрого доступа к командам.",
+        "📊 Используй меню ниже для быстрого доступа к командам.\n"
+        "📰 Также я присылаю утренние (8:30) и вечерние (20:40) новостные сводки по теме Wildberries.",
         reply_markup=get_main_menu()
     )
 
@@ -527,7 +698,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/osn — отметить файл как основной (вручную)\n"
         "/vyk — отметить файл как выкупы (вручную)\n"
         "/stats — общая статистика\n"
-        "/articles — детали по артикулам (текущий отчет)\n\n"
+        "/articles — детали по артикулам (текущий отчет)\n"
+        "/news_now — получить новости прямо сейчас\n"
+        "/set_news — настроить новостные сводки\n\n"
         "Также можно использовать кнопки меню.",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
@@ -564,7 +737,133 @@ async def menu_help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     await help_cmd(update, context)
 
-# ===== АНАЛИТИКА ПО АРТИКУЛАМ =====
+# === НОВОСТНОЕ МЕНЮ ===
+async def menu_news_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    keyboard = [
+        [InlineKeyboardButton("📰 Получить новости сейчас", callback_data="news_now")],
+        [InlineKeyboardButton("⚙️ Настройки новостей", callback_data="news_settings")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    ]
+    await query.edit_message_text("📰 **Новостной раздел**\n\nВыберите действие:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def news_now_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    settings = get_news_settings(user_id)
+    articles = fetch_news(settings['query'], limit=10)
+    text = format_news_digest(articles, "📰 **Свежие новости по теме Wildberries**")
+    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("◀️ Назад в новостной раздел", callback_data="menu_news")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    ]))
+
+async def news_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    settings = get_news_settings(user_id)
+    status = "✅ Включены" if settings['enabled'] else "❌ Отключены"
+    text = f"⚙️ **Настройки новостей**\n\n"
+    text += f"Статус: {status}\n"
+    text += f"Поисковый запрос: `{settings['query']}`\n"
+    text += f"Утреннее время: {settings['morning_time']}\n"
+    text += f"Вечернее время: {settings['evening_time']}\n\n"
+    text += "Выберите действие:"
+    keyboard = [
+        [InlineKeyboardButton("🔄 Вкл/Выкл", callback_data="news_toggle")],
+        [InlineKeyboardButton("📝 Изменить запрос", callback_data="news_query")],
+        [InlineKeyboardButton("🕐 Изменить время", callback_data="news_time")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="menu_news")]
+    ]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def news_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    settings = get_news_settings(user_id)
+    new_enabled = not settings['enabled']
+    set_news_settings(user_id, enabled=new_enabled)
+    await news_settings_callback(update, context)
+
+async def news_query_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    # Просим пользователя ввести новый запрос (можно использовать команду /set_news_query)
+    await query.edit_message_text(
+        "📝 Введите новый поисковый запрос для новостей.\n"
+        "Например: `Wildberries OR ВБ`\n"
+        "Используйте команду /set_news_query <запрос>",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Назад", callback_data="news_settings")]
+        ]),
+        parse_mode='Markdown'
+    )
+
+async def news_time_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    keyboard = [
+        [InlineKeyboardButton("🌅 Утро (08:30)", callback_data="news_time_morning_08:30")],
+        [InlineKeyboardButton("🌅 Утро (09:00)", callback_data="news_time_morning_09:00")],
+        [InlineKeyboardButton("🌅 Утро (07:00)", callback_data="news_time_morning_07:00")],
+        [InlineKeyboardButton("🌇 Вечер (20:40)", callback_data="news_time_evening_20:40")],
+        [InlineKeyboardButton("🌇 Вечер (21:00)", callback_data="news_time_evening_21:00")],
+        [InlineKeyboardButton("🌇 Вечер (19:00)", callback_data="news_time_evening_19:00")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="news_settings")]
+    ]
+    await query.edit_message_text("Выберите время для утренней/вечерней сводки:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def news_time_set_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    parts = data.split("_")
+    time_of_day = parts[2]  # morning или evening
+    time_str = parts[3]     # HH:MM
+    user_id = update.effective_user.id
+    if time_of_day == 'morning':
+        set_news_settings(user_id, morning_time=time_str)
+    else:
+        set_news_settings(user_id, evening_time=time_str)
+    await news_settings_callback(update, context)
+
+# === ОБРАБОТЧИКИ ДЛЯ НОВОСТЕЙ (команды) ===
+async def news_now_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    settings = get_news_settings(user_id)
+    articles = fetch_news(settings['query'], limit=10)
+    text = format_news_digest(articles, "📰 **Свежие новости по теме Wildberries**")
+    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    ]))
+
+async def set_news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    settings = get_news_settings(user_id)
+    status = "включены" if settings['enabled'] else "отключены"
+    text = f"Текущие настройки новостей:\n"
+    text += f"Рассылка: {status}\n"
+    text += f"Запрос: `{settings['query']}`\n"
+    text += f"Утро: {settings['morning_time']}\n"
+    text += f"Вечер: {settings['evening_time']}\n\n"
+    text += "Используйте меню для настройки (кнопка '📰 Новости' в главном меню)."
+    await update.message.reply_text(text, parse_mode='Markdown')
+
+async def set_news_query_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Укажите запрос. Пример: /set_news_query Wildberries OR ВБ")
+        return
+    new_query = ' '.join(args)
+    set_news_settings(user_id, query=new_query)
+    await update.message.reply_text(f"✅ Поисковый запрос обновлён: `{new_query}`", parse_mode='Markdown')
+
+# === АНАЛИТИКА ПО АРТИКУЛАМ =====
 async def menu_analytics_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -777,7 +1076,7 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# ===== ИСТОРИЯ С ВОЗМОЖНОСТЬЮ УДАЛЕНИЯ =====
+# === ИСТОРИЯ С ВОЗМОЖНОСТЬЮ УДАЛЕНИЯ ===
 async def show_history_page(query, context, page):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
@@ -882,7 +1181,7 @@ async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data['history_page'] = page
         await show_history_page(query, context, page)
 
-# === ПЕРЕХОД К ОТЧЁТУ (callback) с улучшенной статистикой ===
+# === ПЕРЕХОД К ОТЧЁТУ ===
 async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -912,7 +1211,6 @@ async def resend_report(query, context, report_id):
         return
     file_name, date_period = row
 
-    # Получаем предыдущий отчёт для сравнения
     prev_id = get_previous_report_id(report_id)
     prev_metrics = get_report_metrics(prev_id) if prev_id else None
 
@@ -924,7 +1222,6 @@ async def resend_report(query, context, report_id):
     msg += f"📄 **{file_name}**\n"
     msg += f"📅 Период: {date_period}\n\n"
 
-    # Основные показатели
     avg_acquiring = metrics.get('avg_acquiring', 0)
     median_acquiring = metrics.get('median_acquiring', 0)
     wb_total = metrics.get('wb_total', 0)
@@ -942,7 +1239,6 @@ async def resend_report(query, context, report_id):
     shtrafy = metrics.get('shtrafy', 0)
     nalog = metrics.get('nalog', 0)
 
-    # Вычисляем налог Харакири (1% от оборота)
     tax_hara = wb_hara * 0.01
     k_hara_after_tax = k_hara - tax_hara
 
@@ -965,10 +1261,8 @@ async def resend_report(query, context, report_id):
     msg += f"⚠️ **Штрафы:** {shtrafy:,.2f} ₽\n"
     msg += f"🧾 **Налог общий:** {nalog:,.2f} ₽\n"
 
-    # Сравнение с предыдущим периодом
     if prev_metrics:
         msg += "\n📈 **Сравнение с предыдущим периодом:**\n"
-        # Функция для вычисления изменения
         def delta(current, previous):
             if previous == 0:
                 return "∞" if current != 0 else "0%"
@@ -984,16 +1278,14 @@ async def resend_report(query, context, report_id):
         msg += f"   📢 Реклама Харакири: {delta(reklama_hara, prev_metrics.get('reklama_hara', 0))}\n"
         msg += f"   ⚠️ Штрафы: {delta(shtrafy, prev_metrics.get('shtrafy', 0))}\n"
         msg += f"   🧾 Налог общий: {delta(nalog, prev_metrics.get('nalog', 0))}\n"
-        # Заказы
         msg += f"   📦 Заказы ЦАП (осн): {delta(carp_orders, prev_metrics.get('carp_orders', 0))}\n"
         msg += f"   📦 Заказы Харакири (осн): {delta(hara_orders, prev_metrics.get('hara_orders', 0))}\n"
     else:
         msg += "\n📈 **Сравнение с предыдущим периодом:** нет данных."
 
-    # Отправляем сообщение
     await query.message.reply_text(msg, parse_mode='Markdown')
 
-    # Восстановление шаблона (если нужно)
+    # Восстановление шаблона
     template_path = Path("/app/шаблон.xlsx")
     if not template_path.exists():
         for p in [Path("шаблон.xlsx"), TEMP_DIR / "template.xlsx"]:
@@ -1475,7 +1767,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not start_date:
             start_date = end_date = datetime.now().strftime("%Y-%m-%d")
 
-        # === ВЫЧИСЛЯЕМ МЕТРИКИ ===
         def f(key):
             return values.get(key, 0.0)
 
@@ -1501,7 +1792,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         b35 = (b32 + b41) * 0.01
         b50 = (b44 + b47) * 0.01
-        b38 = f13 - b35  # сохраняем для обратной совместимости, но больше не используем
 
         wb_total = b44 + b47 + b32 + b41
         wb_carp = b44 + b47
@@ -1518,7 +1808,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         carp_vyk_orders = sum(a.get('quantity', 0) for a in articles.get('Цап царапкин', {}).get('vyk', {}).values())
         hara_vyk_orders = sum(a.get('quantity', 0) for a in articles.get('Harakiri', {}).get('vyk', {}).values())
 
-        # Формируем словарь метрик для сохранения
         metrics = {
             'avg_acquiring': values.get('B56', 0),
             'median_acquiring': values.get('B59', 0),
@@ -1528,7 +1817,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'k_vyvodu_carp': k_carp,
             'k_vyvodu_hara': k_hara,
             'k_vyvodu_total': k_carp + k_hara,
-            'b38': b38,
             'reklama_carp': reklama_carp,
             'reklama_hara': reklama_hara,
             'shtrafy': shtrafy,
@@ -1559,11 +1847,9 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['current_period'] = date_period
         context.user_data['current_report_id'] = report_id
 
-        # Получаем предыдущий отчёт для сравнения
         prev_id = get_previous_report_id(report_id)
         prev_metrics = get_report_metrics(prev_id) if prev_id else None
 
-        # Вычисляем налог Харакири для корректного вывода
         tax_hara = wb_hara * 0.01
         k_hara_after_tax = k_hara - tax_hara
 
@@ -1587,7 +1873,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🧾 **Налог общий:** {nalog:,.2f} ₽\n"
         )
 
-        # Добавляем сравнение с предыдущим периодом
         if prev_metrics:
             msg += "\n📈 **Сравнение с предыдущим периодом:**\n"
             def delta(current, previous):
@@ -1655,32 +1940,48 @@ def main():
             BotCommand("vyk", "Отметить как выкупы"),
             BotCommand("stats", "Статистика"),
             BotCommand("articles", "Все артикулы"),
+            BotCommand("news_now", "Новости сейчас"),
+            BotCommand("set_news", "Настройка новостей"),
+            BotCommand("set_news_query", "Изменить поисковый запрос"),
         ])
     app.post_init = set_commands
 
+    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("osn", handle_osn))
     app.add_handler(CommandHandler("vyk", handle_vyk))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("articles", articles_full_cmd))
+    app.add_handler(CommandHandler("news_now", news_now_cmd))
+    app.add_handler(CommandHandler("set_news", set_news_cmd))
+    app.add_handler(CommandHandler("set_news_query", set_news_query_cmd))
 
-    # Callbacks для меню
+    # Callbacks
     app.add_handler(CallbackQueryHandler(menu_stats_callback, pattern="^menu_stats$"))
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_articles_callback, pattern="^menu_articles$"))
     app.add_handler(CallbackQueryHandler(menu_help_callback, pattern="^menu_help$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
+    app.add_handler(CallbackQueryHandler(menu_news_callback, pattern="^menu_news$"))
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
 
-    # Callbacks для аналитики
+    # Новости
+    app.add_handler(CallbackQueryHandler(news_now_callback, pattern="^news_now$"))
+    app.add_handler(CallbackQueryHandler(news_settings_callback, pattern="^news_settings$"))
+    app.add_handler(CallbackQueryHandler(news_toggle_callback, pattern="^news_toggle$"))
+    app.add_handler(CallbackQueryHandler(news_query_callback, pattern="^news_query$"))
+    app.add_handler(CallbackQueryHandler(news_time_callback, pattern="^news_time$"))
+    app.add_handler(CallbackQueryHandler(news_time_set_callback, pattern="^news_time_"))
+
+    # Аналитика
     app.add_handler(CallbackQueryHandler(analytics_toggle_callback, pattern="^analytics_toggle_"))
     app.add_handler(CallbackQueryHandler(analytics_page_callback, pattern="^analytics_page_"))
     app.add_handler(CallbackQueryHandler(analytics_select_all_callback, pattern="^analytics_select_all$"))
     app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
     app.add_handler(CallbackQueryHandler(analytics_show_callback, pattern="^analytics_show$"))
 
-    # Callbacks для истории (включая удаление)
+    # История
     app.add_handler(CallbackQueryHandler(history_page_callback, pattern="^history_page_"))
     app.add_handler(CallbackQueryHandler(history_report_callback, pattern="^history_report_"))
     app.add_handler(CallbackQueryHandler(history_toggle_delete_callback, pattern="^history_toggle_delete_"))
@@ -1688,7 +1989,7 @@ def main():
     app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
     app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
 
-    # Callbacks для артикулов
+    # Артикулы
     app.add_handler(CallbackQueryHandler(articles_callback, pattern="^show_articles$"))
     app.add_handler(CallbackQueryHandler(growth_callback, pattern="^growth$"))
     app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline$"))
@@ -1696,6 +1997,11 @@ def main():
 
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # Планировщик новостей
+    scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[app])
+    scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])
+    scheduler.start()
 
     print("✅ Бот готов")
     app.run_polling(allowed_updates=[])
