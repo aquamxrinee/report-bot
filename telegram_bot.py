@@ -119,6 +119,11 @@ def is_file_duplicate(file_hash):
         return None
 
 def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, values, metrics, articles):
+    """
+    Сохраняет отчёт и артикулы.
+    articles: словарь {brand: {'sales': {art: {quantity, revenue}}, 'vyk': {art: {quantity, revenue}}}}
+    Сохраняем все артикулы (sales + vyk) как отдельные записи.
+    """
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
@@ -149,16 +154,32 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                 except:
                     pass
 
+        # Сохраняем артикулы – объединяем sales и vyk для каждого бренда
         if articles:
             inserted = 0
             for brand, data in articles.items():
+                # Собираем все артикулы из sales и vyk
+                all_arts = {}
+                # sales
                 for art, stats in data.get('sales', {}).items():
+                    if art not in all_arts:
+                        all_arts[art] = {'quantity': 0, 'revenue': 0}
+                    all_arts[art]['quantity'] += stats.get('quantity', 0)
+                    all_arts[art]['revenue'] += stats.get('revenue', 0)
+                # vyk
+                for art, stats in data.get('vyk', {}).items():
+                    if art not in all_arts:
+                        all_arts[art] = {'quantity': 0, 'revenue': 0}
+                    all_arts[art]['quantity'] += stats.get('quantity', 0)
+                    all_arts[art]['revenue'] += stats.get('revenue', 0)
+                # Вставляем в БД
+                for art, stats in all_arts.items():
                     cursor.execute('''
                         INSERT INTO article_stats (report_id, brand, article, quantity, revenue)
                         VALUES (?, ?, ?, ?, ?)
-                    ''', (report_id, brand, art, stats.get('quantity', 0), stats.get('revenue', 0)))
+                    ''', (report_id, brand, art, stats['quantity'], stats['revenue']))
                     inserted += 1
-            logger.info(f"📦 Вставлено {inserted} записей артикулов")
+            logger.info(f"📦 Вставлено {inserted} записей артикулов (суммарно по основному + выкупам)")
         else:
             logger.warning("⚠️ Нет артикулов для сохранения")
 
@@ -530,7 +551,7 @@ async def menu_help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     await help_cmd(update, context)
 
-# ===== АНАЛИТИКА ПО АРТИКУЛАМ (НОВАЯ ФУНКЦИОНАЛЬНОСТЬ) =====
+# ===== АНАЛИТИКА ПО АРТИКУЛАМ =====
 async def menu_analytics_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -666,6 +687,7 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
         ]))
         return
 
+    # Агрегируем артикулы по всем выбранным отчётам
     articles_agg = {}
     total_orders = 0
     total_revenue = 0
@@ -685,6 +707,7 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
         ]))
         return
 
+    # Находим предыдущий период той же длины
     first_report_start = reports_data[0][1]
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -715,30 +738,27 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
     msg += f"💰 Общая выручка: {total_revenue:,.2f} ₽\n\n"
 
     sorted_articles = sorted(articles_agg.items(), key=lambda x: x[1]['revenue'], reverse=True)
-    top_articles = sorted_articles[:15]
+    top_articles = sorted_articles[:20]  # увеличил до 20
 
-    msg += "**Топ-15 артикулов по выручке:**\n"
+    msg += "**Топ-20 артикулов по выручке:**\n"
     for art, data in top_articles:
         qty = data['quantity']
         rev = data['revenue']
         if art in prev_articles_agg:
             prev_q = prev_articles_agg[art]['quantity']
             prev_rev = prev_articles_agg[art]['revenue']
-            if prev_q > 0:
+            if prev_q > 0 and prev_rev > 0:
                 change_q = ((qty - prev_q) / prev_q) * 100
-            else:
-                change_q = 0 if qty == 0 else float('inf')
-            if prev_rev > 0:
                 change_rev = ((rev - prev_rev) / prev_rev) * 100
+                change_str = f" (Δ {change_q:+.1f}% / {change_rev:+.1f}%)"
             else:
-                change_rev = 0 if rev == 0 else float('inf')
-            change_str = f" (Δ {change_q:+.1f}% / {change_rev:+.1f}%)"
+                change_str = " (нет данных за прошлый период)"
         else:
-            change_str = " (новинка)"
+            change_str = " (нет данных за прошлый период)"
         msg += f"• **{art}**: {qty} шт. | {rev:,.2f} ₽{change_str}\n"
 
-    if len(sorted_articles) > 15:
-        msg += f"\n… и еще {len(sorted_articles)-15} артикулов."
+    if len(sorted_articles) > 20:
+        msg += f"\n… и еще {len(sorted_articles)-20} артикулов."
 
     keyboard = [
         [InlineKeyboardButton("◀️ Назад к выбору отчётов", callback_data="menu_analytics")],
@@ -951,7 +971,7 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
             ]))
 
-# === АРТИКУЛЫ (сравнение с прошлой неделей, рост/падение) ===
+# === АРТИКУЛЫ ===
 async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, is_callback=False):
     report_id = context.user_data.get('current_report_id')
     if not report_id:
