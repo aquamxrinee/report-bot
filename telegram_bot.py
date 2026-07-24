@@ -136,6 +136,7 @@ def is_file_duplicate(file_hash):
         return None
 
 def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, values, articles):
+    """Сохраняет отчет и артикулы, возвращает (success, report_id)"""
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
@@ -168,22 +169,30 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
             float(values.get('Q9', 0)), float(values.get('B41', 0))
         ))
         report_id = cursor.lastrowid
+        logger.info(f"✅ Отчет вставлен, ID: {report_id}")
 
         if articles:
+            inserted = 0
             for brand, data in articles.items():
                 for art, stats in data.get('sales', {}).items():
                     cursor.execute('''
                         INSERT INTO article_stats (report_id, brand, article, quantity, revenue)
                         VALUES (?, ?, ?, ?, ?)
                     ''', (report_id, brand, art, stats.get('quantity', 0), stats.get('revenue', 0)))
+                    inserted += 1
+            logger.info(f"📦 Вставлено {inserted} записей артикулов")
+        else:
+            logger.warning("⚠️ Нет артикулов для сохранения")
+
         conn.commit()
         conn.close()
-        return True
+        return True, report_id
     except sqlite3.IntegrityError:
-        return False
+        logger.error("❌ Ошибка целостности БД (возможно, дубликат хеша)")
+        return False, None
     except Exception as e:
-        logger.error(f"Ошибка сохранения: {e}")
-        return False
+        logger.error(f"❌ Ошибка сохранения: {e}")
+        return False, None
 
 def delete_report(report_id):
     try:
@@ -251,7 +260,8 @@ def get_article_stats_for_report(report_id, brand=None):
         results = cursor.fetchall()
         conn.close()
         return {row[0]: {'quantity': row[1], 'revenue': row[2]} for row in results}
-    except:
+    except Exception as e:
+        logger.error(f"Ошибка получения артикулов для отчёта {report_id}: {e}")
         return {}
 
 # ===== ОПРЕДЕЛЕНИЕ ТИПА ФАЙЛА =====
@@ -586,7 +596,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Сохраняем в БД
         if osn_hash is None:
             osn_hash = calculate_file_hash(Path(osn_file))
-        saved = save_report_to_db(
+        saved, report_id = save_report_to_db(
             file_name=Path(osn_file).name,
             file_hash=osn_hash,
             date_period=date_period,
@@ -647,12 +657,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Сохраняем в контекст
         context.user_data['articles_data'] = articles
         context.user_data['current_period'] = date_period
-        # Получаем ID отчёта
-        conn = sqlite3.connect(str(DB_PATH))
-        cursor = conn.cursor()
-        cursor.execute("SELECT last_insert_rowid()")
-        report_id = cursor.fetchone()[0]
-        conn.close()
         context.user_data['current_report_id'] = report_id
 
         # === СООБЩЕНИЕ ===
