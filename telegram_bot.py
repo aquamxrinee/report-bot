@@ -200,7 +200,6 @@ def delete_report(report_id):
         return False
 
 def delete_reports(report_ids):
-    """Удаляет несколько отчётов по списку ID"""
     if not report_ids:
         return 0
     deleted = 0
@@ -247,6 +246,24 @@ def get_report_metrics(report_id):
         return {row[0]: row[1] for row in rows}
     except:
         return {}
+
+def get_previous_report_id(report_id):
+    """Возвращает ID предыдущего отчёта (по start_date) или None."""
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id
+            FROM reports
+            WHERE start_date < (SELECT start_date FROM reports WHERE id = ?)
+            ORDER BY start_date DESC
+            LIMIT 1
+        ''', (report_id,))
+        result = cursor.fetchone()
+        conn.close()
+        return result[0] if result else None
+    except:
+        return None
 
 def get_previous_reports(current_start_date, limit=12):
     try:
@@ -533,7 +550,7 @@ async def menu_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     context.user_data['history_page'] = 0
-    context.user_data['history_delete_mode'] = False  # режим удаления выключен
+    context.user_data['history_delete_mode'] = False
     context.user_data['history_selected_for_delete'] = []
     await show_history_page(query, context, page=0)
 
@@ -849,13 +866,11 @@ async def history_confirm_delete_callback(update: Update, context: ContextTypes.
     if not selected:
         await query.answer("⚠️ Не выбрано ни одного отчёта.", show_alert=True)
         return
-    # Удаляем выбранные отчёты
     deleted = delete_reports(selected)
     context.user_data['history_delete_mode'] = False
     context.user_data['history_selected_for_delete'] = []
     page = context.user_data.get('history_page', 0)
     await show_history_page(query, context, page)
-    # Отправляем уведомление об удалении
     await query.message.reply_text(f"🗑️ Удалено {deleted} отчётов.")
 
 async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -867,7 +882,7 @@ async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TY
         context.user_data['history_page'] = page
         await show_history_page(query, context, page)
 
-# === ПЕРЕХОД К ОТЧЁТУ (callback) ===
+# === ПЕРЕХОД К ОТЧЁТУ (callback) с улучшенной статистикой ===
 async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -897,9 +912,88 @@ async def resend_report(query, context, report_id):
         return
     file_name, date_period = row
 
+    # Получаем предыдущий отчёт для сравнения
+    prev_id = get_previous_report_id(report_id)
+    prev_metrics = get_report_metrics(prev_id) if prev_id else None
+
     context.user_data['current_report_id'] = report_id
     context.user_data['current_period'] = date_period
 
+    # Формируем сообщение статистики
+    msg = f"📊 **Статистика отчёта**\n\n"
+    msg += f"📄 **{file_name}**\n"
+    msg += f"📅 Период: {date_period}\n\n"
+
+    # Основные показатели
+    avg_acquiring = metrics.get('avg_acquiring', 0)
+    median_acquiring = metrics.get('median_acquiring', 0)
+    wb_total = metrics.get('wb_total', 0)
+    wb_carp = metrics.get('wb_carp', 0)
+    wb_hara = metrics.get('wb_hara', 0)
+    carp_orders = metrics.get('carp_orders', 0)
+    hara_orders = metrics.get('hara_orders', 0)
+    carp_vyk_orders = metrics.get('carp_vyk_orders', 0)
+    hara_vyk_orders = metrics.get('hara_vyk_orders', 0)
+    k_carp = metrics.get('k_vyvodu_carp', 0)
+    k_hara = metrics.get('k_vyvodu_hara', 0)
+    k_total = metrics.get('k_vyvodu_total', 0)
+    reklama_carp = metrics.get('reklama_carp', 0)
+    reklama_hara = metrics.get('reklama_hara', 0)
+    shtrafy = metrics.get('shtrafy', 0)
+    nalog = metrics.get('nalog', 0)
+
+    # Вычисляем налог Харакири (1% от оборота)
+    tax_hara = wb_hara * 0.01
+    k_hara_after_tax = k_hara - tax_hara
+
+    msg += f"💳 **Средний эквайринг:** {avg_acquiring:,.2f} %\n"
+    msg += f"📊 **Медианный эквайринг:** {median_acquiring:,.2f} %\n\n"
+
+    msg += f"💰 **ВБшный оборот общий:** {wb_total:,.2f} ₽\n"
+    msg += f"   🐱 ЦАП: {wb_carp:,.2f} ₽\n"
+    msg += f"   ⚔️ Харакири: {wb_hara:,.2f} ₽\n\n"
+
+    msg += f"📦 **Заказы (осн):** ЦАП {carp_orders:,.0f} шт., Харакири {hara_orders:,.0f} шт.\n"
+    msg += f"📦 **Заказы (вык):** ЦАП {carp_vyk_orders:,.0f} шт., Харакири {hara_vyk_orders:,.0f} шт.\n\n"
+
+    msg += f"💸 **К выводу ЦАП:** {k_carp:,.2f} ₽\n"
+    msg += f"💸 **К выводу Харакири:** {k_hara:,.2f} ₽\n"
+    msg += f"💸 **Итого к выводу:** {k_total:,.2f} ₽\n"
+    msg += f"💸 **Харакири (с вычетом налога):** {k_hara_after_tax:,.2f} ₽\n\n"
+
+    msg += f"📢 **Реклама:** ЦАП {reklama_carp:,.2f} ₽, Харакири {reklama_hara:,.2f} ₽\n"
+    msg += f"⚠️ **Штрафы:** {shtrafy:,.2f} ₽\n"
+    msg += f"🧾 **Налог общий:** {nalog:,.2f} ₽\n"
+
+    # Сравнение с предыдущим периодом
+    if prev_metrics:
+        msg += "\n📈 **Сравнение с предыдущим периодом:**\n"
+        # Функция для вычисления изменения
+        def delta(current, previous):
+            if previous == 0:
+                return "∞" if current != 0 else "0%"
+            return f"{((current - previous) / previous * 100):+.1f}%"
+
+        msg += f"   💳 Эквайринг (ср.): {delta(avg_acquiring, prev_metrics.get('avg_acquiring', 0))}\n"
+        msg += f"   💰 Оборот общий: {delta(wb_total, prev_metrics.get('wb_total', 0))}\n"
+        msg += f"   🐱 Оборот ЦАП: {delta(wb_carp, prev_metrics.get('wb_carp', 0))}\n"
+        msg += f"   ⚔️ Оборот Харакири: {delta(wb_hara, prev_metrics.get('wb_hara', 0))}\n"
+        msg += f"   💸 Вывод ЦАП: {delta(k_carp, prev_metrics.get('k_vyvodu_carp', 0))}\n"
+        msg += f"   💸 Вывод Харакири: {delta(k_hara, prev_metrics.get('k_vyvodu_hara', 0))}\n"
+        msg += f"   📢 Реклама ЦАП: {delta(reklama_carp, prev_metrics.get('reklama_carp', 0))}\n"
+        msg += f"   📢 Реклама Харакири: {delta(reklama_hara, prev_metrics.get('reklama_hara', 0))}\n"
+        msg += f"   ⚠️ Штрафы: {delta(shtrafy, prev_metrics.get('shtrafy', 0))}\n"
+        msg += f"   🧾 Налог общий: {delta(nalog, prev_metrics.get('nalog', 0))}\n"
+        # Заказы
+        msg += f"   📦 Заказы ЦАП (осн): {delta(carp_orders, prev_metrics.get('carp_orders', 0))}\n"
+        msg += f"   📦 Заказы Харакири (осн): {delta(hara_orders, prev_metrics.get('hara_orders', 0))}\n"
+    else:
+        msg += "\n📈 **Сравнение с предыдущим периодом:** нет данных."
+
+    # Отправляем сообщение
+    await query.message.reply_text(msg, parse_mode='Markdown')
+
+    # Восстановление шаблона (если нужно)
     template_path = Path("/app/шаблон.xlsx")
     if not template_path.exists():
         for p in [Path("шаблон.xlsx"), TEMP_DIR / "template.xlsx"]:
@@ -926,27 +1020,6 @@ async def resend_report(query, context, report_id):
 
     with open(out_file, 'rb') as f:
         await query.message.reply_document(f, caption="✅ Шаблон восстановлен")
-
-    msg = (
-        "📊 **Статистика отчёта**\n\n"
-        f"📄 **{file_name}**\n"
-        f"📅 Период: {date_period}\n\n"
-        f"💳 **Средний эквайринг:** {metrics.get('avg_acquiring', 0):,.2f} %\n"
-        f"📊 **Медианный эквайринг:** {metrics.get('median_acquiring', 0):,.2f} %\n\n"
-        f"💰 **ВБшный оборот общий:** {metrics.get('wb_total', 0):,.2f} ₽\n"
-        f"   🐱 ЦАП: {metrics.get('wb_carp', 0):,.2f} ₽\n"
-        f"   ⚔️ Харакири: {metrics.get('wb_hara', 0):,.2f} ₽\n\n"
-        f"📦 **Заказы (осн):** ЦАП {metrics.get('carp_orders', 0)} шт., Харакири {metrics.get('hara_orders', 0)} шт.\n"
-        f"📦 **Заказы (вык):** ЦАП {metrics.get('carp_vyk_orders', 0)} шт., Харакири {metrics.get('hara_vyk_orders', 0)} шт.\n\n"
-        f"💸 **К выводу ЦАП:** {metrics.get('k_vyvodu_carp', 0):,.2f} ₽\n"
-        f"💸 **К выводу Харакири:** {metrics.get('k_vyvodu_hara', 0):,.2f} ₽\n"
-        f"💸 **Итого к выводу:** {metrics.get('k_vyvodu_total', 0):,.2f} ₽\n"
-        f"💸 **Харакири (с налогом):** {metrics.get('b38', 0):,.2f} ₽\n\n"
-        f"📢 **Реклама:** ЦАП {metrics.get('reklama_carp', 0):,.2f} ₽, Харакири {metrics.get('reklama_hara', 0):,.2f} ₽\n"
-        f"⚠️ **Штрафы:** {metrics.get('shtrafy', 0):,.2f} ₽\n"
-        f"🧾 **Налог общий:** {metrics.get('nalog', 0):,.2f} ₽\n"
-    )
-    await query.message.reply_text(msg, parse_mode='Markdown')
 
     articles = get_article_stats_for_report(report_id)
     if articles:
@@ -1051,7 +1124,7 @@ async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         else:
             arrow = "📈" if change_q > 0 else "📉" if change_q < 0 else "➖"
             delta_str = f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
-        msg += f"**{art}**\n   Продажи: {cur_q} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
+        msg += f"**{art}**\n   Продажи: {cur_q:,.0f} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
         if len(msg) > 4000:
             msg += "\n… (сообщение обрезано)"
             break
@@ -1118,7 +1191,7 @@ async def articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             arrow = "📈" if change_q > 0 else "📉" if change_q < 0 else "➖"
             delta_str = f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
-        msg += f"**{art}**\n   Продажи: {cur_q} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
+        msg += f"**{art}**\n   Продажи: {cur_q:,.0f} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
 
     if len(all_items) > 10:
         msg += f"… и еще {len(all_items)-10}. Используйте /articles для полного списка."
@@ -1189,7 +1262,7 @@ async def _show_sorted_articles(update, context, reverse=True):
         else:
             arrow = "📈" if change_q > 0 else "📉" if change_q < 0 else "➖"
             delta_str = f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
-        msg += f"**{art}**\n   Продажи: {cur_q} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
+        msg += f"**{art}**\n   Продажи: {cur_q:,.0f} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
 
     if not top:
         msg = "Нет данных для отображения."
@@ -1267,9 +1340,9 @@ async def compare_articles_callback(update: Update, context: ContextTypes.DEFAUL
                 avg_r = avg_articles[art]['avg_revenue']
                 change_q = ((cur_q - avg_q) / avg_q * 100) if avg_q else 0
                 change_r = ((cur_r - avg_r) / avg_r * 100) if avg_r else 0
-                msg += f"• {art}: {cur_q} шт. (Δ {change_q:+.1f}%) | {cur_r:,.2f} ₽ (Δ {change_r:+.1f}%)\n"
+                msg += f"• {art}: {cur_q:,.0f} шт. (Δ {change_q:+.1f}%) | {cur_r:,.2f} ₽ (Δ {change_r:+.1f}%)\n"
             else:
-                msg += f"• {art}: {cur_q} шт. (новинка) | {cur_r:,.2f} ₽\n"
+                msg += f"• {art}: {cur_q:,.0f} шт. (новинка) | {cur_r:,.2f} ₽\n"
         msg += "\n"
 
     keyboard = [
@@ -1428,7 +1501,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         b35 = (b32 + b41) * 0.01
         b50 = (b44 + b47) * 0.01
-        b38 = f13 - b35
+        b38 = f13 - b35  # сохраняем для обратной совместимости, но больше не используем
 
         wb_total = b44 + b47 + b32 + b41
         wb_carp = b44 + b47
@@ -1486,6 +1559,14 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['current_period'] = date_period
         context.user_data['current_report_id'] = report_id
 
+        # Получаем предыдущий отчёт для сравнения
+        prev_id = get_previous_report_id(report_id)
+        prev_metrics = get_report_metrics(prev_id) if prev_id else None
+
+        # Вычисляем налог Харакири для корректного вывода
+        tax_hara = wb_hara * 0.01
+        k_hara_after_tax = k_hara - tax_hara
+
         msg = (
             "📊 **Статистика обработки:**\n\n"
             "• Основной отчет: ЦАП + HARAKIRI ✅\n"
@@ -1495,17 +1576,41 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💰 **ВБшный оборот общий:** {wb_total:,.2f} ₽\n"
             f"   🐱 ЦАП: {wb_carp:,.2f} ₽\n"
             f"   ⚔️ Харакири: {wb_hara:,.2f} ₽\n\n"
-            f"📦 **Заказы (осн):** ЦАП {carp_orders} шт., Харакири {hara_orders} шт.\n"
-            f"📦 **Заказы (вык):** ЦАП {carp_vyk_orders} шт., Харакири {hara_vyk_orders} шт.\n\n"
+            f"📦 **Заказы (осн):** ЦАП {carp_orders:,.0f} шт., Харакири {hara_orders:,.0f} шт.\n"
+            f"📦 **Заказы (вык):** ЦАП {carp_vyk_orders:,.0f} шт., Харакири {hara_vyk_orders:,.0f} шт.\n\n"
             f"💸 **К выводу ЦАП:** {k_carp:,.2f} ₽\n"
             f"💸 **К выводу Харакири:** {k_hara:,.2f} ₽\n"
             f"💸 **Итого к выводу:** {k_carp + k_hara:,.2f} ₽\n"
-            f"💸 **Харакири (с налогом):** {b38:,.2f} ₽\n\n"
+            f"💸 **Харакири (с вычетом налога):** {k_hara_after_tax:,.2f} ₽\n\n"
             f"📢 **Реклама:** ЦАП {reklama_carp:,.2f} ₽, Харакири {reklama_hara:,.2f} ₽\n"
             f"⚠️ **Штрафы:** {shtrafy:,.2f} ₽\n"
-            f"🧾 **Налог общий:** {nalog:,.2f} ₽\n\n"
-            "✅ Отчет сохранен"
+            f"🧾 **Налог общий:** {nalog:,.2f} ₽\n"
         )
+
+        # Добавляем сравнение с предыдущим периодом
+        if prev_metrics:
+            msg += "\n📈 **Сравнение с предыдущим периодом:**\n"
+            def delta(current, previous):
+                if previous == 0:
+                    return "∞" if current != 0 else "0%"
+                return f"{((current - previous) / previous * 100):+.1f}%"
+
+            msg += f"   💳 Эквайринг (ср.): {delta(avg_acquiring, prev_metrics.get('avg_acquiring', 0))}\n"
+            msg += f"   💰 Оборот общий: {delta(wb_total, prev_metrics.get('wb_total', 0))}\n"
+            msg += f"   🐱 Оборот ЦАП: {delta(wb_carp, prev_metrics.get('wb_carp', 0))}\n"
+            msg += f"   ⚔️ Оборот Харакири: {delta(wb_hara, prev_metrics.get('wb_hara', 0))}\n"
+            msg += f"   💸 Вывод ЦАП: {delta(k_carp, prev_metrics.get('k_vyvodu_carp', 0))}\n"
+            msg += f"   💸 Вывод Харакири: {delta(k_hara, prev_metrics.get('k_vyvodu_hara', 0))}\n"
+            msg += f"   📢 Реклама ЦАП: {delta(reklama_carp, prev_metrics.get('reklama_carp', 0))}\n"
+            msg += f"   📢 Реклама Харакири: {delta(reklama_hara, prev_metrics.get('reklama_hara', 0))}\n"
+            msg += f"   ⚠️ Штрафы: {delta(shtrafy, prev_metrics.get('shtrafy', 0))}\n"
+            msg += f"   🧾 Налог общий: {delta(nalog, prev_metrics.get('nalog', 0))}\n"
+            msg += f"   📦 Заказы ЦАП (осн): {delta(carp_orders, prev_metrics.get('carp_orders', 0))}\n"
+            msg += f"   📦 Заказы Харакири (осн): {delta(hara_orders, prev_metrics.get('hara_orders', 0))}\n"
+        else:
+            msg += "\n📈 **Сравнение с предыдущим периодом:** нет данных."
+
+        msg += "\n\n✅ Отчет сохранен"
 
         await update.message.reply_text(msg, parse_mode='Markdown')
 
