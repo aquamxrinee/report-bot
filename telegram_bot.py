@@ -487,7 +487,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help — помощь\n"
         "/osn — отметить файл как основной (вручную)\n"
         "/vyk — отметить файл как выкупы (вручную)\n"
-        "/history — история отчетов (с пагинацией)\n"
         "/stats — общая статистика\n"
         "/delete — удалить отчет\n"
         "/articles — детали по артикулам (текущий отчет)\n\n"
@@ -1297,7 +1296,6 @@ def main():
             BotCommand("help", "Помощь"),
             BotCommand("osn", "Отметить как основной"),
             BotCommand("vyk", "Отметить как выкупы"),
-            BotCommand("history", "История (с пагинацией)"),
             BotCommand("stats", "Статистика"),
             BotCommand("delete", "Удалить отчет"),
             BotCommand("articles", "Все артикулы"),
@@ -1308,7 +1306,7 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("osn", handle_osn))
     app.add_handler(CommandHandler("vyk", handle_vyk))
-    app.add_handler(CommandHandler("history", history_cmd))  # пока оставим, но можно убрать
+    # app.add_handler(CommandHandler("history", history_cmd))  # УДАЛЕНО – используется меню
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("delete", delete_cmd))
     app.add_handler(CommandHandler("articles", articles_full_cmd))
