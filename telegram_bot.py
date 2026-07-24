@@ -457,7 +457,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📊 Команды:\n"
         "/history - показать все загруженные отчеты\n"
         "/stats - показать общую статистику\n"
-        "/delete - удалить отчет из истории"
+        "/delete - удалить отчет из истории\n"
+        "/articles - показать детальную статистику по артикулам"
     )
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -469,9 +470,106 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stats - статистика\n"
         "/delete - удалить отчет\n"
         "/osn - отметить файл как основной (вручную)\n"
-        "/vyk - отметить файл как отчет по выкупам (вручную)"
+        "/vyk - отметить файл как отчет по выкупам (вручную)\n"
+        "/articles - детальная статистика по артикулам"
     )
 
+async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает все загруженные отчеты с продажами по брендам"""
+    reports = get_all_reports()
+    if not reports:
+        await update.message.reply_text("📭 История пуста. Загрузите первый отчет!")
+        return
+
+    message = "📊 **История загруженных отчетов:**\n\n"
+    for report in reports[:10]:
+        (id_, name, period, processed_at,
+         carp_sales, hara_sales, carp_vyk, hara_vyk) = report
+        message += f"📄 **{name}**\n"
+        message += f"   📅 Период: {period}\n"
+        message += f"   🕐 Загружен: {processed_at[:16]}\n"
+        message += f"   🐱 ЦАП (осн): {carp_sales:,.2f} ₽\n"
+        message += f"   ⚔️ Harakiri (осн): {hara_sales:,.2f} ₽\n"
+        message += f"   🐱 ЦАП (вык): {carp_vyk:,.2f} ₽\n"
+        message += f"   ⚔️ Harakiri (вык): {hara_vyk:,.2f} ₽\n\n"
+
+    if len(reports) > 10:
+        message += f"… и еще {len(reports) - 10} отчетов. Всего: {len(reports)}"
+
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает общую статистику по всем отчетам"""
+    reports = get_all_reports()
+    if not reports:
+        await update.message.reply_text("📭 Нет данных для статистики. Загрузите отчеты!")
+        return
+
+    total = len(reports)
+    total_carp = sum(r[4] for r in reports)
+    total_hara = sum(r[5] for r in reports)
+    total_carp_vyk = sum(r[6] for r in reports)
+    total_hara_vyk = sum(r[7] for r in reports)
+
+    avg_carp = total_carp / total if total > 0 else 0
+    avg_hara = total_hara / total if total > 0 else 0
+    avg_carp_vyk = total_carp_vyk / total if total > 0 else 0
+    avg_hara_vyk = total_hara_vyk / total if total > 0 else 0
+
+    message = f"📊 **Общая статистика по отчетам:**\n\n"
+    message += f"📄 Всего отчетов: **{total}**\n\n"
+    message += f"**Продажи (средние):**\n"
+    message += f"   🐱 ЦАП (осн): **{avg_carp:,.2f} ₽**\n"
+    message += f"   ⚔️ Harakiri (осн): **{avg_hara:,.2f} ₽**\n"
+    message += f"   🐱 ЦАП (вык): **{avg_carp_vyk:,.2f} ₽**\n"
+    message += f"   ⚔️ Harakiri (вык): **{avg_hara_vyk:,.2f} ₽**\n\n"
+    message += f"**Итого продаж:**\n"
+    message += f"   🐱 ЦАП (осн): **{total_carp:,.2f} ₽**\n"
+    message += f"   ⚔️ Harakiri (осн): **{total_hara:,.2f} ₽**\n"
+    message += f"   🐱 ЦАП (вык): **{total_carp_vyk:,.2f} ₽**\n"
+    message += f"   ⚔️ Harakiri (вык): **{total_hara_vyk:,.2f} ₽**\n"
+
+    await update.message.reply_text(message, parse_mode='Markdown')
+
+async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /delete — показывает список отчетов для удаления"""
+    reports = get_all_reports()
+    if not reports:
+        await update.message.reply_text("📭 История пуста. Удалять нечего!")
+        return
+
+    keyboard = []
+    for report in reports[:10]:
+        report_id, name, period, _, _, _, _, _ = report
+        short_name = name[:25] + "..." if len(name) > 25 else name
+        keyboard.append([InlineKeyboardButton(
+            f"❌ {short_name} ({period})",
+            callback_data=f"delete_{report_id}"
+        )])
+    keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="delete_cancel")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        "🗑️ **Выберите отчет для удаления:**\n⚠️ Удаление необратимо!",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+
+async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    if data == "delete_cancel":
+        await query.edit_message_text("✅ Удаление отменено.")
+        return
+    if data.startswith("delete_"):
+        report_id = int(data.split("_")[1])
+        if delete_report(report_id):
+            await query.edit_message_text(f"✅ Отчет #{report_id} успешно удален!")
+        else:
+            await query.edit_message_text(f"❌ Не удалось удалить отчет #{report_id}.")
+
+# ===== ОСНОВНАЯ ОБРАБОТКА ФАЙЛОВ =====
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         doc = update.message.document
@@ -694,13 +792,11 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         nalog_total = b35 + b50
 
         # === КОЛИЧЕСТВО ЗАКАЗОВ ПО БРЕНДАМ ===
-        # Пытаемся извлечь количество из articles_data
         carp_orders = 0
         hara_orders = 0
         carp_orders_vyk = 0
         hara_orders_vyk = 0
 
-        # Суммируем quantity по артикулам для каждого бренда
         if 'Цап царапкин' in articles_data:
             for art, data in articles_data['Цап царапкин'].get('sales', {}).items():
                 carp_orders += data.get('quantity', 0)
