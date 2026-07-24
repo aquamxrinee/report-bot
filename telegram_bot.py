@@ -222,36 +222,75 @@ class ReportProcessor:
         values = self._calculate_all_values(df_osn, df_vyk, date_range)
         self._fill_template(template_path, values)
 
-        # Сбор артикулов (если есть колонки)
+        # Сбор артикулов (с улучшенным поиском колонок)
         articles = self._get_articles_stats(df_osn, df_vyk)
         return values, articles
 
     def _get_articles_stats(self, df_osn, df_vyk):
+        """
+        Агрегирует данные по артикулам из основного отчёта и отчёта по выкупам.
+        Ищет колонки: 'Артикул поставщика', 'Артикул', 'Артикул товара', 'Номенклатура'
+        и 'Кол-во', 'Количество', 'Количество товара'.
+        Фильтрует продажи с количеством > 0.
+        """
         result = {}
-        qty_col = next((c for c in ['Количество', 'Количество товара', 'Кол-во'] if c in df_osn.columns), None)
-        art_col = next((c for c in ['Артикул', 'Артикул товара', 'Номенклатура'] if c in df_osn.columns), None)
+        # Расширенные списки возможных названий колонок
+        qty_cols = ['Кол-во', 'Количество', 'Количество товара', 'Кол-во (шт.)', 'Кол-во шт']
+        article_cols = ['Артикул поставщика', 'Артикул', 'Артикул товара', 'Номенклатура', 'SKU', 'Артикул (поставщика)']
+
+        # Ищем в обоих датафреймах (сначала в osn, потом в vyk)
+        qty_col = None
+        art_col = None
+        for col in qty_cols:
+            if col in df_osn.columns or col in df_vyk.columns:
+                qty_col = col
+                break
+        for col in article_cols:
+            if col in df_osn.columns or col in df_vyk.columns:
+                art_col = col
+                break
+
+        if qty_col is None:
+            logger.warning("Колонка количества не найдена. Доступные колонки: " + str(df_osn.columns.tolist()))
+        if art_col is None:
+            logger.warning("Колонка артикула не найдена. Доступные колонки: " + str(df_osn.columns.tolist()))
+
         if qty_col is None or art_col is None:
             return result
 
-        for bren, mask_func in [('Цап царапкин', lambda df: (df['Бренд'] == 'Цап царапкин') | (df['Бренд'].isna())),
-                                ('Harakiri', lambda df: df['Бренд'] == 'Harakiri')]:
-            for df, key in [(df_osn, 'sales'), (df_vyk, 'vyk')]:
+        logger.info(f"Найдены колонки: количество='{qty_col}', артикул='{art_col}'")
+
+        # Обрабатываем оба датафрейма: основной и выкупы
+        for df, key in [(df_osn, 'sales'), (df_vyk, 'vyk')]:
+            for bren, mask_func in [
+                ('Цап царапкин', lambda d: (d['Бренд'] == 'Цап царапкин') | (d['Бренд'].isna())),
+                ('Harakiri', lambda d: d['Бренд'] == 'Harakiri')
+            ]:
                 mask = mask_func(df)
                 df_bren = df[mask]
                 if df_bren.empty:
                     continue
-                sales = df_bren[df_bren['Тип документа'] == 'Продажа']
+
+                # Продажи: фильтр по типу документа и количеству > 0
+                sales = df_bren[(df_bren['Тип документа'] == 'Продажа') & (df_bren[qty_col] > 0)]
+                # Возвраты: отдельно, количество может быть отрицательным или положительным, но для статистики берём как есть
                 returns = df_bren[df_bren['Тип документа'] == 'Возврат']
+
+                # Агрегация по артикулам
                 agg_sales = sales.groupby(art_col).agg(
                     quantity=(qty_col, 'sum'),
                     revenue=('К перечислению Продавцу за реализованный Товар', 'sum')
                 ).to_dict('index') if not sales.empty else {}
+
                 agg_returns = returns.groupby(art_col).agg(
                     return_quantity=(qty_col, 'sum'),
                     return_revenue=('К перечислению Продавцу за реализованный Товар', 'sum')
                 ).to_dict('index') if not returns.empty else {}
+
+                # Объединяем продажи и возвраты
                 articles = {}
-                for art in set(agg_sales.keys()) | set(agg_returns.keys()):
+                all_arts = set(agg_sales.keys()) | set(agg_returns.keys())
+                for art in all_arts:
                     articles[art] = {
                         'quantity': agg_sales.get(art, {}).get('quantity', 0),
                         'revenue': agg_sales.get(art, {}).get('revenue', 0),
@@ -261,6 +300,7 @@ class ReportProcessor:
                 if bren not in result:
                     result[bren] = {}
                 result[bren][key] = articles
+
         return result
 
     def _calculate_all_values(self, df_osn, df_vyk, date_range):
@@ -441,7 +481,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c23_val = ws_coeff['C23'].value
         wb_coeff.close()
 
-        # Безопасное преобразование
         try:
             b23 = float(b23_val) if b23_val is not None and isinstance(b23_val, (int, float)) else 0.0
         except:
@@ -515,7 +554,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         shtrafy = b10 + f10
         nalog = b35 + b50
 
-        # Количество заказов
+        # Количество заказов (сумма quantity по продажам с кол-вом > 0)
         carp_orders = sum(a.get('quantity', 0) for a in articles.get('Цап царапкин', {}).get('sales', {}).values())
         hara_orders = sum(a.get('quantity', 0) for a in articles.get('Harakiri', {}).get('sales', {}).values())
         carp_vyk_orders = sum(a.get('quantity', 0) for a in articles.get('Цап царапкин', {}).get('vyk', {}).values())
