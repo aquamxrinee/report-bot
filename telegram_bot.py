@@ -434,12 +434,24 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             template_path = TEMP_DIR / "template.xlsx"
             wb.save(template_path)
 
-        # Читаем коэффициенты хранения
+        # Читаем коэффициенты хранения с защитой от ошибок
         wb_coeff = openpyxl.load_workbook(template_path, data_only=True)
         ws_coeff = wb_coeff.active
-        b23 = float(ws_coeff['B23'].value) if ws_coeff['B23'].value is not None else 0.0
-        c23 = float(ws_coeff['C23'].value) if ws_coeff['C23'].value is not None else 0.0
+        b23_val = ws_coeff['B23'].value
+        c23_val = ws_coeff['C23'].value
         wb_coeff.close()
+
+        # Безопасное преобразование
+        try:
+            b23 = float(b23_val) if b23_val is not None and isinstance(b23_val, (int, float)) else 0.0
+        except:
+            b23 = 0.0
+        try:
+            c23 = float(c23_val) if c23_val is not None and isinstance(c23_val, (int, float)) else 0.0
+        except:
+            c23 = 0.0
+
+        logger.info(f"Коэффициенты: B23={b23}, C23={c23}")
 
         # Копируем шаблон
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
