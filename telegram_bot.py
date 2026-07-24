@@ -2,7 +2,7 @@
 """
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
-Полная версия с главным меню.
+Полная версия с главным меню и кнопкой "Назад".
 """
 
 import os
@@ -716,11 +716,11 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(msg, parse_mode='Markdown')
 
-        keyboard = [[InlineKeyboardButton("📦 Детали по артикулам", callback_data="show_articles")]]
-        await update.message.reply_text("Нажмите кнопку для деталей:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-        # Показываем главное меню
-        await update.message.reply_text("Выберите действие:", reply_markup=get_main_menu())
+        keyboard = [
+            [InlineKeyboardButton("📦 Детали по артикулам", callback_data="show_articles")],
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        ]
+        await update.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(keyboard))
 
         for f in [out_file, osn_file, vyk_file]:
             try:
@@ -743,7 +743,7 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_history_page(update: Update, context: ContextTypes.DEFAULT_TYPE, page=0):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
-        await update.message.reply_text("📭 История пуста.")
+        await update.message.reply_text("📭 История пуста.", reply_markup=get_main_menu())
         return
 
     total_pages = (total + 9) // 10 if total > 0 else 1
@@ -772,6 +772,7 @@ async def show_history_page(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     if nav_buttons:
         keyboard.append(nav_buttons)
 
+    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
     await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -805,6 +806,7 @@ async def show_history_page_from_query(query, context, page):
     if nav_buttons:
         keyboard.append(nav_buttons)
 
+    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
     reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
     await query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
 
@@ -828,7 +830,7 @@ async def resend_report(update: Update, context: ContextTypes.DEFAULT_TYPE, repo
     values = get_report_values(report_id)
     metrics = get_report_metrics(report_id)
     if not values or not metrics:
-        await update.effective_message.reply_text("❌ Данные отчёта не найдены.")
+        await update.effective_message.reply_text("❌ Данные отчёта не найдены.", reply_markup=get_main_menu())
         return
 
     conn = sqlite3.connect(str(DB_PATH))
@@ -837,7 +839,7 @@ async def resend_report(update: Update, context: ContextTypes.DEFAULT_TYPE, repo
     row = cursor.fetchone()
     conn.close()
     if not row:
-        await update.effective_message.reply_text("❌ Отчёт не найден.")
+        await update.effective_message.reply_text("❌ Отчёт не найден.", reply_markup=get_main_menu())
         return
     file_name, date_period = row
 
@@ -894,8 +896,11 @@ async def resend_report(update: Update, context: ContextTypes.DEFAULT_TYPE, repo
         context.user_data['articles_data'] = articles
         context.user_data['current_period'] = date_period
         context.user_data['current_report_id'] = report_id
-        keyboard = [[InlineKeyboardButton("📦 Детали по артикулам", callback_data="show_articles")]]
-        await update.effective_message.reply_text("Нажмите кнопку для деталей:", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [
+            [InlineKeyboardButton("📦 Детали по артикулам", callback_data="show_articles")],
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        ]
+        await update.effective_message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     try:
         os.remove(out_file)
@@ -906,20 +911,21 @@ async def resend_report(update: Update, context: ContextTypes.DEFAULT_TYPE, repo
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reports, total = get_all_reports()
     if not reports:
-        await update.message.reply_text("📭 Нет данных.")
+        await update.message.reply_text("📭 Нет данных.", reply_markup=get_main_menu())
         return
-    await update.message.reply_text(f"📊 Всего отчетов: {total}. Используйте /history для деталей.")
+    await update.message.reply_text(f"📊 Всего отчетов: {total}. Используйте /history для деталей.", reply_markup=get_main_menu())
 
 async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reports, total = get_all_reports()
     if not reports:
-        await update.message.reply_text("📭 История пуста.")
+        await update.message.reply_text("📭 История пуста.", reply_markup=get_main_menu())
         return
     keyboard = []
     for r in reports:
         report_id, file_name, date_period, start_date, end_date, processed_at = r
         keyboard.append([InlineKeyboardButton(f"❌ {file_name} ({date_period})", callback_data=f"del_{report_id}")])
     keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="del_cancel")])
+    keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
     await update.message.reply_text("🗑️ Выберите отчет для удаления:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -928,6 +934,8 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     if data == "del_cancel":
         await query.edit_message_text("✅ Отменено.")
+        # Показываем меню
+        await query.message.reply_text("Выберите действие:", reply_markup=get_main_menu())
         return
     if data.startswith("del_"):
         rid = int(data.split("_")[1])
@@ -935,6 +943,8 @@ async def delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"✅ Отчет #{rid} удален.")
         else:
             await query.edit_message_text("❌ Ошибка удаления.")
+        # После удаления показываем меню
+        await query.message.reply_text("Выберите действие:", reply_markup=get_main_menu())
 
 # === АРТИКУЛЫ (сравнение с прошлой неделей, рост/падение) ===
 async def articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -995,19 +1005,20 @@ async def articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📈 Топ-10 по росту", callback_data="growth")],
         [InlineKeyboardButton("📉 Топ-10 по падению", callback_data="decline")],
-        [InlineKeyboardButton("📊 Детальное сравнение", callback_data="compare_articles")]
+        [InlineKeyboardButton("📊 Детальное сравнение", callback_data="compare_articles")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     report_id = context.user_data.get('current_report_id')
     if not report_id:
-        await update.message.reply_text("❌ Нет данных. Сначала загрузите отчет.")
+        await update.message.reply_text("❌ Нет данных. Сначала загрузите отчет.", reply_markup=get_main_menu())
         return
 
     current_articles = get_article_stats_for_report(report_id)
     if not current_articles:
-        await update.message.reply_text("❌ Нет данных по артикулам.")
+        await update.message.reply_text("❌ Нет данных по артикулам.", reply_markup=get_main_menu())
         return
 
     conn = sqlite3.connect(str(DB_PATH))
@@ -1054,7 +1065,8 @@ async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📈 Топ-10 по росту", callback_data="growth")],
         [InlineKeyboardButton("📉 Топ-10 по падению", callback_data="decline")],
-        [InlineKeyboardButton("📊 Детальное сравнение", callback_data="compare_articles")]
+        [InlineKeyboardButton("📊 Детальное сравнение", callback_data="compare_articles")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
     ]
     await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
@@ -1120,7 +1132,10 @@ async def _show_sorted_articles(update, context, reverse=True):
     if not top:
         msg = "Нет данных для отображения."
 
-    keyboard = [[InlineKeyboardButton("◀️ Назад к списку", callback_data="show_articles")]]
+    keyboard = [
+        [InlineKeyboardButton("◀️ Назад к списку", callback_data="show_articles")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def compare_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1194,10 +1209,22 @@ async def compare_articles_callback(update: Update, context: ContextTypes.DEFAUL
                 msg += f"• {art}: {cur_q} шт. (новинка) | {cur_r:,.2f} ₽\n"
         msg += "\n"
 
-    keyboard = [[InlineKeyboardButton("◀️ Назад к списку", callback_data="show_articles")]]
+    keyboard = [
+        [InlineKeyboardButton("◀️ Назад к списку", callback_data="show_articles")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# ===== ОБРАБОТЧИК ТЕКСТОВЫХ КОМАНД ИЗ МЕНЮ =====
+# === ОБРАБОТЧИК "НАЗАД В МЕНЮ" ===
+async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "Вы вернулись в главное меню. Выберите действие:",
+        reply_markup=get_main_menu()
+    )
+
+# === ОБРАБОТЧИК ТЕКСТОВЫХ КОМАНД ИЗ МЕНЮ ===
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "📊 Статистика":
@@ -1211,7 +1238,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "❓ Помощь":
         await help_cmd(update, context)
     else:
-        await update.message.reply_text("Используйте кнопки меню или введите команду.")  # ignore
+        await update.message.reply_text("Используйте кнопки меню или введите команду.")
 
 # ===== ЗАПУСК =====
 def main():
@@ -1249,6 +1276,7 @@ def main():
     app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline$"))
     app.add_handler(CallbackQueryHandler(compare_articles_callback, pattern="^compare_articles$"))
     app.add_handler(CallbackQueryHandler(delete_callback, pattern="^del_"))
+    app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
 
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
