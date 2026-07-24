@@ -2,10 +2,7 @@
 """
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
-Полная версия: эквайринг, обороты, вывод, реклама, налоги, количество заказов,
-детализация по артикулам с историей и сравнением, история, статистика, удаление.
-Добавлены: пагинация в /history, кнопка "Перейти к отчету", навигация.
-Исправлена работа /delete и /stats.
+Полная версия с главным меню.
 """
 
 import os
@@ -20,7 +17,7 @@ from pathlib import Path
 import pandas as pd
 import openpyxl
 from flask import Flask
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     filters, ContextTypes, CallbackQueryHandler
@@ -463,16 +460,27 @@ class ReportProcessor:
         ws.sheet_view.calcMode = 'manual'
         wb.save(template_path)
 
+# ===== ГЛАВНОЕ МЕНЮ =====
+def get_main_menu():
+    keyboard = [
+        [KeyboardButton("📊 Статистика"), KeyboardButton("📂 История")],
+        [KeyboardButton("📦 Артикулы"), KeyboardButton("🗑️ Удалить отчёт")],
+        [KeyboardButton("❓ Помощь")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 # ===== КОМАНДЫ БОТА =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "👋 Привет! Я бот для обработки еженедельных отчетов WB.\n\n"
         "📤 Отправь файлы с 'осн' и 'вык' в названии — я автоматически их обработаю.\n"
-        "📊 Команды: /history, /stats, /delete, /articles"
+        "📊 Используй кнопки меню для быстрого доступа к командам.",
+        reply_markup=get_main_menu()
     )
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
+        "📋 **Доступные команды:**\n"
         "/start — начать\n"
         "/help — помощь\n"
         "/osn — отметить файл как основной (вручную)\n"
@@ -480,7 +488,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/history — история отчетов (с пагинацией)\n"
         "/stats — общая статистика\n"
         "/delete — удалить отчет\n"
-        "/articles — детали по артикулам (текущий отчет)"
+        "/articles — детали по артикулам (текущий отчет)\n\n"
+        "Также можно использовать кнопки меню.",
+        parse_mode='Markdown',
+        reply_markup=get_main_menu()
     )
 
 # === ОБРАБОТКА ФАЙЛОВ ===
@@ -708,6 +719,9 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("📦 Детали по артикулам", callback_data="show_articles")]]
         await update.message.reply_text("Нажмите кнопку для деталей:", reply_markup=InlineKeyboardMarkup(keyboard))
 
+        # Показываем главное меню
+        await update.message.reply_text("Выберите действие:", reply_markup=get_main_menu())
+
         for f in [out_file, osn_file, vyk_file]:
             try:
                 os.remove(f)
@@ -888,7 +902,7 @@ async def resend_report(update: Update, context: ContextTypes.DEFAULT_TYPE, repo
     except:
         pass
 
-# === СТАТИСТИКА И УДАЛЕНИЕ (исправлены) ===
+# === СТАТИСТИКА И УДАЛЕНИЕ ===
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reports, total = get_all_reports()
     if not reports:
@@ -1183,6 +1197,22 @@ async def compare_articles_callback(update: Update, context: ContextTypes.DEFAUL
     keyboard = [[InlineKeyboardButton("◀️ Назад к списку", callback_data="show_articles")]]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
+# ===== ОБРАБОТЧИК ТЕКСТОВЫХ КОМАНД ИЗ МЕНЮ =====
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "📊 Статистика":
+        await stats_cmd(update, context)
+    elif text == "📂 История":
+        await history_cmd(update, context)
+    elif text == "📦 Артикулы":
+        await articles_full_cmd(update, context)
+    elif text == "🗑️ Удалить отчёт":
+        await delete_cmd(update, context)
+    elif text == "❓ Помощь":
+        await help_cmd(update, context)
+    else:
+        await update.message.reply_text("Используйте кнопки меню или введите команду.")  # ignore
+
 # ===== ЗАПУСК =====
 def main():
     print("🤖 Запуск бота...")
@@ -1221,6 +1251,7 @@ def main():
     app.add_handler(CallbackQueryHandler(delete_callback, pattern="^del_"))
 
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("✅ Бот готов")
     app.run_polling(allowed_updates=[])
