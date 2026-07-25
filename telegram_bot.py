@@ -48,6 +48,12 @@ else:
     ALLOWED_USERS = set()
     print("⚠️ ALLOWED_USER_IDS не задан. Бот доступен всем.")
 
+# Имена пользователей для отображения в истории
+USER_NAMES = {
+    1289447998: "Роман",
+    5167366543: "Евгений"
+}
+
 DATA_DIR = Path("/data")
 TEMP_DIR = DATA_DIR / "temp"
 DB_PATH = DATA_DIR / "reports.db"
@@ -122,7 +128,6 @@ def init_db():
             evening_time TEXT DEFAULT '20:40'
         )
     ''')
-    # Таблица для хранения истории себестоимости
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS product_costs_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -142,6 +147,15 @@ def init_db():
 init_db()
 
 # ===== ФУНКЦИИ ДЛЯ РАБОТЫ С СЕБЕСТОИМОСТЬЮ =====
+def get_earliest_report_date():
+    """Возвращает дату самого раннего отчёта в БД (start_date) или None."""
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute("SELECT MIN(start_date) FROM reports WHERE start_date IS NOT NULL")
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row and row[0] else None
+
 def get_active_cost(article, report_date):
     """Возвращает себестоимость для артикула на указанную дату (формат YYYY-MM-DD)."""
     conn = sqlite3.connect(str(DB_PATH))
@@ -216,21 +230,34 @@ def get_cost_history(article):
 
 def set_product_cost(article, brand, cost, user_id):
     """Устанавливает новую себестоимость для артикула.
-       Закрывает текущую активную запись (date_to = сегодня) и создаёт новую с date_from = сегодня."""
-    today = datetime.now().strftime("%Y-%m-%d")
+       Если это первая запись для артикула, date_from = дата самого раннего отчёта,
+       иначе date_from = сегодня.
+       Закрывает текущую активную запись (date_to = сегодня - 1 день)."""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-    # Закрываем активную запись, если есть
-    cursor.execute('''
-        UPDATE product_costs_history
-        SET date_to = ?
-        WHERE article = ? AND date_to IS NULL
-    ''', (today, article))
-    # Создаём новую запись
+    # Проверяем, есть ли уже записи для этого артикула
+    cursor.execute("SELECT COUNT(*) FROM product_costs_history WHERE article = ?", (article,))
+    count = cursor.fetchone()[0]
+    if count == 0:
+        earliest = get_earliest_report_date()
+        if earliest:
+            date_from = earliest
+        else:
+            date_from = datetime.now().strftime("%Y-%m-%d")
+    else:
+        date_from = datetime.now().strftime("%Y-%m-%d")
+    # Закрываем активную запись (если есть)
+    if count > 0:
+        prev_date = (datetime.strptime(date_from, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+        cursor.execute('''
+            UPDATE product_costs_history
+            SET date_to = ?
+            WHERE article = ? AND date_to IS NULL
+        ''', (prev_date, article))
     cursor.execute('''
         INSERT INTO product_costs_history (article, brand, cost_price, date_from, set_by)
         VALUES (?, ?, ?, ?, ?)
-    ''', (article, brand, cost, today, user_id))
+    ''', (article, brand, cost, date_from, user_id))
     conn.commit()
     conn.close()
     return True
@@ -1026,7 +1053,7 @@ async def menu_settings_callback(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     keyboard = [
         [InlineKeyboardButton("📰 Новости", callback_data="news_settings")],
-        [InlineKeyboardButton("💰 Чистая прибыль", callback_data="menu_costs")],
+        [InlineKeyboardButton("💰 Себестоимость", callback_data="menu_costs")],
         [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
     ]
     await query.edit_message_text("⚙️ **Настройки**\n\nВыберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
@@ -1187,8 +1214,9 @@ async def menu_costs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         keyboard.append([InlineKeyboardButton(label, callback_data=f"cost_edit_{article}")])
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")])
     await query.edit_message_text(
-        "💰 **Управление чистой прибылью (себестоимостью)**\n\n"
-        "Выберите артикул для редактирования. Текущая себестоимость указана на кнопке.",
+        "💰 **Управление себестоимостью**\n\n"
+        "Выберите артикул для редактирования. Текущая себестоимость указана на кнопке.\n"
+        "Первая установленная себестоимость будет действовать с даты первого отчёта.",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='Markdown'
     )
@@ -1204,7 +1232,7 @@ async def cost_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     keyboard = [
         [InlineKeyboardButton("➕ Установить новую себестоимость", callback_data=f"cost_set_{article}")],
         [InlineKeyboardButton("📜 История изменений", callback_data=f"cost_history_{article}")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="menu_costs")]
+        [InlineKeyboardButton("◀️ Назад к списку", callback_data="menu_costs")]
     ]
     text = f"💰 **Артикул:** `{article}`\n\n"
     if current:
@@ -1223,9 +1251,12 @@ async def cost_set_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['waiting_for_cost'] = article
     await query.edit_message_text(
         f"💵 Введите новую себестоимость для артикула `{article}` в рублях (только число):\n\n"
-        "Например: `450.50`",
+        "Например: `450.50`\n\n"
+        "Если это первая установка, она будет действовать с даты первого отчёта.",
         parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data=f"cost_edit_{article}")]])
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Назад к списку", callback_data="menu_costs")]
+        ])
     )
 
 async def cost_history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1243,14 +1274,16 @@ async def cost_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
     for record in history:
         rec_id, cost, date_from, date_to, set_by, created_at = record
         date_to_str = date_to if date_to else "действует"
+        # Получаем имя пользователя
+        user_name = USER_NAMES.get(set_by, str(set_by)) if set_by else "неизвестно"
         text += f"• {date_from} → {date_to_str}: **{cost:.2f} ₽**"
         if set_by:
-            text += f" (установил {set_by})"
+            text += f" (установил {user_name})"
         text += "\n"
-        # Если запись не активна, добавляем кнопку "Удалить"
         if date_to is not None:
             keyboard.append([InlineKeyboardButton(f"🗑️ Удалить запись от {date_from}", callback_data=f"cost_delete_{rec_id}")])
-    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data=f"cost_edit_{article}")])
+    keyboard.append([InlineKeyboardButton("◀️ Назад к деталям", callback_data=f"cost_edit_{article}")])
+    keyboard.append([InlineKeyboardButton("◀️ Назад к списку", callback_data="menu_costs")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def cost_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1262,7 +1295,6 @@ async def cost_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     success = delete_cost_history(record_id)
     if success:
         await query.edit_message_text("✅ Запись удалена из истории.")
-        # Возвращаемся к списку артикулов
         await menu_costs_callback(update, context)
     else:
         await query.edit_message_text("❌ Не удалось удалить запись (возможно, она активна или уже удалена).")
@@ -1279,7 +1311,6 @@ async def handle_cost_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if cost < 0:
             await update.message.reply_text("❌ Себестоимость не может быть отрицательной.")
             return
-        # Получаем бренд для артикула (можно взять из последнего отчёта или оставить пустым)
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
         cursor.execute('SELECT brand FROM article_stats WHERE article = ? LIMIT 1', (article,))
@@ -1287,10 +1318,15 @@ async def handle_cost_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         brand = row[0] if row else 'Unknown'
         conn.close()
         set_product_cost(article, brand, cost, update.effective_user.id)
-        await update.message.reply_text(f"✅ Себестоимость для артикула `{article}` установлена: **{cost:.2f} ₽**", parse_mode='Markdown')
         context.user_data['waiting_for_cost'] = None
-        # Возвращаемся в меню себестоимости
-        await menu_costs_callback(update, context)
+
+        # Показываем сообщение с кнопкой "К артикулам"
+        keyboard = [[InlineKeyboardButton("◀️ К артикулам", callback_data="menu_costs")]]
+        await update.message.reply_text(
+            f"✅ Себестоимость для артикула `{article}` установлена: **{cost:.2f} ₽**",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
     except ValueError:
         await update.message.reply_text("❌ Введите корректное число (например, 450.50).")
 
@@ -1694,7 +1730,6 @@ async def resend_report(query, context, report_id):
     reklama_hara = metrics.get('reklama_hara', 0)
     shtrafy = metrics.get('shtrafy', 0)
     nalog = metrics.get('nalog', 0)
-    # Новые метрики прибыли
     profit = metrics.get('total_profit', 0)
     margin = metrics.get('margin', 0)
     profit_carp = metrics.get('profit_carp', 0)
@@ -1814,7 +1849,7 @@ async def resend_report(query, context, report_id):
         msg += " " + fmt_change(nalog, prev_nalog, '₽')
     msg += "\n"
 
-    # Блок прибыли
+    # Блок чистой прибыли
     msg += f"\n💰 **Чистая прибыль:** {profit:,.2f} ₽"
     if prev_metrics:
         prev_profit = prev_metrics.get('total_profit', 0)
@@ -2365,7 +2400,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         hara_vyk_orders = sum(a.get('quantity', 0) for a in articles.get('Harakiri', {}).get('vyk', {}).values())
 
         # ===== РАСЧЁТ ПРИБЫЛИ =====
-        profit_data = {}
         total_profit = 0
         total_revenue = 0
         profit_by_brand = {'Цап царапкин': 0, 'Harakiri': 0}
@@ -2376,7 +2410,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for art, stats in data.get('sales', {}).items():
                 qty = stats.get('quantity', 0)
                 rev = stats.get('revenue', 0)
-                # Получаем себестоимость на дату окончания отчёта
                 cost = get_active_cost(art, end_date)
                 if cost is None:
                     cost = 0
@@ -2386,7 +2419,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if brand in profit_by_brand:
                     profit_by_brand[brand] += profit
                     revenue_by_brand[brand] += rev
-            # Также добавляем данные из выкупов (если нужно) - но для прибыли используем sales
         conn.close()
         total_margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
         margin_carp = (profit_by_brand['Цап царапкин'] / revenue_by_brand['Цап царапкин'] * 100) if revenue_by_brand['Цап царапкин'] > 0 else 0
@@ -2410,7 +2442,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'hara_orders': hara_orders,
             'carp_vyk_orders': carp_vyk_orders,
             'hara_vyk_orders': hara_vyk_orders,
-            # Добавляем прибыль
             'total_profit': total_profit,
             'margin': total_margin,
             'profit_carp': profit_by_brand['Цап царапкин'],
@@ -2566,7 +2597,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += " " + fmt_change(nalog, prev_nalog, '₽')
         msg += "\n"
 
-        # Блок прибыли
+        # Блок чистой прибыли
         msg += f"\n💰 **Чистая прибыль:** {total_profit:,.2f} ₽"
         if prev_metrics:
             prev_profit = prev_metrics.get('total_profit', 0)
@@ -2617,7 +2648,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text.startswith('/'):
         return
-    # Проверяем, не ожидаем ли мы ввод себестоимости
     if context.user_data.get('waiting_for_cost'):
         await handle_cost_input(update, context)
         return
@@ -2626,14 +2656,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== ЗАПУСК =====
 def main():
     print("🤖 Запуск бота...")
-    # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    # Создаём приложение бота
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Регистрируем все обработчики
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("osn", handle_osn))
@@ -2658,39 +2685,4 @@ def main():
 
     app.add_handler(CallbackQueryHandler(menu_costs_callback, pattern="^menu_costs$"))
     app.add_handler(CallbackQueryHandler(cost_edit_callback, pattern="^cost_edit_"))
-    app.add_handler(CallbackQueryHandler(cost_set_callback, pattern="^cost_set_"))
-    app.add_handler(CallbackQueryHandler(cost_history_callback, pattern="^cost_history_"))
-    app.add_handler(CallbackQueryHandler(cost_delete_callback, pattern="^cost_delete_"))
-
-    app.add_handler(CallbackQueryHandler(analytics_toggle_callback, pattern="^analytics_toggle_"))
-    app.add_handler(CallbackQueryHandler(analytics_page_callback, pattern="^analytics_page_"))
-    app.add_handler(CallbackQueryHandler(analytics_select_all_callback, pattern="^analytics_select_all$"))
-    app.add_handler(CallbackQueryHandler(analytics_deselect_all_callback, pattern="^analytics_deselect_all$"))
-    app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
-    app.add_handler(CallbackQueryHandler(analytics_show_callback, pattern="^analytics_show$"))
-
-    app.add_handler(CallbackQueryHandler(history_page_callback, pattern="^history_page_"))
-    app.add_handler(CallbackQueryHandler(history_report_callback, pattern="^history_report_"))
-    app.add_handler(CallbackQueryHandler(history_toggle_delete_callback, pattern="^history_toggle_delete_"))
-    app.add_handler(CallbackQueryHandler(history_enable_delete_callback, pattern="^history_enable_delete$"))
-    app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
-    app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
-
-    app.add_handler(CallbackQueryHandler(articles_callback, pattern="^show_articles$"))
-    app.add_handler(CallbackQueryHandler(growth_callback, pattern="^growth$"))
-    app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline$"))
-    app.add_handler(CallbackQueryHandler(compare_articles_callback, pattern="^compare_articles$"))
-
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-
-    # Планировщик новостей
-    scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[app])
-    scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])
-    scheduler.start()
-
-    print("✅ Бот готов, запускаем polling...")
-    app.run_polling(allowed_updates=[])
-
-if __name__ == "__main__":
-    main()
+    app.add_handler(CallbackQueryHandler(cost_set_callback, pattern="^cost
