@@ -82,7 +82,6 @@
         }
 
         function renderStats(data) {
-            // Защита от undefined/null
             const safe = (val, fallback = 0) => (typeof val === 'number' && !isNaN(val)) ? val : fallback;
             const total = safe(data.total_reports);
             const wbTotal = safe(data.wb_total);
