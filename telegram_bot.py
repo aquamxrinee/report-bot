@@ -2,8 +2,7 @@
 """
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
-Полная версия с инлайн-меню, историей, артикулами, аналитикой, удалением,
-новостными сводками и улучшенным сравнением.
+Полная версия с обновлением отчётов по периоду.
 """
 
 import os
@@ -132,6 +131,17 @@ def is_file_duplicate(file_hash):
         result = cursor.fetchone()
         conn.close()
         return result
+    except:
+        return None
+
+def get_report_id_by_period(start_date, end_date):
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute('SELECT id FROM reports WHERE start_date = ? AND end_date = ?', (start_date, end_date))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None
     except:
         return None
 
@@ -583,7 +593,7 @@ class ReportProcessor:
                 sales = df_bren[(df_bren['Тип документа'] == 'Продажа') & (df_bren[qty_col] > 0)]
                 agg_sales = sales.groupby(art_col).agg(
                     quantity=(qty_col, 'sum'),
-                    revenue=('Цена розничная', 'sum')  # ИСПРАВЛЕНО: используем "Цена розничная" для выручки
+                    revenue=('Цена розничная', 'sum')
                 ).to_dict('index') if not sales.empty else {}
 
                 articles = {}
@@ -1892,8 +1902,15 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'hara_vyk_orders': hara_vyk_orders
         }
 
+        # === ПРОВЕРКА И УДАЛЕНИЕ СТАРОГО ОТЧЁТА ПО ПЕРИОДУ ===
         if osn_hash is None:
             osn_hash = calculate_file_hash(Path(osn_file))
+
+        existing_id = get_report_id_by_period(start_date, end_date)
+        if existing_id:
+            delete_report(existing_id)
+            logger.info(f"🗑️ Удалён старый отчёт за период {start_date} — {end_date} (ID {existing_id})")
+
         saved, report_id = save_report_to_db(
             file_name=Path(osn_file).name,
             file_hash=osn_hash,
