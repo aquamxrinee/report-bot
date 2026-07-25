@@ -2,9 +2,7 @@
 """
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
-Полная версия с инлайн-меню, историей, артикулами, аналитикой, удалением,
-новостными сводками, улучшенным сравнением и Telegram Mini App.
-Добавлена авторизация по белосписку user_id и переход на вебхуки.
+Версия с вебхуками и улучшенным логированием для диагностики Mini App.
 """
 
 import os
@@ -43,7 +41,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://worker-production-a75a.up.railwa
 print(f"🔗 Вебхук URL: {WEBHOOK_URL}")
 
 # Нормализация URL для Mini App
-MINI_APP_URL = os.getenv("MINI_APP_URL", "ваш-сайт.railway.app/mini")
+MINI_APP_URL = os.getenv("MINI_APP_URL", "worker-production-a75a.up.railway.app/mini")
 if not MINI_APP_URL.startswith(("http://", "https://")):
     MINI_APP_URL = "https://" + MINI_APP_URL
 print(f"🌐 Mini App URL: {MINI_APP_URL}")
@@ -589,6 +587,11 @@ flask_app = Flask(__name__, template_folder='templates')
 # Глобальная переменная для приложения бота (будет установлена в main)
 telegram_app = None
 
+@flask_app.before_request
+def log_request_info():
+    """Логирует каждый входящий запрос."""
+    logger.info(f"📥 Запрос: {request.method} {request.path} от {request.remote_addr}")
+
 @flask_app.after_request
 def after_request(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
@@ -607,14 +610,17 @@ def health_check():
 def ping():
     return "pong", 200
 
+@flask_app.route("/test")
+def test():
+    """Тестовый эндпоинт для проверки доступности."""
+    logger.info("✅ Тестовый эндпоинт /test вызван")
+    return "OK", 200
+
 @flask_app.route('/mini')
 def mini_app():
     logger.info(f"Запрос /mini от {request.remote_addr}, User-Agent: {request.headers.get('User-Agent')}")
-    response = flask_app.make_response(render_template('dashboard.html'))
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    response.headers['Pragma'] = 'no-cache'
-    response.headers['Expires'] = '0'
-    return response
+    # Временно возвращаем простую строку для диагностики
+    return "Mini App is working! (test mode)"
 
 @flask_app.route('/api/stats')
 def api_stats():
@@ -668,7 +674,6 @@ def webhook():
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, telegram_app.bot)
         # Обрабатываем обновление асинхронно в отдельном потоке, чтобы не блокировать Flask
-        # Используем asyncio.run, чтобы запустить корутину
         asyncio.run(telegram_app.process_update(update))
         return "OK", 200
     except Exception as e:
@@ -2312,7 +2317,7 @@ def main():
     # Создаём приложение бота
     telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Регистрируем все обработчики
+    # Регистрируем все обработчики (код регистрации такой же, как в прошлой версии)
     telegram_app.add_handler(CommandHandler("start", start))
     telegram_app.add_handler(CommandHandler("help", help_cmd))
     telegram_app.add_handler(CommandHandler("osn", handle_osn))
@@ -2322,14 +2327,12 @@ def main():
     telegram_app.add_handler(CommandHandler("set_news", set_news_cmd))
     telegram_app.add_handler(CommandHandler("set_news_query", set_news_query_cmd))
 
-    # Callbacks для меню
     telegram_app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     telegram_app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
     telegram_app.add_handler(CallbackQueryHandler(menu_analytics_main_callback, pattern="^menu_analytics_main$"))
     telegram_app.add_handler(CallbackQueryHandler(menu_settings_callback, pattern="^menu_settings$"))
     telegram_app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
 
-    # Callbacks для новостей (настройки)
     telegram_app.add_handler(CallbackQueryHandler(news_settings_callback, pattern="^news_settings$"))
     telegram_app.add_handler(CallbackQueryHandler(news_now_callback, pattern="^news_now$"))
     telegram_app.add_handler(CallbackQueryHandler(news_toggle_callback, pattern="^news_toggle$"))
@@ -2337,7 +2340,6 @@ def main():
     telegram_app.add_handler(CallbackQueryHandler(news_time_callback, pattern="^news_time$"))
     telegram_app.add_handler(CallbackQueryHandler(news_time_set_callback, pattern="^news_time_"))
 
-    # Callbacks для аналитики
     telegram_app.add_handler(CallbackQueryHandler(analytics_toggle_callback, pattern="^analytics_toggle_"))
     telegram_app.add_handler(CallbackQueryHandler(analytics_page_callback, pattern="^analytics_page_"))
     telegram_app.add_handler(CallbackQueryHandler(analytics_select_all_callback, pattern="^analytics_select_all$"))
@@ -2345,7 +2347,6 @@ def main():
     telegram_app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
     telegram_app.add_handler(CallbackQueryHandler(analytics_show_callback, pattern="^analytics_show$"))
 
-    # Callbacks для истории
     telegram_app.add_handler(CallbackQueryHandler(history_page_callback, pattern="^history_page_"))
     telegram_app.add_handler(CallbackQueryHandler(history_report_callback, pattern="^history_report_"))
     telegram_app.add_handler(CallbackQueryHandler(history_toggle_delete_callback, pattern="^history_toggle_delete_"))
@@ -2353,7 +2354,6 @@ def main():
     telegram_app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
     telegram_app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
 
-    # Callbacks для артикулов (только из отчёта)
     telegram_app.add_handler(CallbackQueryHandler(articles_callback, pattern="^show_articles$"))
     telegram_app.add_handler(CallbackQueryHandler(growth_callback, pattern="^growth$"))
     telegram_app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline$"))
@@ -2362,7 +2362,7 @@ def main():
     telegram_app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Устанавливаем команды бота (вызываем синхронно)
+    # Устанавливаем команды
     async def set_commands():
         await telegram_app.bot.set_my_commands([
             BotCommand("start", "Начать"),
