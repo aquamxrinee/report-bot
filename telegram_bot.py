@@ -2,7 +2,8 @@
 """
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
-Версия с вебхуками и улучшенным логированием для диагностики Mini App.
+Версия с polling и Flask в отдельном потоке.
+Исправлена агрегация метрик, добавлена диагностика.
 """
 
 import os
@@ -11,7 +12,7 @@ import shutil
 import logging
 import sqlite3
 import hashlib
-import asyncio
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -36,12 +37,8 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 if not NEWS_API_KEY:
     print("⚠️ NEWS_API_KEY не найден. Новостные функции будут отключены.")
 
-# URL для вебхука (должен быть публичным)
-WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://worker-production-a75a.up.railway.app/webhook")
-print(f"🔗 Вебхук URL: {WEBHOOK_URL}")
-
 # Нормализация URL для Mini App
-MINI_APP_URL = os.getenv("MINI_APP_URL", "worker-production-a75a.up.railway.app/mini")
+MINI_APP_URL = os.getenv("MINI_APP_URL", "ваш-сайт.railway.app/mini")
 if not MINI_APP_URL.startswith(("http://", "https://")):
     MINI_APP_URL = "https://" + MINI_APP_URL
 print(f"🌐 Mini App URL: {MINI_APP_URL}")
@@ -581,26 +578,8 @@ def parse_date_from_period(date_period):
     except:
         return None, None
 
-# ===== FLASK (Mini App + Webhook) =====
+# ===== FLASK (Mini App) =====
 flask_app = Flask(__name__, template_folder='templates')
-
-# Глобальная переменная для приложения бота (будет установлена в main)
-telegram_app = None
-
-@flask_app.before_request
-def log_request_info():
-    """Логирует каждый входящий запрос."""
-    logger.info(f"📥 Запрос: {request.method} {request.path} от {request.remote_addr}")
-
-@flask_app.after_request
-def after_request(response):
-    response.headers['X-Content-Type-Options'] = 'nosniff'
-    response.headers['X-Frame-Options'] = 'DENY'
-    response.headers['X-XSS-Protection'] = '1; mode=block'
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    response.headers['Pragma'] = 'no-cache'
-    response.headers['Expires'] = '0'
-    return response
 
 @flask_app.route("/")
 def health_check():
@@ -610,21 +589,12 @@ def health_check():
 def ping():
     return "pong", 200
 
-@flask_app.route("/test")
-def test():
-    """Тестовый эндпоинт для проверки доступности."""
-    logger.info("✅ Тестовый эндпоинт /test вызван")
-    return "OK", 200
-
 @flask_app.route('/mini')
 def mini_app():
-    logger.info(f"Запрос /mini от {request.remote_addr}, User-Agent: {request.headers.get('User-Agent')}")
-    # Временно возвращаем простую строку для диагностики
-    return "Mini App is working! (test mode)"
+    return render_template('dashboard.html')
 
 @flask_app.route('/api/stats')
 def api_stats():
-    logger.info(f"Запрос /api/stats от {request.remote_addr}, User-Agent: {request.headers.get('User-Agent')}")
     try:
         data = get_aggregated_metrics()
         for key in ['total_reports', 'wb_total', 'wb_carp', 'wb_hara', 'avg_acquiring']:
@@ -663,25 +633,15 @@ def debug_db():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@flask_app.route('/webhook', methods=['POST'])
-def webhook():
-    """Эндпоинт для вебхука Telegram."""
-    if not telegram_app:
-        logger.error("Бот не инициализирован")
-        return "Bot not ready", 503
-
-    try:
-        json_data = request.get_json(force=True)
-        update = Update.de_json(json_data, telegram_app.bot)
-        # Обрабатываем обновление асинхронно в отдельном потоке, чтобы не блокировать Flask
-        asyncio.run(telegram_app.process_update(update))
-        return "OK", 200
-    except Exception as e:
-        logger.error(f"Ошибка в вебхуке: {e}")
-        return "Error", 500
+def run_flask():
+    from threading import Thread
+    def _run():
+        flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    Thread(target=_run, daemon=True).start()
 
 # ===== АВТОРИЗАЦИЯ: проверка доступа =====
 async def check_access(update: Update) -> bool:
+    """Проверяет, есть ли пользователь в белом списке."""
     if not ALLOWED_USERS:
         return True
     user_id = update.effective_user.id
@@ -2310,61 +2270,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ===== ЗАПУСК =====
 def main():
-    global telegram_app
-
     print("🤖 Запуск бота...")
-    
-    # Создаём приложение бота
-    telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # Регистрируем все обработчики (код регистрации такой же, как в прошлой версии)
-    telegram_app.add_handler(CommandHandler("start", start))
-    telegram_app.add_handler(CommandHandler("help", help_cmd))
-    telegram_app.add_handler(CommandHandler("osn", handle_osn))
-    telegram_app.add_handler(CommandHandler("vyk", handle_vyk))
-    telegram_app.add_handler(CommandHandler("articles", articles_full_cmd))
-    telegram_app.add_handler(CommandHandler("news_now", news_now_cmd))
-    telegram_app.add_handler(CommandHandler("set_news", set_news_cmd))
-    telegram_app.add_handler(CommandHandler("set_news_query", set_news_query_cmd))
+    run_flask()
 
-    telegram_app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
-    telegram_app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
-    telegram_app.add_handler(CallbackQueryHandler(menu_analytics_main_callback, pattern="^menu_analytics_main$"))
-    telegram_app.add_handler(CallbackQueryHandler(menu_settings_callback, pattern="^menu_settings$"))
-    telegram_app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
+    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    telegram_app.add_handler(CallbackQueryHandler(news_settings_callback, pattern="^news_settings$"))
-    telegram_app.add_handler(CallbackQueryHandler(news_now_callback, pattern="^news_now$"))
-    telegram_app.add_handler(CallbackQueryHandler(news_toggle_callback, pattern="^news_toggle$"))
-    telegram_app.add_handler(CallbackQueryHandler(news_query_callback, pattern="^news_query$"))
-    telegram_app.add_handler(CallbackQueryHandler(news_time_callback, pattern="^news_time$"))
-    telegram_app.add_handler(CallbackQueryHandler(news_time_set_callback, pattern="^news_time_"))
-
-    telegram_app.add_handler(CallbackQueryHandler(analytics_toggle_callback, pattern="^analytics_toggle_"))
-    telegram_app.add_handler(CallbackQueryHandler(analytics_page_callback, pattern="^analytics_page_"))
-    telegram_app.add_handler(CallbackQueryHandler(analytics_select_all_callback, pattern="^analytics_select_all$"))
-    telegram_app.add_handler(CallbackQueryHandler(analytics_deselect_all_callback, pattern="^analytics_deselect_all$"))
-    telegram_app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
-    telegram_app.add_handler(CallbackQueryHandler(analytics_show_callback, pattern="^analytics_show$"))
-
-    telegram_app.add_handler(CallbackQueryHandler(history_page_callback, pattern="^history_page_"))
-    telegram_app.add_handler(CallbackQueryHandler(history_report_callback, pattern="^history_report_"))
-    telegram_app.add_handler(CallbackQueryHandler(history_toggle_delete_callback, pattern="^history_toggle_delete_"))
-    telegram_app.add_handler(CallbackQueryHandler(history_enable_delete_callback, pattern="^history_enable_delete$"))
-    telegram_app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
-    telegram_app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
-
-    telegram_app.add_handler(CallbackQueryHandler(articles_callback, pattern="^show_articles$"))
-    telegram_app.add_handler(CallbackQueryHandler(growth_callback, pattern="^growth$"))
-    telegram_app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline$"))
-    telegram_app.add_handler(CallbackQueryHandler(compare_articles_callback, pattern="^compare_articles$"))
-
-    telegram_app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-
-    # Устанавливаем команды
-    async def set_commands():
-        await telegram_app.bot.set_my_commands([
+    async def set_commands(app_instance):
+        await app_instance.bot.set_my_commands([
             BotCommand("start", "Начать"),
             BotCommand("help", "Помощь"),
             BotCommand("osn", "Отметить как основной"),
@@ -2374,23 +2286,61 @@ def main():
             BotCommand("set_news", "Настройка новостей"),
             BotCommand("set_news_query", "Изменить поисковый запрос"),
         ])
-    asyncio.run(set_commands())
+    app.post_init = set_commands
 
-    # Устанавливаем вебхук
-    try:
-        asyncio.run(telegram_app.bot.set_webhook(url=WEBHOOK_URL))
-        print(f"✅ Вебхук установлен на {WEBHOOK_URL}")
-    except Exception as e:
-        print(f"❌ Ошибка установки вебхука: {e}")
+    # Команды
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("osn", handle_osn))
+    app.add_handler(CommandHandler("vyk", handle_vyk))
+    app.add_handler(CommandHandler("articles", articles_full_cmd))
+    app.add_handler(CommandHandler("news_now", news_now_cmd))
+    app.add_handler(CommandHandler("set_news", set_news_cmd))
+    app.add_handler(CommandHandler("set_news_query", set_news_query_cmd))
 
-    # Запускаем планировщик новостей
-    scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[telegram_app])
-    scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[telegram_app])
+    # Callbacks
+    app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
+    app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
+    app.add_handler(CallbackQueryHandler(menu_analytics_main_callback, pattern="^menu_analytics_main$"))
+    app.add_handler(CallbackQueryHandler(menu_settings_callback, pattern="^menu_settings$"))
+    app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
+
+    app.add_handler(CallbackQueryHandler(news_settings_callback, pattern="^news_settings$"))
+    app.add_handler(CallbackQueryHandler(news_now_callback, pattern="^news_now$"))
+    app.add_handler(CallbackQueryHandler(news_toggle_callback, pattern="^news_toggle$"))
+    app.add_handler(CallbackQueryHandler(news_query_callback, pattern="^news_query$"))
+    app.add_handler(CallbackQueryHandler(news_time_callback, pattern="^news_time$"))
+    app.add_handler(CallbackQueryHandler(news_time_set_callback, pattern="^news_time_"))
+
+    app.add_handler(CallbackQueryHandler(analytics_toggle_callback, pattern="^analytics_toggle_"))
+    app.add_handler(CallbackQueryHandler(analytics_page_callback, pattern="^analytics_page_"))
+    app.add_handler(CallbackQueryHandler(analytics_select_all_callback, pattern="^analytics_select_all$"))
+    app.add_handler(CallbackQueryHandler(analytics_deselect_all_callback, pattern="^analytics_deselect_all$"))
+    app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
+    app.add_handler(CallbackQueryHandler(analytics_show_callback, pattern="^analytics_show$"))
+
+    app.add_handler(CallbackQueryHandler(history_page_callback, pattern="^history_page_"))
+    app.add_handler(CallbackQueryHandler(history_report_callback, pattern="^history_report_"))
+    app.add_handler(CallbackQueryHandler(history_toggle_delete_callback, pattern="^history_toggle_delete_"))
+    app.add_handler(CallbackQueryHandler(history_enable_delete_callback, pattern="^history_enable_delete$"))
+    app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
+    app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
+
+    app.add_handler(CallbackQueryHandler(articles_callback, pattern="^show_articles$"))
+    app.add_handler(CallbackQueryHandler(growth_callback, pattern="^growth$"))
+    app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline$"))
+    app.add_handler(CallbackQueryHandler(compare_articles_callback, pattern="^compare_articles$"))
+
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    # Планировщик новостей (UTC)
+    scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[app])
+    scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])
     scheduler.start()
 
-    # Запускаем Flask (основной поток)
-    print("✅ Бот готов, запускаем Flask...")
-    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    print("✅ Бот готов")
+    app.run_polling(allowed_updates=[])
 
 if __name__ == "__main__":
     main()
