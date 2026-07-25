@@ -48,7 +48,6 @@ else:
     ALLOWED_USERS = set()
     print("⚠️ ALLOWED_USER_IDS не задан. Бот доступен всем.")
 
-# Имена пользователей для отображения в истории
 USER_NAMES = {
     1289447998: "Роман",
     5167366543: "Евгений"
@@ -148,7 +147,6 @@ init_db()
 
 # ===== ФУНКЦИИ ДЛЯ РАБОТЫ С СЕБЕСТОИМОСТЬЮ =====
 def get_earliest_report_date():
-    """Возвращает дату самого раннего отчёта в БД (start_date) или None."""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute("SELECT MIN(start_date) FROM reports WHERE start_date IS NOT NULL")
@@ -157,7 +155,6 @@ def get_earliest_report_date():
     return row[0] if row and row[0] else None
 
 def get_active_cost(article, report_date):
-    """Возвращает себестоимость для артикула на указанную дату (формат YYYY-MM-DD)."""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('''
@@ -170,7 +167,6 @@ def get_active_cost(article, report_date):
     return row[0] if row else None
 
 def get_current_cost(article):
-    """Возвращает текущую активную себестоимость для артикула (без учёта даты)."""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('''
@@ -185,8 +181,6 @@ def get_current_cost(article):
     return None
 
 def get_all_articles_with_costs():
-    """Возвращает список всех уникальных артикулов из article_stats и product_costs_history
-       с текущей себестоимостью и датой последнего изменения."""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('SELECT DISTINCT article FROM article_stats')
@@ -215,7 +209,6 @@ def get_all_articles_with_costs():
     return result
 
 def get_cost_history(article):
-    """Возвращает полную историю изменений себестоимости для артикула (все записи)."""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('''
@@ -229,24 +222,15 @@ def get_cost_history(article):
     return rows
 
 def set_product_cost(article, brand, cost, user_id):
-    """Устанавливает новую себестоимость для артикула.
-       Если это первая запись для артикула, date_from = дата самого раннего отчёта,
-       иначе date_from = сегодня.
-       Закрывает текущую активную запись (date_to = сегодня - 1 день)."""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-    # Проверяем, есть ли уже записи для этого артикула
     cursor.execute("SELECT COUNT(*) FROM product_costs_history WHERE article = ?", (article,))
     count = cursor.fetchone()[0]
     if count == 0:
         earliest = get_earliest_report_date()
-        if earliest:
-            date_from = earliest
-        else:
-            date_from = datetime.now().strftime("%Y-%m-%d")
+        date_from = earliest if earliest else datetime.now().strftime("%Y-%m-%d")
     else:
         date_from = datetime.now().strftime("%Y-%m-%d")
-    # Закрываем активную запись (если есть)
     if count > 0:
         prev_date = (datetime.strptime(date_from, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
         cursor.execute('''
@@ -263,7 +247,6 @@ def set_product_cost(article, brand, cost, user_id):
     return True
 
 def delete_cost_history(record_id):
-    """Удаляет запись из истории (только если она не активная)."""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('SELECT date_to FROM product_costs_history WHERE id = ?', (record_id,))
@@ -510,7 +493,6 @@ def get_report_date_range():
         return None, None
 
 def get_aggregated_metrics():
-    """Возвращает суммарные метрики по всем отчётам для мини-приложения, включая прибыль."""
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
@@ -1227,7 +1209,6 @@ async def cost_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     await query.answer()
     article = query.data.split("_")[2]
-    context.user_data['editing_cost_article'] = article
     current = get_current_cost(article)
     keyboard = [
         [InlineKeyboardButton("➕ Установить новую себестоимость", callback_data=f"cost_set_{article}")],
@@ -1274,7 +1255,6 @@ async def cost_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
     for record in history:
         rec_id, cost, date_from, date_to, set_by, created_at = record
         date_to_str = date_to if date_to else "действует"
-        # Получаем имя пользователя
         user_name = USER_NAMES.get(set_by, str(set_by)) if set_by else "неизвестно"
         text += f"• {date_from} → {date_to_str}: **{cost:.2f} ₽**"
         if set_by:
@@ -1300,7 +1280,6 @@ async def cost_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.edit_message_text("❌ Не удалось удалить запись (возможно, она активна или уже удалена).")
 
 async def handle_cost_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает ввод числа для себестоимости."""
     if not await check_access(update):
         return
     article = context.user_data.get('waiting_for_cost')
@@ -1319,8 +1298,6 @@ async def handle_cost_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         set_product_cost(article, brand, cost, update.effective_user.id)
         context.user_data['waiting_for_cost'] = None
-
-        # Показываем сообщение с кнопкой "К артикулам"
         keyboard = [[InlineKeyboardButton("◀️ К артикулам", callback_data="menu_costs")]]
         await update.message.reply_text(
             f"✅ Себестоимость для артикула `{article}` установлена: **{cost:.2f} ₽**",
@@ -1849,7 +1826,6 @@ async def resend_report(query, context, report_id):
         msg += " " + fmt_change(nalog, prev_nalog, '₽')
     msg += "\n"
 
-    # Блок чистой прибыли
     msg += f"\n💰 **Чистая прибыль:** {profit:,.2f} ₽"
     if prev_metrics:
         prev_profit = prev_metrics.get('total_profit', 0)
@@ -2597,7 +2573,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += " " + fmt_change(nalog, prev_nalog, '₽')
         msg += "\n"
 
-        # Блок чистой прибыли
         msg += f"\n💰 **Чистая прибыль:** {total_profit:,.2f} ₽"
         if prev_metrics:
             prev_profit = prev_metrics.get('total_profit', 0)
@@ -2685,4 +2660,38 @@ def main():
 
     app.add_handler(CallbackQueryHandler(menu_costs_callback, pattern="^menu_costs$"))
     app.add_handler(CallbackQueryHandler(cost_edit_callback, pattern="^cost_edit_"))
-    app.add_handler(CallbackQueryHandler(cost_set_callback, pattern="^cost
+    app.add_handler(CallbackQueryHandler(cost_set_callback, pattern="^cost_set_"))
+    app.add_handler(CallbackQueryHandler(cost_history_callback, pattern="^cost_history_"))
+    app.add_handler(CallbackQueryHandler(cost_delete_callback, pattern="^cost_delete_"))
+
+    app.add_handler(CallbackQueryHandler(analytics_toggle_callback, pattern="^analytics_toggle_"))
+    app.add_handler(CallbackQueryHandler(analytics_page_callback, pattern="^analytics_page_"))
+    app.add_handler(CallbackQueryHandler(analytics_select_all_callback, pattern="^analytics_select_all$"))
+    app.add_handler(CallbackQueryHandler(analytics_deselect_all_callback, pattern="^analytics_deselect_all$"))
+    app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
+    app.add_handler(CallbackQueryHandler(analytics_show_callback, pattern="^analytics_show$"))
+
+    app.add_handler(CallbackQueryHandler(history_page_callback, pattern="^history_page_"))
+    app.add_handler(CallbackQueryHandler(history_report_callback, pattern="^history_report_"))
+    app.add_handler(CallbackQueryHandler(history_toggle_delete_callback, pattern="^history_toggle_delete_"))
+    app.add_handler(CallbackQueryHandler(history_enable_delete_callback, pattern="^history_enable_delete$"))
+    app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
+    app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
+
+    app.add_handler(CallbackQueryHandler(articles_callback, pattern="^show_articles$"))
+    app.add_handler(CallbackQueryHandler(growth_callback, pattern="^growth$"))
+    app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline$"))
+    app.add_handler(CallbackQueryHandler(compare_articles_callback, pattern="^compare_articles$"))
+
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[app])
+    scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])
+    scheduler.start()
+
+    print("✅ Бот готов, запускаем polling...")
+    app.run_polling(allowed_updates=[])
+
+if __name__ == "__main__":
+    main()
