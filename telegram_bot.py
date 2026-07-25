@@ -710,7 +710,7 @@ async def history_report_callback(update:Update,context:ContextTypes.DEFAULT_TYP
     q=update.callback_query;await q.answer();data=q.data
     if data.startswith("history_report_"):
         report_id=int(data.split("_")[2]);await resend_report(q,context,report_id)
-async def resend_report(query,context,report_id):
+        async def resend_report(query,context,report_id):
     values=get_report_values(report_id);metrics=get_report_metrics(report_id)
     if not values or not metrics:
         await query.edit_message_text("❌ Данные отчёта не найдены.",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]));return
@@ -719,11 +719,264 @@ async def resend_report(query,context,report_id):
     file_name,date_period=row
     prev_id=get_previous_report_id(report_id);prev_metrics=get_report_metrics(prev_id) if prev_id else None
     context.user_data['current_report_id']=report_id;context.user_data['current_period']=date_period
-    # формируем сообщение с метриками (аналогично process_and_send) - для краткости оставляю как в старом коде, но здесь он уже есть в полной версии.
-    # ... (полный код resend_report есть в предыдущих версиях, я его сюда не вставляю для экономии места, но он присутствует в финальном файле)
-    # В финальном файле эта функция полностью реализована.
-    # Пропускаем для краткости, но в итоговом файле она будет.
-    pass
+    avg_acquiring=metrics.get('avg_acquiring',0);median_acquiring=metrics.get('median_acquiring',0)
+    wb_total=metrics.get('wb_total',0);wb_carp=metrics.get('wb_carp',0);wb_hara=metrics.get('wb_hara',0)
+    carp_orders=metrics.get('carp_orders',0);hara_orders=metrics.get('hara_orders',0)
+    carp_vyk_orders=metrics.get('carp_vyk_orders',0);hara_vyk_orders=metrics.get('hara_vyk_orders',0)
+    k_carp=metrics.get('k_vyvodu_carp',0);k_hara=metrics.get('k_vyvodu_hara',0);k_total=metrics.get('k_vyvodu_total',0)
+    reklama_carp=metrics.get('reklama_carp',0);reklama_hara=metrics.get('reklama_hara',0)
+    shtrafy=metrics.get('shtrafy',0);nalog=metrics.get('nalog',0)
+    profit=metrics.get('total_profit',0);margin=metrics.get('margin',0)
+    profit_carp=metrics.get('profit_carp',0);profit_hara=metrics.get('profit_hara',0)
+    margin_carp=metrics.get('margin_carp',0);margin_hara=metrics.get('margin_hara',0)
+    tax_hara=wb_hara*0.01;k_hara_after_tax=k_hara-tax_hara
+    def fmt_change(current,previous,unit='₽',is_percent=False):
+        if previous is None: return ""
+        if is_percent:
+            diff_pp=current-previous;diff_percent=(diff_pp/previous*100) if previous!=0 else 0
+            return f"(было {previous:.2f}%, {diff_pp:+.2f} п.п., {diff_percent:+.1f}%)"
+        else:
+            diff_abs=current-previous;diff_percent=(diff_abs/previous*100) if previous!=0 else 0
+            return f"(было {previous:,.2f} {unit}, {diff_abs:+.2f} {unit}, {diff_percent:+.1f}%)"
+    msg=f"📊 **Статистика отчёта**\n\n📄 **{file_name}**\n📅 Период: {date_period}\n\n"
+    msg+=f"💳 **Средний эквайринг:** {avg_acquiring:.2f}%"
+    if prev_metrics: prev_avg=prev_metrics.get('avg_acquiring',0);msg+=" "+fmt_change(avg_acquiring,prev_avg,is_percent=True)
+    msg+="\n"
+    msg+=f"📊 **Медианный эквайринг:** {median_acquiring:.2f}%"
+    if prev_metrics: prev_med=prev_metrics.get('median_acquiring',0);msg+=" "+fmt_change(median_acquiring,prev_med,is_percent=True)
+    msg+="\n\n"
+    msg+=f"💰 **ВБшный оборот общий:** {wb_total:,.2f} ₽"
+    if prev_metrics: prev_wb=prev_metrics.get('wb_total',0);msg+=" "+fmt_change(wb_total,prev_wb,'₽')
+    msg+="\n"
+    msg+=f"   🐱 ЦАП: {wb_carp:,.2f} ₽"
+    if prev_metrics: prev_carp=prev_metrics.get('wb_carp',0);msg+=" "+fmt_change(wb_carp,prev_carp,'₽')
+    msg+="\n"
+    msg+=f"   ⚔️ Харакири: {wb_hara:,.2f} ₽"
+    if prev_metrics: prev_hara=prev_metrics.get('wb_hara',0);msg+=" "+fmt_change(wb_hara,prev_hara,'₽')
+    msg+="\n\n"
+    msg+=f"📦 **Заказы (осн):** ЦАП {carp_orders:.0f} шт."
+    if prev_metrics:
+        prev_carp_ord=prev_metrics.get('carp_orders',0);diff=carp_orders-prev_carp_ord;diff_percent=(diff/prev_carp_ord*100) if prev_carp_ord!=0 else 0
+        msg+=f" (было {prev_carp_ord:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
+    msg+=f", Харакири {hara_orders:.0f} шт."
+    if prev_metrics:
+        prev_hara_ord=prev_metrics.get('hara_orders',0);diff=hara_orders-prev_hara_ord;diff_percent=(diff/prev_hara_ord*100) if prev_hara_ord!=0 else 0
+        msg+=f" (было {prev_hara_ord:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
+    msg+="\n"
+    msg+=f"📦 **Заказы (вык):** ЦАП {carp_vyk_orders:.0f} шт."
+    if prev_metrics:
+        prev_carp_vyk=prev_metrics.get('carp_vyk_orders',0);diff=carp_vyk_orders-prev_carp_vyk;diff_percent=(diff/prev_carp_vyk*100) if prev_carp_vyk!=0 else 0
+        msg+=f" (было {prev_carp_vyk:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
+    msg+=f", Харакири {hara_vyk_orders:.0f} шт."
+    if prev_metrics:
+        prev_hara_vyk=prev_metrics.get('hara_vyk_orders',0);diff=hara_vyk_orders-prev_hara_vyk;diff_percent=(diff/prev_hara_vyk*100) if prev_hara_vyk!=0 else 0
+        msg+=f" (было {prev_hara_vyk:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
+    msg+="\n\n"
+    msg+=f"💸 **К выводу ЦАП:** {k_carp:,.2f} ₽"
+    if prev_metrics: prev_k_carp=prev_metrics.get('k_vyvodu_carp',0);msg+=" "+fmt_change(k_carp,prev_k_carp,'₽')
+    msg+="\n"
+    msg+=f"💸 **К выводу Харакири:** {k_hara:,.2f} ₽"
+    if prev_metrics: prev_k_hara=prev_metrics.get('k_vyvodu_hara',0);msg+=" "+fmt_change(k_hara,prev_k_hara,'₽')
+    msg+="\n"
+    msg+=f"💸 **Итого к выводу:** {k_total:,.2f} ₽"
+    if prev_metrics: prev_k_total=prev_metrics.get('k_vyvodu_total',0);msg+=" "+fmt_change(k_total,prev_k_total,'₽')
+    msg+="\n"
+    msg+=f"💸 **Харакири (с вычетом налога):** {k_hara_after_tax:,.2f} ₽"
+    if prev_metrics:
+        prev_k_hara_after=prev_metrics.get('k_vyvodu_hara',0)-(prev_metrics.get('wb_hara',0)*0.01)
+        msg+=" "+fmt_change(k_hara_after_tax,prev_k_hara_after,'₽')
+    msg+="\n\n"
+    msg+=f"📢 **Реклама:** ЦАП {reklama_carp:,.2f} ₽"
+    if prev_metrics: prev_reklama_carp=prev_metrics.get('reklama_carp',0);msg+=" "+fmt_change(reklama_carp,prev_reklama_carp,'₽')
+    msg+=f", Харакири {reklama_hara:,.2f} ₽"
+    if prev_metrics: prev_reklama_hara=prev_metrics.get('reklama_hara',0);msg+=" "+fmt_change(reklama_hara,prev_reklama_hara,'₽')
+    msg+="\n"
+    msg+=f"⚠️ **Штрафы:** {shtrafy:,.2f} ₽"
+    if prev_metrics: prev_shtrafy=prev_metrics.get('shtrafy',0);msg+=" "+fmt_change(shtrafy,prev_shtrafy,'₽')
+    msg+="\n"
+    msg+=f"🧾 **Налог общий:** {nalog:,.2f} ₽"
+    if prev_metrics: prev_nalog=prev_metrics.get('nalog',0);msg+=" "+fmt_change(nalog,prev_nalog,'₽')
+    msg+="\n"
+    msg+=f"\n💰 **Чистая прибыль:** {profit:,.2f} ₽"
+    if prev_metrics: prev_profit=prev_metrics.get('total_profit',0);msg+=" "+fmt_change(profit,prev_profit,'₽')
+    msg+=f"\n📈 **Маржинальность:** {margin:.2f} %"
+    if prev_metrics: prev_margin=prev_metrics.get('margin',0);msg+=" "+fmt_change(margin,prev_margin,is_percent=True)
+    msg+=f"\n   🐱 ЦАП прибыль: {profit_carp:,.2f} ₽, марж. {margin_carp:.2f}%"
+    if prev_metrics:
+        prev_profit_carp=prev_metrics.get('profit_carp',0);prev_margin_carp=prev_metrics.get('margin_carp',0)
+        msg+=" "+fmt_change(profit_carp,prev_profit_carp,'₽');msg+=f", марж. {fmt_change(margin_carp,prev_margin_carp,is_percent=True)}"
+    msg+=f"\n   ⚔️ Харакири прибыль: {profit_hara:,.2f} ₽, марж. {margin_hara:.2f}%"
+    if prev_metrics:
+        prev_profit_hara=prev_metrics.get('profit_hara',0);prev_margin_hara=prev_metrics.get('margin_hara',0)
+        msg+=" "+fmt_change(profit_hara,prev_profit_hara,'₽');msg+=f", марж. {fmt_change(margin_hara,prev_margin_hara,is_percent=True)}"
+    msg+="\n"
+    await query.message.reply_text(msg,parse_mode='Markdown')
+    template_path=Path("/app/шаблон.xlsx")
+    if not template_path.exists():
+        for p in [Path("шаблон.xlsx"),TEMP_DIR/"template.xlsx"]:
+            if p.exists(): template_path=p;break
+    if not template_path.exists(): wb=openpyxl.Workbook();template_path=TEMP_DIR/"template.xlsx";wb.save(template_path)
+    timestamp=datetime.now().strftime('%Y%m%d_%H%M%S');out_file=TEMP_DIR/f"шаблон_{timestamp}.xlsx";shutil.copy(template_path,out_file)
+    wb=openpyxl.load_workbook(out_file,data_only=False,keep_links=False,keep_vba=False);ws=wb.active
+    for cell,val in values.items():
+        ws[cell]=val
+        if isinstance(val,float) and val!=int(val): ws[cell].number_format='0.00'
+    ws.sheet_view.calcMode='manual';wb.save(out_file)
+    with open(out_file,'rb') as f: await query.message.reply_document(f,caption="✅ Шаблон восстановлен")
+    articles=get_article_stats_for_report(report_id)
+    if articles:
+        context.user_data['articles_data']=articles
+        keyboard=[[InlineKeyboardButton("📦 Детали по артикулам",callback_data="show_articles")],[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]
+        await query.message.reply_text("Выберите действие:",reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await query.message.reply_text("Выберите действие:",reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]))
+    try: os.remove(out_file)
+    except: pass
+    try: await query.delete_message()
+    except: pass
+
+# === Артикулы (только для текущего отчёта) ===
+async def articles_full_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE,is_callback=False):
+    if not await check_access(update): return
+    report_id=context.user_data.get('current_report_id')
+    if not report_id:
+        text="❌ Нет активного отчёта.\n\nПожалуйста, загрузите новый отчёт или выберите существующий из архива."
+        keyboard=[[InlineKeyboardButton("📂 Перейти в архив",callback_data="menu_history")],[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]
+        if is_callback: await update.callback_query.edit_message_text(text,reply_markup=InlineKeyboardMarkup(keyboard))
+        else: await update.message.reply_text(text,reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+    current_articles=get_article_stats_for_report(report_id)
+    if not current_articles:
+        text="❌ Нет данных по артикулам для этого отчёта."
+        keyboard=[[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]
+        if is_callback: await update.callback_query.edit_message_text(text,reply_markup=InlineKeyboardMarkup(keyboard))
+        else: await update.message.reply_text(text,reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+    conn=sqlite3.connect(str(DB_PATH));c=conn.cursor();c.execute("SELECT start_date FROM reports WHERE id=?",(report_id,));row=c.fetchone();prev_start_date=row[0] if row else None;conn.close()
+    previous_articles={}
+    if prev_start_date:
+        prev_reports=get_previous_reports(prev_start_date,limit=1)
+        if prev_reports: prev_id=prev_reports[0][0];previous_articles=get_article_stats_for_report(prev_id)
+    all_items=[]
+    for art,data in current_articles.items():
+        cur_q=data['quantity'];cur_r=data['revenue'];prev_q=previous_articles.get(art,{}).get('quantity',0);prev_r=previous_articles.get(art,{}).get('revenue',0)
+        change_q=cur_q-prev_q;change_r_percent=((cur_r-prev_r)/prev_r*100) if prev_r else (0 if cur_q==0 else float('inf'))
+        all_items.append((art,cur_q,cur_r,change_q,change_r_percent,prev_q,prev_r))
+    all_items.sort(key=lambda x:x[2],reverse=True);period=context.user_data.get('current_period','')
+    msg=f"📦 **Все артикулы** ({period})\n\n"
+    for art,cur_q,cur_r,change_q,change_r_percent,prev_q,prev_r in all_items:
+        if prev_q==0 and cur_q==0: delta_str="нет данных"
+        elif prev_q==0: delta_str=f"🆕 +{cur_q} шт."
+        else:
+            arrow="📈" if change_q>0 else "📉" if change_q<0 else "➖"
+            delta_str=f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
+        msg+=f"**{art}**\n   Продажи: {cur_q:,.0f} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
+        if len(msg)>4000: msg+="\n… (сообщение обрезано)";break
+    keyboard=[[InlineKeyboardButton("📈 Топ-10 по росту",callback_data="growth")],[InlineKeyboardButton("📉 Топ-10 по падению",callback_data="decline")],[InlineKeyboardButton("📊 Детальное сравнение",callback_data="compare_articles")],[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]
+    if is_callback: await update.callback_query.edit_message_text(msg,reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='Markdown')
+    else: await update.message.reply_text(msg,reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='Markdown')
+async def articles_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update): return
+    q=update.callback_query;await q.answer();report_id=context.user_data.get('current_report_id')
+    if not report_id: await q.edit_message_text("❌ Нет данных по артикулам для текущего отчета.");return
+    current_articles=get_article_stats_for_report(report_id)
+    if not current_articles: await q.edit_message_text("❌ Нет данных по артикулам.");return
+    conn=sqlite3.connect(str(DB_PATH));c=conn.cursor();c.execute("SELECT start_date FROM reports WHERE id=?",(report_id,));row=c.fetchone();prev_start_date=row[0] if row else None;conn.close()
+    previous_articles={}
+    if prev_start_date:
+        prev_reports=get_previous_reports(prev_start_date,limit=1)
+        if prev_reports: prev_id=prev_reports[0][0];previous_articles=get_article_stats_for_report(prev_id)
+    all_items=[]
+    for art,data in current_articles.items():
+        cur_q=data['quantity'];cur_r=data['revenue'];prev_q=previous_articles.get(art,{}).get('quantity',0);prev_r=previous_articles.get(art,{}).get('revenue',0)
+        change_q=cur_q-prev_q;change_r_percent=((cur_r-prev_r)/prev_r*100) if prev_r else (0 if cur_q==0 else float('inf'))
+        all_items.append((art,cur_q,cur_r,change_q,change_r_percent,prev_q,prev_r))
+    all_items.sort(key=lambda x:x[2],reverse=True);top=all_items[:10];period=context.user_data.get('current_period','')
+    msg=f"📦 **Топ-10 артикулов** ({period})\n\n"
+    for art,cur_q,cur_r,change_q,change_r_percent,prev_q,prev_r in top:
+        if prev_q==0 and cur_q==0: delta_str="нет данных"
+        elif prev_q==0: delta_str=f"🆕 +{cur_q} шт."
+        else:
+            arrow="📈" if change_q>0 else "📉" if change_q<0 else "➖"
+            delta_str=f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
+        msg+=f"**{art}**\n   Продажи: {cur_q:,.0f} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
+    if len(all_items)>10: msg+=f"… и еще {len(all_items)-10}. Используйте /articles для полного списка."
+    keyboard=[[InlineKeyboardButton("📈 Топ-10 по росту",callback_data="growth")],[InlineKeyboardButton("📉 Топ-10 по падению",callback_data="decline")],[InlineKeyboardButton("📊 Детальное сравнение",callback_data="compare_articles")],[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]
+    await q.edit_message_text(msg,reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='Markdown')
+async def growth_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update): return
+    await _show_sorted_articles(update,context,reverse=True)
+async def decline_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update): return
+    await _show_sorted_articles(update,context,reverse=False)
+async def _show_sorted_articles(update,context,reverse=True):
+    if not await check_access(update): return
+    q=update.callback_query;await q.answer();report_id=context.user_data.get('current_report_id')
+    if not report_id: await q.edit_message_text("❌ Нет данных для текущего отчета.");return
+    current_articles=get_article_stats_for_report(report_id)
+    if not current_articles: await q.edit_message_text("❌ Нет данных по артикулам.");return
+    conn=sqlite3.connect(str(DB_PATH));c=conn.cursor();c.execute("SELECT start_date FROM reports WHERE id=?",(report_id,));row=c.fetchone();prev_start_date=row[0] if row else None;conn.close()
+    previous_articles={}
+    if prev_start_date:
+        prev_reports=get_previous_reports(prev_start_date,limit=1)
+        if prev_reports: prev_id=prev_reports[0][0];previous_articles=get_article_stats_for_report(prev_id)
+    items=[]
+    for art,data in current_articles.items():
+        cur_q=data['quantity'];cur_r=data['revenue'];prev_q=previous_articles.get(art,{}).get('quantity',0);prev_r=previous_articles.get(art,{}).get('revenue',0)
+        if prev_q==0 and cur_q==0: continue
+        change_q=cur_q-prev_q;change_r_percent=((cur_r-prev_r)/prev_r*100) if prev_r else (0 if cur_q==0 else float('inf'))
+        items.append((art,cur_q,cur_r,change_q,change_r_percent,prev_q,prev_r))
+    items.sort(key=lambda x:x[4],reverse=reverse);top=items[:10];period=context.user_data.get('current_period','')
+    label="росту" if reverse else "падению";msg=f"📈 **Топ-10 по {label}** ({period})\n\n"
+    for art,cur_q,cur_r,change_q,change_r_percent,prev_q,prev_r in top:
+        if prev_q==0: delta_str=f"🆕 +{cur_q} шт."
+        else:
+            arrow="📈" if change_q>0 else "📉" if change_q<0 else "➖"
+            delta_str=f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
+        msg+=f"**{art}**\n   Продажи: {cur_q:,.0f} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
+    if not top: msg="Нет данных для отображения."
+    keyboard=[[InlineKeyboardButton("◀️ Назад к списку",callback_data="show_articles")],[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]
+    await q.edit_message_text(msg,reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='Markdown')
+async def compare_articles_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update): return
+    q=update.callback_query;await q.answer();report_id=context.user_data.get('current_report_id')
+    if not report_id: await q.edit_message_text("❌ Нет данных для сравнения.");return
+    conn=sqlite3.connect(str(DB_PATH));c=conn.cursor();c.execute("SELECT start_date FROM reports WHERE id=?",(report_id,));row=c.fetchone();if not row: conn.close();await q.edit_message_text("❌ Ошибка: отчёт не найден.");return
+    current_start=row[0];conn.close()
+    prev_reports=get_previous_reports(current_start,limit=12)
+    if not prev_reports: await q.edit_message_text("❌ Нет предыдущих отчетов для сравнения.");return
+    prev_ids=[r[0] for r in prev_reports];current_articles=get_article_stats_for_report(report_id)
+    if not current_articles: await q.edit_message_text("❌ Нет данных по артикулам в текущем отчете.");return
+    periods={'2 недели':prev_ids[:2],'месяц':prev_ids[:4],'квартал':prev_ids[:12]}
+    msg=f"📊 **Сравнение со средними показателями**\n(период: {context.user_data.get('current_period','')})\n\n"
+    for period_name,ids in periods.items():
+        if not ids: msg+=f"**{period_name}:** Нет данных\n\n";continue
+        all_articles={}
+        for pid in ids:
+            arts=get_article_stats_for_report(pid)
+            for art,data in arts.items():
+                if art not in all_articles: all_articles[art]={'qty':[],'rev':[]}
+                all_articles[art]['qty'].append(data['quantity']);all_articles[art]['rev'].append(data['revenue'])
+        avg_articles={}
+        for art,vals in all_articles.items():
+            avg_articles[art]={'avg_quantity':sum(vals['qty'])/len(vals['qty']),'avg_revenue':sum(vals['rev'])/len(vals['rev'])}
+        msg+=f"**{period_name}** (среднее по {len(ids)} отчетам):\n"
+        top_cur=sorted(current_articles.items(),key=lambda x:x[1]['revenue'],reverse=True)[:5]
+        for art,data in top_cur:
+            cur_q=data['quantity'];cur_r=data['revenue']
+            if art in avg_articles:
+                avg_q=avg_articles[art]['avg_quantity'];avg_r=avg_articles[art]['avg_revenue']
+                change_q=((cur_q-avg_q)/avg_q*100) if avg_q else 0
+                change_r=((cur_r-avg_r)/avg_r*100) if avg_r else 0
+                msg+=f"• {art}: {cur_q:,.0f} шт. (Δ {change_q:+.1f}%) | {cur_r:,.2f} ₽ (Δ {change_r:+.1f}%)\n"
+            else: msg+=f"• {art}: {cur_q:,.0f} шт. (новинка) | {cur_r:,.2f} ₽\n"
+        msg+="\n"
+    keyboard=[[InlineKeyboardButton("◀️ Назад к списку",callback_data="show_articles")],[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]
+    await q.edit_message_text(msg,reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='Markdown')
+
+async def back_to_menu_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update): return
+    q=update.callback_query;await q.answer();await q.edit_message_text("🏠 Главное меню. Выберите действие:",reply_markup=get_main_menu())
 
 # --- Обработка файлов ---
 async def handle_file(update:Update,context:ContextTypes.DEFAULT_TYPE):
@@ -897,149 +1150,6 @@ async def process_and_send(update:Update,context:ContextTypes.DEFAULT_TYPE):
             except: pass
         context.user_data['files']={};context.user_data['current_file']=None;context.user_data['current_file_hash']=None
     except Exception as e: logger.error(f"Критическая ошибка: {e}");await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-# --- Артикулы (из отчёта) ---
-async def articles_full_cmd(update:Update,context:ContextTypes.DEFAULT_TYPE,is_callback=False):
-    if not await check_access(update): return
-    report_id=context.user_data.get('current_report_id')
-    if not report_id:
-        text="❌ Нет активного отчёта.\n\nПожалуйста, загрузите новый отчёт или выберите существующий из архива."
-        keyboard=[[InlineKeyboardButton("📂 Перейти в архив",callback_data="menu_history")],[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]
-        if is_callback: await update.callback_query.edit_message_text(text,reply_markup=InlineKeyboardMarkup(keyboard))
-        else: await update.message.reply_text(text,reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-    current_articles=get_article_stats_for_report(report_id)
-    if not current_articles:
-        text="❌ Нет данных по артикулам для этого отчёта."
-        keyboard=[[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]
-        if is_callback: await update.callback_query.edit_message_text(text,reply_markup=InlineKeyboardMarkup(keyboard))
-        else: await update.message.reply_text(text,reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-    conn=sqlite3.connect(str(DB_PATH));c=conn.cursor();c.execute("SELECT start_date FROM reports WHERE id=?",(report_id,));row=c.fetchone();prev_start_date=row[0] if row else None;conn.close()
-    previous_articles={}
-    if prev_start_date:
-        prev_reports=get_previous_reports(prev_start_date,limit=1)
-        if prev_reports: prev_id=prev_reports[0][0];previous_articles=get_article_stats_for_report(prev_id)
-    all_items=[]
-    for art,data in current_articles.items():
-        cur_q=data['quantity'];cur_r=data['revenue'];prev_q=previous_articles.get(art,{}).get('quantity',0);prev_r=previous_articles.get(art,{}).get('revenue',0)
-        change_q=cur_q-prev_q;change_r_percent=((cur_r-prev_r)/prev_r*100) if prev_r else (0 if cur_q==0 else float('inf'))
-        all_items.append((art,cur_q,cur_r,change_q,change_r_percent,prev_q,prev_r))
-    all_items.sort(key=lambda x:x[2],reverse=True);period=context.user_data.get('current_period','')
-    msg=f"📦 **Все артикулы** ({period})\n\n"
-    for art,cur_q,cur_r,change_q,change_r_percent,prev_q,prev_r in all_items:
-        if prev_q==0 and cur_q==0: delta_str="нет данных"
-        elif prev_q==0: delta_str=f"🆕 +{cur_q} шт."
-        else:
-            arrow="📈" if change_q>0 else "📉" if change_q<0 else "➖"
-            delta_str=f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
-        msg+=f"**{art}**\n   Продажи: {cur_q:,.0f} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
-        if len(msg)>4000: msg+="\n… (сообщение обрезано)";break
-    keyboard=[[InlineKeyboardButton("📈 Топ-10 по росту",callback_data="growth")],[InlineKeyboardButton("📉 Топ-10 по падению",callback_data="decline")],[InlineKeyboardButton("📊 Детальное сравнение",callback_data="compare_articles")],[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]
-    if is_callback: await update.callback_query.edit_message_text(msg,reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='Markdown')
-    else: await update.message.reply_text(msg,reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='Markdown')
-async def articles_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update): return
-    q=update.callback_query;await q.answer();report_id=context.user_data.get('current_report_id')
-    if not report_id: await q.edit_message_text("❌ Нет данных по артикулам для текущего отчета.");return
-    current_articles=get_article_stats_for_report(report_id)
-    if not current_articles: await q.edit_message_text("❌ Нет данных по артикулам.");return
-    conn=sqlite3.connect(str(DB_PATH));c=conn.cursor();c.execute("SELECT start_date FROM reports WHERE id=?",(report_id,));row=c.fetchone();prev_start_date=row[0] if row else None;conn.close()
-    previous_articles={}
-    if prev_start_date:
-        prev_reports=get_previous_reports(prev_start_date,limit=1)
-        if prev_reports: prev_id=prev_reports[0][0];previous_articles=get_article_stats_for_report(prev_id)
-    all_items=[]
-    for art,data in current_articles.items():
-        cur_q=data['quantity'];cur_r=data['revenue'];prev_q=previous_articles.get(art,{}).get('quantity',0);prev_r=previous_articles.get(art,{}).get('revenue',0)
-        change_q=cur_q-prev_q;change_r_percent=((cur_r-prev_r)/prev_r*100) if prev_r else (0 if cur_q==0 else float('inf'))
-        all_items.append((art,cur_q,cur_r,change_q,change_r_percent,prev_q,prev_r))
-    all_items.sort(key=lambda x:x[2],reverse=True);top=all_items[:10];period=context.user_data.get('current_period','')
-    msg=f"📦 **Топ-10 артикулов** ({period})\n\n"
-    for art,cur_q,cur_r,change_q,change_r_percent,prev_q,prev_r in top:
-        if prev_q==0 and cur_q==0: delta_str="нет данных"
-        elif prev_q==0: delta_str=f"🆕 +{cur_q} шт."
-        else:
-            arrow="📈" if change_q>0 else "📉" if change_q<0 else "➖"
-            delta_str=f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
-        msg+=f"**{art}**\n   Продажи: {cur_q:,.0f} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
-    if len(all_items)>10: msg+=f"… и еще {len(all_items)-10}. Используйте /articles для полного списка."
-    keyboard=[[InlineKeyboardButton("📈 Топ-10 по росту",callback_data="growth")],[InlineKeyboardButton("📉 Топ-10 по падению",callback_data="decline")],[InlineKeyboardButton("📊 Детальное сравнение",callback_data="compare_articles")],[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]
-    await q.edit_message_text(msg,reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='Markdown')
-async def growth_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update): return
-    await _show_sorted_articles(update,context,reverse=True)
-async def decline_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update): return
-    await _show_sorted_articles(update,context,reverse=False)
-async def _show_sorted_articles(update,context,reverse=True):
-    if not await check_access(update): return
-    q=update.callback_query;await q.answer();report_id=context.user_data.get('current_report_id')
-    if not report_id: await q.edit_message_text("❌ Нет данных для текущего отчета.");return
-    current_articles=get_article_stats_for_report(report_id)
-    if not current_articles: await q.edit_message_text("❌ Нет данных по артикулам.");return
-    conn=sqlite3.connect(str(DB_PATH));c=conn.cursor();c.execute("SELECT start_date FROM reports WHERE id=?",(report_id,));row=c.fetchone();prev_start_date=row[0] if row else None;conn.close()
-    previous_articles={}
-    if prev_start_date:
-        prev_reports=get_previous_reports(prev_start_date,limit=1)
-        if prev_reports: prev_id=prev_reports[0][0];previous_articles=get_article_stats_for_report(prev_id)
-    items=[]
-    for art,data in current_articles.items():
-        cur_q=data['quantity'];cur_r=data['revenue'];prev_q=previous_articles.get(art,{}).get('quantity',0);prev_r=previous_articles.get(art,{}).get('revenue',0)
-        if prev_q==0 and cur_q==0: continue
-        change_q=cur_q-prev_q;change_r_percent=((cur_r-prev_r)/prev_r*100) if prev_r else (0 if cur_q==0 else float('inf'))
-        items.append((art,cur_q,cur_r,change_q,change_r_percent,prev_q,prev_r))
-    items.sort(key=lambda x:x[4],reverse=reverse);top=items[:10];period=context.user_data.get('current_period','')
-    label="росту" if reverse else "падению";msg=f"📈 **Топ-10 по {label}** ({period})\n\n"
-    for art,cur_q,cur_r,change_q,change_r_percent,prev_q,prev_r in top:
-        if prev_q==0: delta_str=f"🆕 +{cur_q} шт."
-        else:
-            arrow="📈" if change_q>0 else "📉" if change_q<0 else "➖"
-            delta_str=f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
-        msg+=f"**{art}**\n   Продажи: {cur_q:,.0f} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
-    if not top: msg="Нет данных для отображения."
-    keyboard=[[InlineKeyboardButton("◀️ Назад к списку",callback_data="show_articles")],[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]
-    await q.edit_message_text(msg,reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='Markdown')
-async def compare_articles_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update): return
-    q=update.callback_query;await q.answer();report_id=context.user_data.get('current_report_id')
-    if not report_id: await q.edit_message_text("❌ Нет данных для сравнения.");return
-    conn=sqlite3.connect(str(DB_PATH));c=conn.cursor();c.execute("SELECT start_date FROM reports WHERE id=?",(report_id,));row=c.fetchone();if not row: conn.close();await q.edit_message_text("❌ Ошибка: отчёт не найден.");return
-    current_start=row[0];conn.close()
-    prev_reports=get_previous_reports(current_start,limit=12)
-    if not prev_reports: await q.edit_message_text("❌ Нет предыдущих отчетов для сравнения.");return
-    prev_ids=[r[0] for r in prev_reports];current_articles=get_article_stats_for_report(report_id)
-    if not current_articles: await q.edit_message_text("❌ Нет данных по артикулам в текущем отчете.");return
-    periods={'2 недели':prev_ids[:2],'месяц':prev_ids[:4],'квартал':prev_ids[:12]}
-    msg=f"📊 **Сравнение со средними показателями**\n(период: {context.user_data.get('current_period','')})\n\n"
-    for period_name,ids in periods.items():
-        if not ids: msg+=f"**{period_name}:** Нет данных\n\n";continue
-        all_articles={}
-        for pid in ids:
-            arts=get_article_stats_for_report(pid)
-            for art,data in arts.items():
-                if art not in all_articles: all_articles[art]={'qty':[],'rev':[]}
-                all_articles[art]['qty'].append(data['quantity']);all_articles[art]['rev'].append(data['revenue'])
-        avg_articles={}
-        for art,vals in all_articles.items():
-            avg_articles[art]={'avg_quantity':sum(vals['qty'])/len(vals['qty']),'avg_revenue':sum(vals['rev'])/len(vals['rev'])}
-        msg+=f"**{period_name}** (среднее по {len(ids)} отчетам):\n"
-        top_cur=sorted(current_articles.items(),key=lambda x:x[1]['revenue'],reverse=True)[:5]
-        for art,data in top_cur:
-            cur_q=data['quantity'];cur_r=data['revenue']
-            if art in avg_articles:
-                avg_q=avg_articles[art]['avg_quantity'];avg_r=avg_articles[art]['avg_revenue']
-                change_q=((cur_q-avg_q)/avg_q*100) if avg_q else 0
-                change_r=((cur_r-avg_r)/avg_r*100) if avg_r else 0
-                msg+=f"• {art}: {cur_q:,.0f} шт. (Δ {change_q:+.1f}%) | {cur_r:,.2f} ₽ (Δ {change_r:+.1f}%)\n"
-            else: msg+=f"• {art}: {cur_q:,.0f} шт. (новинка) | {cur_r:,.2f} ₽\n"
-        msg+="\n"
-    keyboard=[[InlineKeyboardButton("◀️ Назад к списку",callback_data="show_articles")],[InlineKeyboardButton("◀️ Назад в меню",callback_data="back_to_menu")]]
-    await q.edit_message_text(msg,reply_markup=InlineKeyboardMarkup(keyboard),parse_mode='Markdown')
-
-async def back_to_menu_callback(update:Update,context:ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update): return
-    q=update.callback_query;await q.answer();await q.edit_message_text("🏠 Главное меню. Выберите действие:",reply_markup=get_main_menu())
 
 async def handle_text(update:Update,context:ContextTypes.DEFAULT_TYPE):
     if not await check_access(update): return
