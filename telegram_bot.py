@@ -777,19 +777,32 @@ class ReportProcessor:
 def get_main_menu():
     keyboard = [
         [InlineKeyboardButton("📱 Открыть приложение", web_app={"url": MINI_APP_URL})],
-        [InlineKeyboardButton("📂 История", callback_data="menu_history")],
-        [InlineKeyboardButton("📦 Артикулы", callback_data="menu_articles")],
-        [InlineKeyboardButton("📊 Аналитика по артикулам", callback_data="menu_analytics")],
+        [InlineKeyboardButton("📂 Архив отчетов", callback_data="menu_history")],
+        [InlineKeyboardButton("📊 Аналитика", callback_data="menu_analytics_main")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="menu_settings")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
+# ===== ПОДМЕНЮ "АНАЛИТИКА" =====
+async def menu_analytics_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    keyboard = [
+        [InlineKeyboardButton("📦 Артикулы", callback_data="menu_articles")],
+        [InlineKeyboardButton("📈 Аналитика по артикулам", callback_data="menu_analytics")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
+    ]
+    await query.edit_message_text(
+        "📊 **Раздел аналитики**\n\nВыберите нужный подраздел:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
 # ===== КОМАНДЫ БОТА =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "👋 Привет! Я бот для обработки еженедельных отчетов WB.\n\n"
-        "📤 Отправь файлы с 'осн' и 'вык' в названии — я автоматически их обработаю.\n"
-        "📊 Используй меню ниже для быстрого доступа к командам.\n"
+        "👋 Привет! Я бот для аналитики кабинета WB по брендам Цап царапкин & Harakiri.\n\n"
+        "📊 Используй меню ниже для быстрого доступа к функциям.\n"
         "📰 Также я присылаю утренние (8:30) и вечерние (20:40) новостные сводки по теме Wildberries.",
         reply_markup=get_main_menu()
     )
@@ -822,6 +835,7 @@ async def menu_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
 async def menu_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    # Используем существующую функцию, но передаём is_callback=True
     await articles_full_cmd(update, context, is_callback=True)
 
 async def menu_analytics_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1176,7 +1190,7 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
 async def show_history_page(query, context, page):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
-        await query.edit_message_text("📭 История пуста.", reply_markup=InlineKeyboardMarkup([
+        await query.edit_message_text("📭 Архив пуст.", reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
         ]))
         return
@@ -1503,9 +1517,9 @@ async def resend_report(query, context, report_id):
 async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, is_callback=False):
     report_id = context.user_data.get('current_report_id')
     if not report_id:
-        text = "❌ Нет активного отчёта.\n\nПожалуйста, загрузите новый отчёт или выберите существующий из истории."
+        text = "❌ Нет активного отчёта.\n\nПожалуйста, загрузите новый отчёт или выберите существующий из архива."
         keyboard = [
-            [InlineKeyboardButton("📂 Перейти в историю", callback_data="menu_history")],
+            [InlineKeyboardButton("📂 Перейти в архив", callback_data="menu_history")],
             [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
         ]
         if is_callback:
@@ -2179,6 +2193,7 @@ def main():
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_articles_callback, pattern="^menu_articles$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
+    app.add_handler(CallbackQueryHandler(menu_analytics_main_callback, pattern="^menu_analytics_main$"))
     app.add_handler(CallbackQueryHandler(menu_settings_callback, pattern="^menu_settings$"))
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
 
