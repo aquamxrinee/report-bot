@@ -247,7 +247,6 @@ def set_product_cost(article, brand, cost, user_id):
     return True
 
 def delete_cost_history(record_id):
-    """Удаляет запись из истории (разрешено удалять любые записи)."""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('DELETE FROM product_costs_history WHERE id = ?', (record_id,))
@@ -257,7 +256,6 @@ def delete_cost_history(record_id):
     return deleted
 
 def delete_all_costs_for_article(article):
-    """Удаляет все записи себестоимости для артикула."""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('DELETE FROM product_costs_history WHERE article = ?', (article,))
@@ -2720,16 +2718,4 @@ def main():
     app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
     app.add_handler(CallbackQueryHandler(analytics_show_callback, pattern="^analytics_show$"))
 
-    app.add_handler(CallbackQueryHandler(history_page_callback, pattern="^history_page_"))
-    app.add_handler(CallbackQueryHandler(history_report_callback, pattern="^history_report_"))
-    app.add_handler(CallbackQueryHandler(history_toggle_delete_callback, pattern="^history_toggle_delete_"))
-    app.add_handler(CallbackQueryHandler(history_enable_delete_callback, pattern="^history_enable_delete$"))
-    app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
-    app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
-
-    app.add_handler(CallbackQueryHandler(articles_callback, pattern="^show_articles$"))
-    app.add_handler(CallbackQueryHandler(growth_callback, pattern="^growth$"))
-    app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline$"))
-    app.add_handler(CallbackQueryHandler(compare_articles_callback, pattern="^compare_articles$"))
-
-    app.add_handler(MessageHandler(filters
+    app.add_handler(CallbackQueryHandler(history_page
