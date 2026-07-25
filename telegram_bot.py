@@ -767,12 +767,11 @@ class ReportProcessor:
 # ===== ГЛАВНОЕ МЕНЮ =====
 def get_main_menu():
     keyboard = [
+        [InlineKeyboardButton("📱 Открыть приложение", web_app={"url": MINI_APP_URL})],
         [InlineKeyboardButton("📂 История", callback_data="menu_history")],
         [InlineKeyboardButton("📦 Артикулы", callback_data="menu_articles")],
         [InlineKeyboardButton("📊 Аналитика по артикулам", callback_data="menu_analytics")],
-        [InlineKeyboardButton("📰 Новости", callback_data="menu_news")],
-        [InlineKeyboardButton("📊 Дашборд", web_app={"url": MINI_APP_URL})],
-        [InlineKeyboardButton("❓ Помощь", callback_data="menu_help")]
+        [InlineKeyboardButton("⚙️ Настройки", callback_data="menu_settings")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -816,34 +815,24 @@ async def menu_articles_callback(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     await articles_full_cmd(update, context, is_callback=True)
 
-async def menu_help_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def menu_analytics_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await help_cmd(update, context)
+    context.user_data['analytics_selected'] = []
+    context.user_data['analytics_page'] = 0
+    await show_analytics_selection(query, context, page=0)
 
-# === НОВОСТНОЕ МЕНЮ ===
-async def menu_news_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# === НАСТРОЙКИ (НОВОСТИ) ===
+async def menu_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     keyboard = [
-        [InlineKeyboardButton("📰 Получить новости сейчас", callback_data="news_now")],
-        [InlineKeyboardButton("⚙️ Настройки новостей", callback_data="news_settings")],
+        [InlineKeyboardButton("📰 Новости", callback_data="news_settings")],
         [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
     ]
-    await query.edit_message_text("📰 **Новостной раздел**\n\nВыберите действие:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    await query.edit_message_text("⚙️ **Настройки**\n\nВыберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-async def news_now_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = update.effective_user.id
-    settings = get_news_settings(user_id)
-    articles = fetch_news(settings['query'], limit=10)
-    text = format_news_digest(articles, "📰 **Свежие новости по теме Wildberries**")
-    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("◀️ Назад в новостной раздел", callback_data="menu_news")],
-        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-    ]))
-
+# === НОВОСТНОЙ РАЗДЕЛ (внутри настроек) ===
 async def news_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -857,12 +846,25 @@ async def news_settings_callback(update: Update, context: ContextTypes.DEFAULT_T
     text += f"Вечернее время: {settings['evening_time']}\n\n"
     text += "Выберите действие:"
     keyboard = [
+        [InlineKeyboardButton("📰 Получить новости сейчас", callback_data="news_now")],
         [InlineKeyboardButton("🔄 Вкл/Выкл", callback_data="news_toggle")],
         [InlineKeyboardButton("📝 Изменить запрос", callback_data="news_query")],
         [InlineKeyboardButton("🕐 Изменить время", callback_data="news_time")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="menu_news")]
+        [InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")]
     ]
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def news_now_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    settings = get_news_settings(user_id)
+    articles = fetch_news(settings['query'], limit=10)
+    text = format_news_digest(articles, "📰 **Свежие новости по теме Wildberries**")
+    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("◀️ Назад к настройкам", callback_data="menu_settings")],
+        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    ]))
 
 async def news_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -933,7 +935,7 @@ async def set_news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += f"Запрос: `{settings['query']}`\n"
     text += f"Утро: {settings['morning_time']}\n"
     text += f"Вечер: {settings['evening_time']}\n\n"
-    text += "Используйте меню для настройки (кнопка '📰 Новости' в главном меню)."
+    text += "Используйте меню для настройки (кнопка '⚙️ Настройки' в главном меню)."
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def set_news_query_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -947,13 +949,6 @@ async def set_news_query_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(f"✅ Поисковый запрос обновлён: `{new_query}`", parse_mode='Markdown')
 
 # === АНАЛИТИКА ПО АРТИКУЛАМ =====
-async def menu_analytics_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    context.user_data['analytics_selected'] = []
-    context.user_data['analytics_page'] = 0
-    await show_analytics_selection(query, context, page=0)
-
 async def show_analytics_selection(query, context, page):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
@@ -2174,14 +2169,13 @@ def main():
     # Callbacks для меню
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_articles_callback, pattern="^menu_articles$"))
-    app.add_handler(CallbackQueryHandler(menu_help_callback, pattern="^menu_help$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
-    app.add_handler(CallbackQueryHandler(menu_news_callback, pattern="^menu_news$"))
+    app.add_handler(CallbackQueryHandler(menu_settings_callback, pattern="^menu_settings$"))
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
 
-    # Callbacks для новостей
-    app.add_handler(CallbackQueryHandler(news_now_callback, pattern="^news_now$"))
+    # Callbacks для новостей (настройки)
     app.add_handler(CallbackQueryHandler(news_settings_callback, pattern="^news_settings$"))
+    app.add_handler(CallbackQueryHandler(news_now_callback, pattern="^news_now$"))
     app.add_handler(CallbackQueryHandler(news_toggle_callback, pattern="^news_toggle$"))
     app.add_handler(CallbackQueryHandler(news_query_callback, pattern="^news_query$"))
     app.add_handler(CallbackQueryHandler(news_time_callback, pattern="^news_time$"))
