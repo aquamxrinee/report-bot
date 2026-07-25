@@ -601,42 +601,73 @@ class ReportProcessor:
     def _calculate_all_values(self, df_osn, df_vyk, date_range):
         values = {'B1': date_range, 'F1': date_range}
 
-        mask_carp = (df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())
-        values['B4'] = df_osn[mask_carp & (df_osn['Тип документа'] == 'Продажа')]['К перечислению Продавцу за реализованный Товар'].sum()
-        values['B5'] = df_osn[mask_carp & (df_osn['Тип документа'] == 'Возврат')]['К перечислению Продавцу за реализованный Товар'].sum()
-        values['B7'] = df_osn[mask_carp]['Услуги по доставке товара покупателю'].sum()
-        values['B9'] = df_osn[mask_carp]['Операции на приемке'].sum()
-        values['B10'] = df_osn['Общая сумма штрафов'].sum()
-        values['B11'] = df_osn[mask_carp]['Удержания'].sum()
-        values['B26'] = df_osn[mask_carp]['Хранение'].sum()
-        values['B29'] = df_osn[mask_carp]['Разовое изменение срока перечисления денежных средств'].sum()
-        values['B44'] = df_osn['Цена розничная'].sum()
-        values['B32'] = df_osn[mask_carp]['Цена розничная'].sum()
+        # ===== ОСНОВНОЙ ОТЧЕТ - ЦАП ЦАРАПКИН (продажи) =====
+        mask_carp_sale = ((df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())) & (df_osn['Тип документа'] == 'Продажа')
+        values['B4'] = df_osn[mask_carp_sale]['К перечислению Продавцу за реализованный Товар'].sum()  # Продажи ЦАП (к перечислению)
 
-        mask_hara = (df_osn['Бренд'] == 'Harakiri')
-        values['F4'] = df_osn[mask_hara & (df_osn['Тип документа'] == 'Продажа')]['К перечислению Продавцу за реализованный Товар'].sum()
-        values['F5'] = df_osn[mask_hara & (df_osn['Тип документа'] == 'Возврат')]['К перечислению Продавцу за реализованный Товар'].sum()
-        values['F7'] = df_osn[mask_hara]['Услуги по доставке товара покупателю'].sum()
-        values['F9'] = df_osn[mask_hara]['Операции на приемке'].sum()
-        values['F10'] = df_osn[mask_hara]['Общая сумма штрафов'].sum()
-        values['F11'] = df_osn[mask_hara]['Удержания'].sum()
+        # Возвраты ЦАП
+        mask_carp_return = ((df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())) & (df_osn['Тип документа'] == 'Возврат')
+        values['B5'] = df_osn[mask_carp_return]['К перечислению Продавцу за реализованный Товар'].sum()
 
-        mask_carp_vyk = (df_vyk['Бренд'] == 'Цап царапкин') | (df_vyk['Бренд'].isna())
-        values['M4'] = df_vyk[mask_carp_vyk & (df_vyk['Тип документа'] == 'Продажа')]['К перечислению Продавцу за реализованный Товар'].sum()
-        values['M5'] = df_vyk[mask_carp_vyk & (df_vyk['Тип документа'] == 'Возврат')]['К перечислению Продавцу за реализованный Товар'].sum()
-        values['M7'] = df_vyk[mask_carp_vyk]['Услуги по доставке товара покупателю'].sum()
-        values['M8'] = df_vyk[mask_carp_vyk]['Операции на приемке'].sum()
+        # Прочие показатели ЦАП (без фильтра по типу документа, как раньше – возможно, они должны быть по всем типам, оставляем)
+        mask_carp_all = (df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())
+        values['B7'] = df_osn[mask_carp_all]['Услуги по доставке товара покупателю'].sum()
+        values['B9'] = df_osn[mask_carp_all]['Операции на приемке'].sum()
+        values['B10'] = df_osn['Общая сумма штрафов'].sum()  # штрафы общие
+        values['B11'] = df_osn[mask_carp_all]['Удержания'].sum()
+        values['B26'] = df_osn[mask_carp_all]['Хранение'].sum()
+        values['B29'] = df_osn[mask_carp_all]['Разовое изменение срока перечисления денежных средств'].sum()
+
+        # ВБшный оборот ЦАП (основной) - ячейка B44
+        values['B44'] = df_osn[mask_carp_sale]['Цена розничная'].sum()
+
+        # ===== ОСНОВНОЙ ОТЧЕТ - HARAKIRI =====
+        mask_hara_sale = (df_osn['Бренд'] == 'Harakiri') & (df_osn['Тип документа'] == 'Продажа')
+        values['F4'] = df_osn[mask_hara_sale]['К перечислению Продавцу за реализованный Товар'].sum()
+
+        mask_hara_return = (df_osn['Бренд'] == 'Harakiri') & (df_osn['Тип документа'] == 'Возврат')
+        values['F5'] = df_osn[mask_hara_return]['К перечислению Продавцу за реализованный Товар'].sum()
+
+        mask_hara_all = df_osn['Бренд'] == 'Harakiri'
+        values['F7'] = df_osn[mask_hara_all]['Услуги по доставке товара покупателю'].sum()
+        values['F9'] = df_osn[mask_hara_all]['Операции на приемке'].sum()
+        values['F10'] = df_osn[mask_hara_all]['Общая сумма штрафов'].sum()
+        values['F11'] = df_osn[mask_hara_all]['Удержания'].sum()
+
+        # ВБшный оборот Harakiri (основной) - ячейка B32
+        values['B32'] = df_osn[mask_hara_sale]['Цена розничная'].sum()
+
+        # ===== ВЫКУПЫ - ЦАП ЦАРАПКИН =====
+        mask_carp_vyk_sale = ((df_vyk['Бренд'] == 'Цап царапкин') | (df_vyk['Бренд'].isna())) & (df_vyk['Тип документа'] == 'Продажа')
+        values['M4'] = df_vyk[mask_carp_vyk_sale]['К перечислению Продавцу за реализованный Товар'].sum()
+
+        mask_carp_vyk_return = ((df_vyk['Бренд'] == 'Цап царапкин') | (df_vyk['Бренд'].isna())) & (df_vyk['Тип документа'] == 'Возврат')
+        values['M5'] = df_vyk[mask_carp_vyk_return]['К перечислению Продавцу за реализованный Товар'].sum()
+
+        mask_carp_vyk_all = (df_vyk['Бренд'] == 'Цап царапкин') | (df_vyk['Бренд'].isna())
+        values['M7'] = df_vyk[mask_carp_vyk_all]['Услуги по доставке товара покупателю'].sum()
+        values['M8'] = df_vyk[mask_carp_vyk_all]['Операции на приемке'].sum()
         values['M9'] = df_vyk['Общая сумма штрафов'].sum()
-        values['B47'] = df_vyk[mask_carp_vyk]['Цена розничная'].sum()
 
-        mask_hara_vyk = (df_vyk['Бренд'] == 'Harakiri')
-        values['Q4'] = df_vyk[mask_hara_vyk & (df_vyk['Тип документа'] == 'Продажа')]['К перечислению Продавцу за реализованный Товар'].sum()
-        values['Q5'] = df_vyk[mask_hara_vyk & (df_vyk['Тип документа'] == 'Возврат')]['К перечислению Продавцу за реализованный Товар'].sum()
-        values['Q7'] = df_vyk[mask_hara_vyk]['Услуги по доставке товара покупателю'].sum()
-        values['Q8'] = df_vyk[mask_hara_vyk]['Операции на приемке'].sum()
-        values['Q9'] = df_vyk[mask_hara_vyk]['Общая сумма штрафов'].sum()
-        values['B41'] = df_vyk[mask_hara_vyk]['Цена розничная'].sum()
+        # ВБшный оборот ЦАП (выкупы) - ячейка B47
+        values['B47'] = df_vyk[mask_carp_vyk_sale]['Цена розничная'].sum()
 
+        # ===== ВЫКУПЫ - HARAKIRI =====
+        mask_hara_vyk_sale = (df_vyk['Бренд'] == 'Harakiri') & (df_vyk['Тип документа'] == 'Продажа')
+        values['Q4'] = df_vyk[mask_hara_vyk_sale]['К перечислению Продавцу за реализованный Товар'].sum()
+
+        mask_hara_vyk_return = (df_vyk['Бренд'] == 'Harakiri') & (df_vyk['Тип документа'] == 'Возврат')
+        values['Q5'] = df_vyk[mask_hara_vyk_return]['К перечислению Продавцу за реализованный Товар'].sum()
+
+        mask_hara_vyk_all = df_vyk['Бренд'] == 'Harakiri'
+        values['Q7'] = df_vyk[mask_hara_vyk_all]['Услуги по доставке товара покупателю'].sum()
+        values['Q8'] = df_vyk[mask_hara_vyk_all]['Операции на приемке'].sum()
+        values['Q9'] = df_vyk[mask_hara_vyk_all]['Общая сумма штрафов'].sum()
+
+        # ВБшный оборот Harakiri (выкупы) - ячейка B41
+        values['B41'] = df_vyk[mask_hara_vyk_sale]['Цена розничная'].sum()
+
+        # ===== ЭКВАЙРИНГ (без изменений) =====
         col = "Размер компенсации платёжных услуг/Комиссии за интеграцию платёжных сервисов, %"
         if col in df_osn.columns:
             filtered = df_osn[col][df_osn[col].notna() & (df_osn[col] > 0)]
