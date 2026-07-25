@@ -2,8 +2,8 @@
 """
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
-Полная версия с инлайн-меню, историей, артикулами, аналитикой, удалением из истории,
-а также с ежедневными новостными сводками по теме Wildberries (NewsAPI).
+Полная версия с инлайн-меню, историей, артикулами, аналитикой, удалением,
+новостными сводками и улучшенным сравнением.
 """
 
 import os
@@ -12,7 +12,6 @@ import shutil
 import logging
 import sqlite3
 import hashlib
-import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -102,7 +101,6 @@ def init_db():
             FOREIGN KEY(report_id) REFERENCES reports(id) ON DELETE CASCADE
         )
     ''')
-    # Таблица настроек новостей
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS news_settings (
             user_id INTEGER PRIMARY KEY,
@@ -334,7 +332,7 @@ def get_report_date_range():
     except:
         return None, None
 
-# ===== НАСТРОЙКИ НОВОСТЕЙ (БД) =====
+# ===== НАСТРОЙКИ НОВОСТЕЙ =====
 def get_news_settings(user_id):
     try:
         conn = sqlite3.connect(str(DB_PATH))
@@ -386,9 +384,9 @@ def set_news_settings(user_id, enabled=None, query=None, morning_time=None, even
         logger.error(f"Ошибка сохранения настроек новостей: {e}")
         return False
 
-# ===== НОВОСТИ (NewsAPI) =====
+# ===== НОВОСТИ =====
 NEWS_CACHE = {}
-CACHE_EXPIRY = timedelta(hours=2)  # кэш на 2 часа
+CACHE_EXPIRY = timedelta(hours=2)
 
 def fetch_news(query, limit=10):
     if not NEWS_API_KEY:
@@ -585,7 +583,7 @@ class ReportProcessor:
                 sales = df_bren[(df_bren['Тип документа'] == 'Продажа') & (df_bren[qty_col] > 0)]
                 agg_sales = sales.groupby(art_col).agg(
                     quantity=(qty_col, 'sum'),
-                    revenue=('К перечислению Продавцу за реализованный Товар', 'sum')
+                    revenue=('Цена розничная', 'sum')  # ИСПРАВЛЕНО: используем "Цена розничная" для выручки
                 ).to_dict('index') if not sales.empty else {}
 
                 articles = {}
@@ -1351,7 +1349,7 @@ async def resend_report(query, context, report_id):
 
     await query.message.reply_text(msg, parse_mode='Markdown')
 
-    # Восстановление шаблона (без изменений)
+    # Восстановление шаблона
     template_path = Path("/app/шаблон.xlsx")
     if not template_path.exists():
         for p in [Path("шаблон.xlsx"), TEMP_DIR / "template.xlsx"]:
@@ -2144,9 +2142,9 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Планировщик новостей (время в UTC, для МСК нужно добавить 3 часа)
-    scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[app])   # 8:30 UTC = 11:30 MSK
-    scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])  # 20:40 UTC = 23:40 MSK
+    # Планировщик новостей (UTC; для МСК нужно сдвинуть на +3 часа)
+    scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[app])
+    scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])
     scheduler.start()
 
     print("✅ Бот готов")
