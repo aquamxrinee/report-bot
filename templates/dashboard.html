@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Дашборд WB</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--tg-theme-bg-color);
+            color: var(--tg-theme-text-color);
+            margin: 0;
+            padding: 16px;
+        }
+        .container {
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        .card {
+            background: var(--tg-theme-secondary-bg-color);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .stat {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--tg-theme-hint-color);
+        }
+        .stat:last-child {
+            border-bottom: none;
+        }
+        .stat-label {
+            color: var(--tg-theme-hint-color);
+        }
+        .stat-value {
+            font-weight: bold;
+        }
+        .btn {
+            background: var(--tg-theme-button-color);
+            color: var(--tg-theme-button-text-color);
+            border: none;
+            padding: 12px 20px;
+            border-radius: 8px;
+            font-size: 16px;
+            cursor: pointer;
+            width: 100%;
+            margin-top: 8px;
+        }
+        .btn:active {
+            opacity: 0.7;
+        }
+        .loading {
+            text-align: center;
+            color: var(--tg-theme-hint-color);
+            padding: 20px;
+        }
+        .error {
+            color: red;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="container" id="app">
+        <h1>📊 Дашборд WB</h1>
+        <div id="stats">
+            <div class="loading">Загрузка данных...</div>
+        </div>
+        <button class="btn" id="refreshBtn">🔄 Обновить</button>
+        <button class="btn" id="historyBtn">📂 История</button>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.ready();
+        tg.expand();
+
+        const container = document.getElementById('stats');
+        const refreshBtn = document.getElementById('refreshBtn');
+        const historyBtn = document.getElementById('historyBtn');
+
+        async function loadStats() {
+            container.innerHTML = '<div class="loading">Загрузка...</div>';
+            try {
+                const response = await fetch('/api/stats');
+                if (!response.ok) throw new Error('Ошибка загрузки');
+                const data = await response.json();
+                renderStats(data);
+            } catch (e) {
+                container.innerHTML = '<div class="error">❌ Не удалось загрузить данные</div>';
+            }
+        }
+
+        function renderStats(data) {
+            let html = '<div class="card">';
+            html += `<div class="stat"><span class="stat-label">Всего отчётов</span><span class="stat-value">${data.total_reports}</span></div>`;
+            html += `<div class="stat"><span class="stat-label">Общий оборот</span><span class="stat-value">${data.wb_total.toFixed(2)} ₽</span></div>`;
+            html += `<div class="stat"><span class="stat-label">ЦАП оборот</span><span class="stat-value">${data.wb_carp.toFixed(2)} ₽</span></div>`;
+            html += `<div class="stat"><span class="stat-label">Харакири оборот</span><span class="stat-value">${data.wb_hara.toFixed(2)} ₽</span></div>`;
+            html += `<div class="stat"><span class="stat-label">Средний эквайринг</span><span class="stat-value">${data.avg_acquiring.toFixed(2)} %</span></div>`;
+            html += '</div>';
+            container.innerHTML = html;
+        }
+
+        historyBtn.addEventListener('click', () => {
+            tg.sendData(JSON.stringify({ action: 'history' }));
+        });
+
+        refreshBtn.addEventListener('click', loadStats);
+        loadStats();
+    </script>
+</body>
+</html>
