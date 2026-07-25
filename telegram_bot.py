@@ -2,7 +2,7 @@
 """
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
-Полная версия с обновлением отчётов по периоду.
+Полная версия с обновлением отчётов по периоду и ожиданием обоих файлов.
 """
 
 import os
@@ -122,17 +122,6 @@ def calculate_file_hash(file_path):
         for chunk in iter(lambda: f.read(4096), b""):
             hash_md5.update(chunk)
     return hash_md5.hexdigest()
-
-def is_file_duplicate(file_hash):
-    try:
-        conn = sqlite3.connect(str(DB_PATH))
-        cursor = conn.cursor()
-        cursor.execute('SELECT id, file_name, date_period FROM reports WHERE file_hash = ?', (file_hash,))
-        result = cursor.fetchone()
-        conn.close()
-        return result
-    except:
-        return None
 
 def get_report_id_by_period(start_date, end_date):
     try:
@@ -1726,7 +1715,7 @@ async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup=get_main_menu()
     )
 
-# === ОБРАБОТКА ФАЙЛОВ ===
+# === ОБРАБОТКА ФАЙЛОВ (ИСПРАВЛЕНА) ===
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         doc = update.message.document
@@ -1738,36 +1727,34 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = TEMP_DIR / doc.file_name
         await file.download_to_drive(file_path)
 
-        file_hash = calculate_file_hash(file_path)
-        dup = is_file_duplicate(file_hash)
-        if dup:
-            await update.message.reply_text(f"⚠️ Отчет уже загружен: {dup[1]}")
-            os.remove(file_path)
-            return
-
+        # Определяем тип отчёта
         report_type = detect_report_type(doc.file_name)
         if not report_type:
             context.user_data['current_file'] = str(file_path)
-            context.user_data['current_file_hash'] = file_hash
+            context.user_data['current_file_hash'] = calculate_file_hash(file_path)
             await update.message.reply_text("❓ Тип не определен. Используйте /osn или /vyk")
             return
 
+        # Сохраняем файл в контекст (перезаписываем, если такой тип уже есть)
         if 'files' not in context.user_data:
             context.user_data['files'] = {}
         context.user_data['files'][report_type] = str(file_path)
         if report_type == 'osn':
-            context.user_data['osn_hash'] = file_hash
-            await update.message.reply_text("✅ Основной отчет получен. Теперь отправьте выкупы ('вык')")
+            context.user_data['osn_hash'] = calculate_file_hash(file_path)
+            await update.message.reply_text("✅ Основной отчет получен")
         else:
-            context.user_data['vyk_hash'] = file_hash
-            await update.message.reply_text("✅ Отчет по выкупам получен. Теперь отправьте основной ('осн')")
+            context.user_data['vyk_hash'] = calculate_file_hash(file_path)
+            await update.message.reply_text("✅ Отчет по выкупам получен")
 
+        # Если есть оба типа – запускаем обработку
         if 'osn' in context.user_data['files'] and 'vyk' in context.user_data['files']:
             await process_and_send(update, context)
+
     except Exception as e:
         logger.error(f"Ошибка загрузки: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
+# === РУЧНЫЕ КОМАНДЫ osn/vyk (для случаев, когда автоопределение не сработало) ===
 async def handle_osn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'current_file' not in context.user_data:
         await update.message.reply_text("❌ Сначала отправьте файл!")
@@ -1788,6 +1775,7 @@ async def handle_vyk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'osn' in context.user_data['files'] and 'vyk' in context.user_data['files']:
         await process_and_send(update, context)
 
+# === ОСНОВНАЯ ОБРАБОТКА (process_and_send) с обновлением по периоду ===
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.reply_text("⏳ Обработка...")
@@ -2066,6 +2054,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await update.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(keyboard))
 
+        # Очистка контекста
         for f in [out_file, osn_file, vyk_file]:
             try:
                 os.remove(f)
