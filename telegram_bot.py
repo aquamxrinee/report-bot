@@ -360,33 +360,29 @@ def get_aggregated_metrics():
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
-        cursor.execute('''
-            SELECT
-                COUNT(DISTINCT report_id) as total_reports,
-                SUM(wb_total) as wb_total,
-                SUM(wb_carp) as wb_carp,
-                SUM(wb_hara) as wb_hara,
-                AVG(avg_acquiring) as avg_acquiring
-            FROM report_metrics
-        ''')
-        row = cursor.fetchone()
+        # Общее количество отчётов
+        cursor.execute("SELECT COUNT(DISTINCT report_id) FROM report_metrics")
+        total_reports = cursor.fetchone()[0] or 0
+
+        # Суммы по метрикам
+        cursor.execute("SELECT metric_name, SUM(metric_value) FROM report_metrics GROUP BY metric_name")
+        metrics_map = {}
+        for row in cursor.fetchall():
+            metrics_map[row[0]] = row[1] or 0
+
+        # Средний эквайринг
+        cursor.execute("SELECT AVG(metric_value) FROM report_metrics WHERE metric_name = 'avg_acquiring'")
+        avg_acquiring = cursor.fetchone()[0] or 0
+
         conn.close()
-        if row and row[0] is not None:
-            return {
-                'total_reports': row[0] or 0,
-                'wb_total': row[1] or 0,
-                'wb_carp': row[2] or 0,
-                'wb_hara': row[3] or 0,
-                'avg_acquiring': row[4] or 0
-            }
-        else:
-            return {
-                'total_reports': 0,
-                'wb_total': 0,
-                'wb_carp': 0,
-                'wb_hara': 0,
-                'avg_acquiring': 0
-            }
+
+        return {
+            'total_reports': total_reports,
+            'wb_total': metrics_map.get('wb_total', 0),
+            'wb_carp': metrics_map.get('wb_carp', 0),
+            'wb_hara': metrics_map.get('wb_hara', 0),
+            'avg_acquiring': avg_acquiring
+        }
     except Exception as e:
         logger.error(f"Ошибка агрегации метрик: {e}")
         return {
@@ -615,7 +611,7 @@ def debug_db():
         cursor.execute("SELECT COUNT(*) FROM article_stats")
         articles_count = cursor.fetchone()[0]
         
-        cursor.execute("SELECT * FROM report_metrics LIMIT 5")
+        cursor.execute("SELECT * FROM report_metrics LIMIT 10")
         metrics_sample = cursor.fetchall()
         
         cursor.execute("SELECT id, file_name, date_period, start_date, end_date FROM reports LIMIT 3")
