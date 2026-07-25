@@ -2,8 +2,8 @@
 """
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
-Полная версия с обновлением отчётов по периоду и ожиданием обоих файлов.
-Сортировка отчётов: самые свежие по дате начала.
+Полная версия с обновлением отчётов по периоду, ожиданием обоих файлов,
+сортировкой по дате, аналитикой с выбором, исправленной кнопкой "Выбрать все".
 """
 
 import os
@@ -243,6 +243,18 @@ def get_all_reports(page=0, per_page=10):
         return results, total
     except:
         return [], 0
+
+def get_all_report_ids():
+    """Возвращает список всех ID отчётов (без пагинации)."""
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute('SELECT id FROM reports ORDER BY start_date DESC')
+        rows = cursor.fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except:
+        return []
 
 def get_report_values(report_id):
     try:
@@ -700,7 +712,6 @@ class ReportProcessor:
 # ===== ГЛАВНОЕ МЕНЮ =====
 def get_main_menu():
     keyboard = [
-        [InlineKeyboardButton("📊 Статистика", callback_data="menu_stats")],
         [InlineKeyboardButton("📂 История", callback_data="menu_history")],
         [InlineKeyboardButton("📦 Артикулы", callback_data="menu_articles")],
         [InlineKeyboardButton("📊 Аналитика по артикулам", callback_data="menu_analytics")],
@@ -726,7 +737,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help — помощь\n"
         "/osn — отметить файл как основной (вручную)\n"
         "/vyk — отметить файл как выкупы (вручную)\n"
-        "/stats — общая статистика\n"
         "/articles — детали по артикулам (текущий отчет)\n"
         "/news_now — получить новости прямо сейчас\n"
         "/set_news — настроить новостные сводки\n"
@@ -737,17 +747,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # === ОБРАБОТЧИКИ МЕНЮ ===
-async def menu_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    reports, total = get_all_reports()
-    if not reports:
-        text = "📭 Нет данных."
-    else:
-        text = f"📊 Всего отчетов: {total}. Используйте /history для деталей."
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-    ]))
+# (удалён menu_stats_callback)
 
 async def menu_history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -925,6 +925,7 @@ async def show_analytics_selection(query, context, page):
 
     quick_buttons = [
         InlineKeyboardButton("✅ Выбрать все", callback_data="analytics_select_all"),
+        InlineKeyboardButton("❌ Отменить все", callback_data="analytics_deselect_all"),
         InlineKeyboardButton("📅 Неделя (1)", callback_data="analytics_quick_1"),
         InlineKeyboardButton("📅 2 недели", callback_data="analytics_quick_2"),
         InlineKeyboardButton("📅 4 недели", callback_data="analytics_quick_4"),
@@ -973,9 +974,15 @@ async def analytics_page_callback(update: Update, context: ContextTypes.DEFAULT_
 async def analytics_select_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    reports, total = get_all_reports(page=0, per_page=total)
-    all_ids = [r[0] for r in reports]
+    all_ids = get_all_report_ids()
     context.user_data['analytics_selected'] = all_ids
+    page = context.user_data.get('analytics_page', 0)
+    await show_analytics_selection(query, context, page)
+
+async def analytics_deselect_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data['analytics_selected'] = []
     page = context.user_data.get('analytics_page', 0)
     await show_analytics_selection(query, context, page)
 
@@ -1434,21 +1441,8 @@ async def resend_report(query, context, report_id):
     except:
         pass
 
-# === СТАТИСТИКА ===
-async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reports, total = get_all_reports()
-    if not reports:
-        text = "📭 Нет данных."
-    else:
-        text = f"📊 Всего отчетов: {total}. Используйте /history для деталей."
-    if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-        ]))
-    else:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-        ]))
+# === СТАТИСТИКА (удалена) ===
+# Удалён stats_cmd, так как он не используется.
 
 # === АРТИКУЛЫ ===
 async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, is_callback=False):
@@ -2123,7 +2117,6 @@ def main():
             BotCommand("help", "Помощь"),
             BotCommand("osn", "Отметить как основной"),
             BotCommand("vyk", "Отметить как выкупы"),
-            BotCommand("stats", "Статистика"),
             BotCommand("articles", "Все артикулы"),
             BotCommand("news_now", "Новости сейчас"),
             BotCommand("set_news", "Настройка новостей"),
@@ -2136,14 +2129,12 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("osn", handle_osn))
     app.add_handler(CommandHandler("vyk", handle_vyk))
-    app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("articles", articles_full_cmd))
     app.add_handler(CommandHandler("news_now", news_now_cmd))
     app.add_handler(CommandHandler("set_news", set_news_cmd))
     app.add_handler(CommandHandler("set_news_query", set_news_query_cmd))
 
     # Callbacks для меню
-    app.add_handler(CallbackQueryHandler(menu_stats_callback, pattern="^menu_stats$"))
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_articles_callback, pattern="^menu_articles$"))
     app.add_handler(CallbackQueryHandler(menu_help_callback, pattern="^menu_help$"))
@@ -2163,6 +2154,7 @@ def main():
     app.add_handler(CallbackQueryHandler(analytics_toggle_callback, pattern="^analytics_toggle_"))
     app.add_handler(CallbackQueryHandler(analytics_page_callback, pattern="^analytics_page_"))
     app.add_handler(CallbackQueryHandler(analytics_select_all_callback, pattern="^analytics_select_all$"))
+    app.add_handler(CallbackQueryHandler(analytics_deselect_all_callback, pattern="^analytics_deselect_all$"))
     app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
     app.add_handler(CallbackQueryHandler(analytics_show_callback, pattern="^analytics_show$"))
 
