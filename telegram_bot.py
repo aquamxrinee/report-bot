@@ -152,6 +152,7 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
         report_id = cursor.lastrowid
         logger.info(f"✅ Отчет вставлен, ID: {report_id}")
 
+        values_inserted = 0
         if values:
             for cell, val in values.items():
                 try:
@@ -159,9 +160,12 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                         INSERT INTO report_values (report_id, cell_name, cell_value)
                         VALUES (?, ?, ?)
                     ''', (report_id, cell, float(val)))
+                    values_inserted += 1
                 except:
                     pass
+            logger.info(f"📊 Вставлено {values_inserted} значений ячеек")
 
+        metrics_inserted = 0
         if metrics:
             for mname, mval in metrics.items():
                 try:
@@ -169,8 +173,10 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                         INSERT INTO report_metrics (report_id, metric_name, metric_value)
                         VALUES (?, ?, ?)
                     ''', (report_id, mname, float(mval)))
+                    metrics_inserted += 1
                 except:
                     pass
+            logger.info(f"📊 Вставлено {metrics_inserted} записей метрик")
 
         if articles:
             inserted = 0
@@ -590,6 +596,41 @@ def api_stats():
         return jsonify(data)
     except Exception as e:
         logger.error(f"Ошибка в /api/stats: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# ===== ДИАГНОСТИЧЕСКИЙ ЭНДПОИНТ =====
+@flask_app.route('/api/debug')
+def debug_db():
+    """Диагностика: возвращает количество записей в таблицах и примеры."""
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT COUNT(*) FROM reports")
+        reports_count = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM report_metrics")
+        metrics_count = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM article_stats")
+        articles_count = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT * FROM report_metrics LIMIT 5")
+        metrics_sample = cursor.fetchall()
+        
+        cursor.execute("SELECT id, file_name, date_period, start_date, end_date FROM reports LIMIT 3")
+        reports_sample = cursor.fetchall()
+        
+        conn.close()
+        
+        return jsonify({
+            'reports_count': reports_count,
+            'metrics_count': metrics_count,
+            'articles_count': articles_count,
+            'metrics_sample': metrics_sample,
+            'reports_sample': reports_sample
+        })
+    except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 def run_flask():
