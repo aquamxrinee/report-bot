@@ -3,6 +3,7 @@
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
 Полная версия с обновлением отчётов по периоду и ожиданием обоих файлов.
+Сортировка отчётов: самые свежие по дате начала.
 """
 
 import os
@@ -224,6 +225,9 @@ def delete_reports(report_ids):
     return deleted
 
 def get_all_reports(page=0, per_page=10):
+    """
+    Возвращает список отчётов, отсортированных по дате начала (самые свежие сверху).
+    """
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
@@ -232,7 +236,7 @@ def get_all_reports(page=0, per_page=10):
         offset = page * per_page
         cursor.execute('''
             SELECT id, file_name, date_period, start_date, end_date, processed_at
-            FROM reports ORDER BY processed_at DESC LIMIT ? OFFSET ?
+            FROM reports ORDER BY start_date DESC LIMIT ? OFFSET ?
         ''', (per_page, offset))
         results = cursor.fetchall()
         conn.close()
@@ -1746,7 +1750,7 @@ async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup=get_main_menu()
     )
 
-# === ОБРАБОТКА ФАЙЛОВ (ИСПРАВЛЕНА) ===
+# === ОБРАБОТКА ФАЙЛОВ ===
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         doc = update.message.document
@@ -1785,7 +1789,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка загрузки: {e}")
         await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
-# === РУЧНЫЕ КОМАНДЫ osn/vyk (для случаев, когда автоопределение не сработало) ===
+# === РУЧНЫЕ КОМАНДЫ osn/vyk ===
 async def handle_osn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'current_file' not in context.user_data:
         await update.message.reply_text("❌ Сначала отправьте файл!")
@@ -1806,7 +1810,7 @@ async def handle_vyk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if 'osn' in context.user_data['files'] and 'vyk' in context.user_data['files']:
         await process_and_send(update, context)
 
-# === ОСНОВНАЯ ОБРАБОТКА (process_and_send) с обновлением по периоду ===
+# === ОСНОВНАЯ ОБРАБОТКА ===
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.reply_text("⏳ Обработка...")
