@@ -36,7 +36,11 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 if not NEWS_API_KEY:
     print("⚠️ NEWS_API_KEY не найден. Новостные функции будут отключены.")
 
-MINI_APP_URL = os.getenv("MINI_APP_URL", "https://ваш-сайт.railway.app/mini")
+# Нормализация URL для Mini App
+MINI_APP_URL = os.getenv("MINI_APP_URL", "ваш-сайт.railway.app/mini")
+if not MINI_APP_URL.startswith(("http://", "https://")):
+    MINI_APP_URL = "https://" + MINI_APP_URL
+print(f"🌐 Mini App URL: {MINI_APP_URL}")
 
 DATA_DIR = Path("/data")
 TEMP_DIR = DATA_DIR / "temp"
