@@ -2,9 +2,8 @@
 """
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
-Полная версия с обновлением отчётов по периоду, ожиданием обоих файлов,
-сортировкой по дате, аналитикой с выбором, исправленной кнопкой "Выбрать все".
-Кнопка "Отменить все" появляется только при наличии выбранных отчётов.
+Полная версия с инлайн-меню, историей, артикулами, аналитикой, удалением,
+новостными сводками, улучшенным сравнением и Telegram Mini App.
 """
 
 import os
@@ -19,7 +18,7 @@ from pathlib import Path
 import pandas as pd
 import openpyxl
 import requests
-from flask import Flask
+from flask import Flask, render_template, jsonify
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -36,6 +35,8 @@ if not TELEGRAM_BOT_TOKEN:
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 if not NEWS_API_KEY:
     print("⚠️ NEWS_API_KEY не найден. Новостные функции будут отключены.")
+
+MINI_APP_URL = os.getenv("MINI_APP_URL", "https://ваш-сайт.railway.app/mini")
 
 DATA_DIR = Path("/data")
 TEMP_DIR = DATA_DIR / "temp"
@@ -226,9 +227,6 @@ def delete_reports(report_ids):
     return deleted
 
 def get_all_reports(page=0, per_page=10):
-    """
-    Возвращает список отчётов, отсортированных по дате начала (самые свежие сверху).
-    """
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
@@ -246,7 +244,6 @@ def get_all_reports(page=0, per_page=10):
         return [], 0
 
 def get_all_report_ids():
-    """Возвращает список всех ID отчётов (без пагинации)."""
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
@@ -347,6 +344,48 @@ def get_report_date_range():
         return row[0], row[1]
     except:
         return None, None
+
+def get_aggregated_metrics():
+    """Возвращает суммарные метрики по всем отчётам для мини-приложения."""
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT
+                COUNT(DISTINCT report_id) as total_reports,
+                SUM(wb_total) as wb_total,
+                SUM(wb_carp) as wb_carp,
+                SUM(wb_hara) as wb_hara,
+                AVG(avg_acquiring) as avg_acquiring
+            FROM report_metrics
+        ''')
+        row = cursor.fetchone()
+        conn.close()
+        if row and row[0] > 0:
+            return {
+                'total_reports': row[0],
+                'wb_total': row[1] or 0,
+                'wb_carp': row[2] or 0,
+                'wb_hara': row[3] or 0,
+                'avg_acquiring': row[4] or 0
+            }
+        else:
+            return {
+                'total_reports': 0,
+                'wb_total': 0,
+                'wb_carp': 0,
+                'wb_hara': 0,
+                'avg_acquiring': 0
+            }
+    except Exception as e:
+        logger.error(f"Ошибка агрегации метрик: {e}")
+        return {
+            'total_reports': 0,
+            'wb_total': 0,
+            'wb_carp': 0,
+            'wb_hara': 0,
+            'avg_acquiring': 0
+        }
 
 # ===== НАСТРОЙКИ НОВОСТЕЙ =====
 def get_news_settings(user_id):
@@ -518,8 +557,8 @@ def parse_date_from_period(date_period):
     except:
         return None, None
 
-# ===== FLASK =====
-flask_app = Flask(__name__)
+# ===== FLASK (Mini App) =====
+flask_app = Flask(__name__, template_folder='templates')
 
 @flask_app.route("/")
 def health_check():
@@ -528,6 +567,17 @@ def health_check():
 @flask_app.route("/ping")
 def ping():
     return "pong", 200
+
+@flask_app.route('/mini')
+def mini_app():
+    """Страница мини-приложения."""
+    return render_template('dashboard.html')
+
+@flask_app.route('/api/stats')
+def api_stats():
+    """Возвращает JSON с агрегированной статистикой."""
+    data = get_aggregated_metrics()
+    return jsonify(data)
 
 def run_flask():
     from threading import Thread
@@ -620,22 +670,22 @@ class ReportProcessor:
 
         # ===== ОСНОВНОЙ ОТЧЕТ - ЦАП ЦАРАПКИН (продажи) =====
         mask_carp_sale = ((df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())) & (df_osn['Тип документа'] == 'Продажа')
-        values['B4'] = df_osn[mask_carp_sale]['К перечислению Продавцу за реализованный Товар'].sum()  # Продажи ЦАП (к перечислению)
+        values['B4'] = df_osn[mask_carp_sale]['К перечислению Продавцу за реализованный Товар'].sum()
 
         # Возвраты ЦАП
         mask_carp_return = ((df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())) & (df_osn['Тип документа'] == 'Возврат')
         values['B5'] = df_osn[mask_carp_return]['К перечислению Продавцу за реализованный Товар'].sum()
 
-        # Прочие показатели ЦАП (без фильтра по типу документа, как раньше – возможно, они должны быть по всем типам, оставляем)
+        # Прочие показатели ЦАП
         mask_carp_all = (df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())
         values['B7'] = df_osn[mask_carp_all]['Услуги по доставке товара покупателю'].sum()
         values['B9'] = df_osn[mask_carp_all]['Операции на приемке'].sum()
-        values['B10'] = df_osn['Общая сумма штрафов'].sum()  # штрафы общие
+        values['B10'] = df_osn['Общая сумма штрафов'].sum()
         values['B11'] = df_osn[mask_carp_all]['Удержания'].sum()
         values['B26'] = df_osn[mask_carp_all]['Хранение'].sum()
         values['B29'] = df_osn[mask_carp_all]['Разовое изменение срока перечисления денежных средств'].sum()
 
-        # ВБшный оборот ЦАП (основной) - ячейка B44
+        # ВБшный оборот ЦАП (основной)
         values['B44'] = df_osn[mask_carp_sale]['Цена розничная'].sum()
 
         # ===== ОСНОВНОЙ ОТЧЕТ - HARAKIRI =====
@@ -651,7 +701,7 @@ class ReportProcessor:
         values['F10'] = df_osn[mask_hara_all]['Общая сумма штрафов'].sum()
         values['F11'] = df_osn[mask_hara_all]['Удержания'].sum()
 
-        # ВБшный оборот Harakiri (основной) - ячейка B32
+        # ВБшный оборот Harakiri (основной)
         values['B32'] = df_osn[mask_hara_sale]['Цена розничная'].sum()
 
         # ===== ВЫКУПЫ - ЦАП ЦАРАПКИН =====
@@ -666,7 +716,7 @@ class ReportProcessor:
         values['M8'] = df_vyk[mask_carp_vyk_all]['Операции на приемке'].sum()
         values['M9'] = df_vyk['Общая сумма штрафов'].sum()
 
-        # ВБшный оборот ЦАП (выкупы) - ячейка B47
+        # ВБшный оборот ЦАП (выкупы)
         values['B47'] = df_vyk[mask_carp_vyk_sale]['Цена розничная'].sum()
 
         # ===== ВЫКУПЫ - HARAKIRI =====
@@ -681,10 +731,10 @@ class ReportProcessor:
         values['Q8'] = df_vyk[mask_hara_vyk_all]['Операции на приемке'].sum()
         values['Q9'] = df_vyk[mask_hara_vyk_all]['Общая сумма штрафов'].sum()
 
-        # ВБшный оборот Harakiri (выкупы) - ячейка B41
+        # ВБшный оборот Harakiri (выкупы)
         values['B41'] = df_vyk[mask_hara_vyk_sale]['Цена розничная'].sum()
 
-        # ===== ЭКВАЙРИНГ (без изменений) =====
+        # ===== ЭКВАЙРИНГ =====
         col = "Размер компенсации платёжных услуг/Комиссии за интеграцию платёжных сервисов, %"
         if col in df_osn.columns:
             filtered = df_osn[col][df_osn[col].notna() & (df_osn[col] > 0)]
@@ -717,6 +767,7 @@ def get_main_menu():
         [InlineKeyboardButton("📦 Артикулы", callback_data="menu_articles")],
         [InlineKeyboardButton("📊 Аналитика по артикулам", callback_data="menu_analytics")],
         [InlineKeyboardButton("📰 Новости", callback_data="menu_news")],
+        [InlineKeyboardButton("📊 Дашборд", web_app={"url": MINI_APP_URL})],
         [InlineKeyboardButton("❓ Помощь", callback_data="menu_help")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -922,7 +973,6 @@ async def show_analytics_selection(query, context, page):
         button_text = f"{checked} {file_name} ({date_period})"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"analytics_toggle_{report_id}")])
 
-    # Кнопки быстрого выбора
     quick_buttons = [
         InlineKeyboardButton("✅ Выбрать все", callback_data="analytics_select_all"),
         InlineKeyboardButton("📅 Неделя (1)", callback_data="analytics_quick_1"),
@@ -933,7 +983,6 @@ async def show_analytics_selection(query, context, page):
     quick_rows = [quick_buttons[i:i+2] for i in range(0, len(quick_buttons), 2)]
     keyboard.extend(quick_rows)
 
-    # Кнопка "Отменить все" — только если есть выбранные отчёты
     if selected:
         keyboard.append([InlineKeyboardButton("❌ Отменить все", callback_data="analytics_deselect_all")])
 
@@ -1256,7 +1305,6 @@ async def resend_report(query, context, report_id):
     context.user_data['current_report_id'] = report_id
     context.user_data['current_period'] = date_period
 
-    # Формируем сообщение статистики
     msg = f"📊 **Статистика отчёта**\n\n"
     msg += f"📄 **{file_name}**\n"
     msg += f"📅 Период: {date_period}\n\n"
@@ -1281,7 +1329,6 @@ async def resend_report(query, context, report_id):
     tax_hara = wb_hara * 0.01
     k_hara_after_tax = k_hara - tax_hara
 
-    # Функция форматирования изменения
     def fmt_change(current, previous, unit='₽', is_percent=False):
         if previous is None:
             return ""
@@ -1756,7 +1803,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_path = TEMP_DIR / doc.file_name
         await file.download_to_drive(file_path)
 
-        # Определяем тип отчёта
         report_type = detect_report_type(doc.file_name)
         if not report_type:
             context.user_data['current_file'] = str(file_path)
@@ -1764,7 +1810,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❓ Тип не определен. Используйте /osn или /vyk")
             return
 
-        # Сохраняем файл в контекст (перезаписываем, если такой тип уже есть)
         if 'files' not in context.user_data:
             context.user_data['files'] = {}
         context.user_data['files'][report_type] = str(file_path)
@@ -1775,7 +1820,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['vyk_hash'] = calculate_file_hash(file_path)
             await update.message.reply_text("✅ Отчет по выкупам получен")
 
-        # Если есть оба типа – запускаем обработку
         if 'osn' in context.user_data['files'] and 'vyk' in context.user_data['files']:
             await process_and_send(update, context)
 
@@ -1858,7 +1902,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not start_date:
             start_date = end_date = datetime.now().strftime("%Y-%m-%d")
 
-        # === ВЫЧИСЛЕНИЕ МЕТРИК ===
         def f(key):
             return values.get(key, 0.0)
 
@@ -1919,7 +1962,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'hara_vyk_orders': hara_vyk_orders
         }
 
-        # === ПРОВЕРКА И УДАЛЕНИЕ СТАРОГО ОТЧЁТА ПО ПЕРИОДУ ===
         if osn_hash is None:
             osn_hash = calculate_file_hash(Path(osn_file))
 
@@ -1946,11 +1988,9 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['current_period'] = date_period
         context.user_data['current_report_id'] = report_id
 
-        # Получение предыдущего отчёта для сравнения
         prev_id = get_previous_report_id(report_id)
         prev_metrics = get_report_metrics(prev_id) if prev_id else None
 
-        # Функция форматирования изменения
         def fmt_change(current, previous, unit='₽', is_percent=False):
             if previous is None:
                 return ""
@@ -1963,12 +2003,10 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 diff_percent = (diff_abs / previous * 100) if previous != 0 else 0
                 return f"(было {previous:,.2f} {unit}, {diff_abs:+.2f} {unit}, {diff_percent:+.1f}%)"
 
-        # Основное сообщение
         msg = "📊 **Статистика обработки:**\n\n"
         msg += "• Основной отчет: ЦАП + HARAKIRI ✅\n"
         msg += "• По выкупам: ЦАП + HARAKIRI ✅\n\n"
 
-        # Эквайринг
         avg_acquiring = values.get('B56', 0)
         msg += f"💳 **Средний эквайринг:** {avg_acquiring:.2f} %"
         if prev_metrics:
@@ -1982,7 +2020,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += " " + fmt_change(median_acquiring, prev_med, is_percent=True)
         msg += "\n\n"
 
-        # Обороты
         msg += f"💰 **ВБшный оборот общий:** {wb_total:,.2f} ₽"
         if prev_metrics:
             prev_wb = prev_metrics.get('wb_total', 0)
@@ -1999,7 +2036,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += " " + fmt_change(wb_hara, prev_hara, '₽')
         msg += "\n\n"
 
-        # Заказы
         msg += f"📦 **Заказы (осн):** ЦАП {carp_orders:.0f} шт."
         if prev_metrics:
             prev_carp_ord = prev_metrics.get('carp_orders', 0)
@@ -2027,7 +2063,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f" (было {prev_hara_vyk:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
         msg += "\n\n"
 
-        # Выводы
         tax_hara = wb_hara * 0.01
         k_hara_after_tax = k_hara - tax_hara
 
@@ -2052,7 +2087,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += " " + fmt_change(k_hara_after_tax, prev_k_hara_after, '₽')
         msg += "\n\n"
 
-        # Реклама
         msg += f"📢 **Реклама:** ЦАП {reklama_carp:,.2f} ₽"
         if prev_metrics:
             prev_reklama_carp = prev_metrics.get('reklama_carp', 0)
@@ -2083,7 +2117,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await update.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-        # Очистка контекста
         for f in [out_file, osn_file, vyk_file]:
             try:
                 os.remove(f)
@@ -2175,8 +2208,7 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # Планировщик новостей (UTC; для МСК нужно сдвинуть на +3 часа)
-    # Если хотите по МСК, замените hour на 5 и 17 соответственно.
+    # Планировщик новостей (UTC; для МСК замените час на 5 и 17)
     scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[app])
     scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])
     scheduler.start()
