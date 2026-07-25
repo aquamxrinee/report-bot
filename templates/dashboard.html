@@ -48,6 +48,12 @@ else:
     ALLOWED_USERS = set()
     print("⚠️ ALLOWED_USER_IDS не задан. Бот доступен всем.")
 
+# Имена пользователей для отображения в истории
+USER_NAMES = {
+    1289447998: "Роман",
+    5167366543: "Евгений"
+}
+
 DATA_DIR = Path("/data")
 TEMP_DIR = DATA_DIR / "temp"
 DB_PATH = DATA_DIR / "reports.db"
@@ -233,18 +239,14 @@ def set_product_cost(article, brand, cost, user_id):
     cursor.execute("SELECT COUNT(*) FROM product_costs_history WHERE article = ?", (article,))
     count = cursor.fetchone()[0]
     if count == 0:
-        # Первая запись – берём дату самого раннего отчёта
         earliest = get_earliest_report_date()
         if earliest:
             date_from = earliest
         else:
-            # Если отчётов нет, используем сегодня
             date_from = datetime.now().strftime("%Y-%m-%d")
     else:
-        # Не первая запись – начинаем с сегодня
         date_from = datetime.now().strftime("%Y-%m-%d")
-    # Закрываем активную запись (если есть) – ставим date_to = date_from - 1 день
-    # Чтобы избежать перекрытия, закроем предыдущую датой за день до новой
+    # Закрываем активную запись (если есть)
     if count > 0:
         prev_date = (datetime.strptime(date_from, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
         cursor.execute('''
@@ -252,7 +254,6 @@ def set_product_cost(article, brand, cost, user_id):
             SET date_to = ?
             WHERE article = ? AND date_to IS NULL
         ''', (prev_date, article))
-    # Создаём новую запись
     cursor.execute('''
         INSERT INTO product_costs_history (article, brand, cost_price, date_from, set_by)
         VALUES (?, ?, ?, ?, ?)
@@ -1052,7 +1053,7 @@ async def menu_settings_callback(update: Update, context: ContextTypes.DEFAULT_T
     await query.answer()
     keyboard = [
         [InlineKeyboardButton("📰 Новости", callback_data="news_settings")],
-        [InlineKeyboardButton("💰 Чистая прибыль", callback_data="menu_costs")],
+        [InlineKeyboardButton("💰 Себестоимость", callback_data="menu_costs")],
         [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
     ]
     await query.edit_message_text("⚙️ **Настройки**\n\nВыберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
@@ -1191,7 +1192,7 @@ async def set_news_query_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     set_news_settings(user_id, query=new_query)
     await update.message.reply_text(f"✅ Поисковый запрос обновлён: `{new_query}`", parse_mode='Markdown')
 
-# ===== НАСТРОЙКИ СЕБЕСТОИМОСТИ (ЧИСТАЯ ПРИБЫЛЬ) =====
+# ===== НАСТРОЙКИ СЕБЕСТОИМОСТИ =====
 async def menu_costs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1213,7 +1214,7 @@ async def menu_costs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         keyboard.append([InlineKeyboardButton(label, callback_data=f"cost_edit_{article}")])
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")])
     await query.edit_message_text(
-        "💰 **Чистая прибыль (управление себестоимостью)**\n\n"
+        "💰 **Управление себестоимостью**\n\n"
         "Выберите артикул для редактирования. Текущая себестоимость указана на кнопке.\n"
         "Первая установленная себестоимость будет действовать с даты первого отчёта.",
         reply_markup=InlineKeyboardMarkup(keyboard),
@@ -1273,11 +1274,12 @@ async def cost_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
     for record in history:
         rec_id, cost, date_from, date_to, set_by, created_at = record
         date_to_str = date_to if date_to else "действует"
+        # Получаем имя пользователя
+        user_name = USER_NAMES.get(set_by, str(set_by)) if set_by else "неизвестно"
         text += f"• {date_from} → {date_to_str}: **{cost:.2f} ₽**"
         if set_by:
-            text += f" (установил {set_by})"
+            text += f" (установил {user_name})"
         text += "\n"
-        # Если запись не активна, добавляем кнопку "Удалить"
         if date_to is not None:
             keyboard.append([InlineKeyboardButton(f"🗑️ Удалить запись от {date_from}", callback_data=f"cost_delete_{rec_id}")])
     keyboard.append([InlineKeyboardButton("◀️ Назад к деталям", callback_data=f"cost_edit_{article}")])
@@ -1293,7 +1295,6 @@ async def cost_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     success = delete_cost_history(record_id)
     if success:
         await query.edit_message_text("✅ Запись удалена из истории.")
-        # Возвращаемся к списку артикулов
         await menu_costs_callback(update, context)
     else:
         await query.edit_message_text("❌ Не удалось удалить запись (возможно, она активна или уже удалена).")
@@ -1310,7 +1311,6 @@ async def handle_cost_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if cost < 0:
             await update.message.reply_text("❌ Себестоимость не может быть отрицательной.")
             return
-        # Получаем бренд для артикула (можно взять из последнего отчёта или оставить пустым)
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
         cursor.execute('SELECT brand FROM article_stats WHERE article = ? LIMIT 1', (article,))
@@ -1318,10 +1318,15 @@ async def handle_cost_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         brand = row[0] if row else 'Unknown'
         conn.close()
         set_product_cost(article, brand, cost, update.effective_user.id)
-        await update.message.reply_text(f"✅ Себестоимость для артикула `{article}` установлена: **{cost:.2f} ₽**", parse_mode='Markdown')
         context.user_data['waiting_for_cost'] = None
-        # Возвращаемся в меню себестоимости
-        await menu_costs_callback(update, context)
+
+        # Показываем сообщение с кнопкой "К артикулам"
+        keyboard = [[InlineKeyboardButton("◀️ К артикулам", callback_data="menu_costs")]]
+        await update.message.reply_text(
+            f"✅ Себестоимость для артикула `{article}` установлена: **{cost:.2f} ₽**",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode='Markdown'
+        )
     except ValueError:
         await update.message.reply_text("❌ Введите корректное число (например, 450.50).")
 
@@ -2680,13 +2685,4 @@ def main():
 
     app.add_handler(CallbackQueryHandler(menu_costs_callback, pattern="^menu_costs$"))
     app.add_handler(CallbackQueryHandler(cost_edit_callback, pattern="^cost_edit_"))
-    app.add_handler(CallbackQueryHandler(cost_set_callback, pattern="^cost_set_"))
-    app.add_handler(CallbackQueryHandler(cost_history_callback, pattern="^cost_history_"))
-    app.add_handler(CallbackQueryHandler(cost_delete_callback, pattern="^cost_delete_"))
-
-    app.add_handler(CallbackQueryHandler(analytics_toggle_callback, pattern="^analytics_toggle_"))
-    app.add_handler(CallbackQueryHandler(analytics_page_callback, pattern="^analytics_page_"))
-    app.add_handler(CallbackQueryHandler(analytics_select_all_callback, pattern="^analytics_select_all$"))
-    app.add_handler(CallbackQueryHandler(analytics_deselect_all_callback, pattern="^analytics_deselect_all$"))
-    app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
-    app.add_handler(CallbackQueryHandler(analytics_show
+    app.add_handler(CallbackQueryHandler(cost_set_callback, pattern="^cost
