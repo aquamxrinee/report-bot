@@ -777,8 +777,8 @@ class ReportProcessor:
 def get_main_menu():
     keyboard = [
         [InlineKeyboardButton("📱 Открыть приложение", web_app={"url": MINI_APP_URL})],
-        [InlineKeyboardButton("📂 Архив отчетов", callback_data="menu_history")],
         [InlineKeyboardButton("📊 Аналитика", callback_data="menu_analytics_main")],
+        [InlineKeyboardButton("📂 Архив отчетов", callback_data="menu_history")],
         [InlineKeyboardButton("⚙️ Настройки", callback_data="menu_settings")]
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -835,7 +835,6 @@ async def menu_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
 async def menu_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    # Используем существующую функцию, но передаём is_callback=True
     await articles_full_cmd(update, context, is_callback=True)
 
 async def menu_analytics_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1186,7 +1185,7 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# === ИСТОРИЯ С ВОЗМОЖНОСТЬЮ УДАЛЕНИЯ ===
+# === ИСТОРИЯ (АРХИВ) С ВОЗМОЖНОСТЬЮ УДАЛЕНИЯ ===
 async def show_history_page(query, context, page):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
