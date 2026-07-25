@@ -2,8 +2,9 @@
 """
 Telegram бот для обработки еженедельных отчетов Wildberries
 Деплой на Railway (бесплатно, 24/7)
-Полная версия с инлайн-меню, историей, артикулами, аналитикой, удалением,
+Полная версия с инлайн-меню, историей, аналитикой, удалением,
 новостными сводками, улучшенным сравнением и Telegram Mini App.
+Добавлена авторизация по белосписку user_id.
 """
 
 import os
@@ -41,6 +42,15 @@ MINI_APP_URL = os.getenv("MINI_APP_URL", "ваш-сайт.railway.app/mini")
 if not MINI_APP_URL.startswith(("http://", "https://")):
     MINI_APP_URL = "https://" + MINI_APP_URL
 print(f"🌐 Mini App URL: {MINI_APP_URL}")
+
+# === АВТОРИЗАЦИЯ ===
+ALLOWED_USER_IDS = os.getenv("ALLOWED_USER_IDS", "")
+if ALLOWED_USER_IDS:
+    ALLOWED_USERS = set(map(int, ALLOWED_USER_IDS.split(",")))
+    print(f"🔒 Бот доступен только для ID: {ALLOWED_USERS}")
+else:
+    ALLOWED_USERS = set()
+    print("⚠️ ALLOWED_USER_IDS не задан. Бот доступен всем.")
 
 DATA_DIR = Path("/data")
 TEMP_DIR = DATA_DIR / "temp"
@@ -355,34 +365,39 @@ def get_report_date_range():
     except:
         return None, None
 
+# ===== ИСПРАВЛЕННАЯ ФУНКЦИЯ АГРЕГАЦИИ =====
 def get_aggregated_metrics():
     """Возвращает суммарные метрики по всем отчётам для мини-приложения."""
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
-        # Общее количество отчётов
-        cursor.execute("SELECT COUNT(DISTINCT report_id) FROM report_metrics")
-        total_reports = cursor.fetchone()[0] or 0
-
-        # Суммы по метрикам
-        cursor.execute("SELECT metric_name, SUM(metric_value) FROM report_metrics GROUP BY metric_name")
-        metrics_map = {}
-        for row in cursor.fetchall():
-            metrics_map[row[0]] = row[1] or 0
-
-        # Средний эквайринг
-        cursor.execute("SELECT AVG(metric_value) FROM report_metrics WHERE metric_name = 'avg_acquiring'")
-        avg_acquiring = cursor.fetchone()[0] or 0
-
+        cursor.execute('''
+            SELECT
+                COUNT(DISTINCT report_id) as total_reports,
+                SUM(CASE WHEN metric_name = 'wb_total' THEN metric_value ELSE 0 END) as wb_total,
+                SUM(CASE WHEN metric_name = 'wb_carp' THEN metric_value ELSE 0 END) as wb_carp,
+                SUM(CASE WHEN metric_name = 'wb_hara' THEN metric_value ELSE 0 END) as wb_hara,
+                AVG(CASE WHEN metric_name = 'avg_acquiring' THEN metric_value ELSE NULL END) as avg_acquiring
+            FROM report_metrics
+        ''')
+        row = cursor.fetchone()
         conn.close()
-
-        return {
-            'total_reports': total_reports,
-            'wb_total': metrics_map.get('wb_total', 0),
-            'wb_carp': metrics_map.get('wb_carp', 0),
-            'wb_hara': metrics_map.get('wb_hara', 0),
-            'avg_acquiring': avg_acquiring
-        }
+        if row and row[0] is not None:
+            return {
+                'total_reports': row[0] or 0,
+                'wb_total': row[1] or 0,
+                'wb_carp': row[2] or 0,
+                'wb_hara': row[3] or 0,
+                'avg_acquiring': row[4] or 0
+            }
+        else:
+            return {
+                'total_reports': 0,
+                'wb_total': 0,
+                'wb_carp': 0,
+                'wb_hara': 0,
+                'avg_acquiring': 0
+            }
     except Exception as e:
         logger.error(f"Ошибка агрегации метрик: {e}")
         return {
@@ -576,15 +591,12 @@ def ping():
 
 @flask_app.route('/mini')
 def mini_app():
-    """Страница мини-приложения."""
     return render_template('dashboard.html')
 
 @flask_app.route('/api/stats')
 def api_stats():
-    """Возвращает JSON с агрегированной статистикой с логированием и обработкой ошибок."""
     try:
         data = get_aggregated_metrics()
-        # Приводим все значения к числу
         for key in ['total_reports', 'wb_total', 'wb_carp', 'wb_hara', 'avg_acquiring']:
             if key not in data or not isinstance(data[key], (int, float)):
                 data[key] = 0
@@ -594,31 +606,23 @@ def api_stats():
         logger.error(f"Ошибка в /api/stats: {e}")
         return jsonify({'error': str(e)}), 500
 
-# ===== ДИАГНОСТИЧЕСКИЙ ЭНДПОИНТ =====
 @flask_app.route('/api/debug')
 def debug_db():
     """Диагностика: возвращает количество записей в таблицах и примеры."""
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
-        
         cursor.execute("SELECT COUNT(*) FROM reports")
         reports_count = cursor.fetchone()[0]
-        
         cursor.execute("SELECT COUNT(*) FROM report_metrics")
         metrics_count = cursor.fetchone()[0]
-        
         cursor.execute("SELECT COUNT(*) FROM article_stats")
         articles_count = cursor.fetchone()[0]
-        
-        cursor.execute("SELECT * FROM report_metrics LIMIT 10")
+        cursor.execute("SELECT * FROM report_metrics LIMIT 5")
         metrics_sample = cursor.fetchall()
-        
         cursor.execute("SELECT id, file_name, date_period, start_date, end_date FROM reports LIMIT 3")
         reports_sample = cursor.fetchall()
-        
         conn.close()
-        
         return jsonify({
             'reports_count': reports_count,
             'metrics_count': metrics_count,
@@ -634,6 +638,21 @@ def run_flask():
     def _run():
         flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
     Thread(target=_run, daemon=True).start()
+
+# ===== АВТОРИЗАЦИЯ: проверка доступа =====
+async def check_access(update: Update) -> bool:
+    """Проверяет, есть ли пользователь в белом списке. Если нет – отправляет сообщение и возвращает False."""
+    if not ALLOWED_USERS:
+        return True
+    user_id = update.effective_user.id
+    if user_id not in ALLOWED_USERS:
+        # Пытаемся ответить, если возможно
+        if update.message:
+            await update.message.reply_text("⛔ Доступ запрещён. Вы не авторизованы.")
+        elif update.callback_query:
+            await update.callback_query.answer("⛔ Доступ запрещён.", show_alert=True)
+        return False
+    return True
 
 # ===== ОБРАБОТЧИК ОТЧЕТОВ =====
 class ReportProcessor:
@@ -722,11 +741,9 @@ class ReportProcessor:
         mask_carp_sale = ((df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())) & (df_osn['Тип документа'] == 'Продажа')
         values['B4'] = df_osn[mask_carp_sale]['К перечислению Продавцу за реализованный Товар'].sum()
 
-        # Возвраты ЦАП
         mask_carp_return = ((df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())) & (df_osn['Тип документа'] == 'Возврат')
         values['B5'] = df_osn[mask_carp_return]['К перечислению Продавцу за реализованный Товар'].sum()
 
-        # Прочие показатели ЦАП
         mask_carp_all = (df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())
         values['B7'] = df_osn[mask_carp_all]['Услуги по доставке товара покупателю'].sum()
         values['B9'] = df_osn[mask_carp_all]['Операции на приемке'].sum()
@@ -734,54 +751,40 @@ class ReportProcessor:
         values['B11'] = df_osn[mask_carp_all]['Удержания'].sum()
         values['B26'] = df_osn[mask_carp_all]['Хранение'].sum()
         values['B29'] = df_osn[mask_carp_all]['Разовое изменение срока перечисления денежных средств'].sum()
-
-        # ВБшный оборот ЦАП (основной)
         values['B44'] = df_osn[mask_carp_sale]['Цена розничная'].sum()
 
         # ===== ОСНОВНОЙ ОТЧЕТ - HARAKIRI =====
         mask_hara_sale = (df_osn['Бренд'] == 'Harakiri') & (df_osn['Тип документа'] == 'Продажа')
         values['F4'] = df_osn[mask_hara_sale]['К перечислению Продавцу за реализованный Товар'].sum()
-
         mask_hara_return = (df_osn['Бренд'] == 'Harakiri') & (df_osn['Тип документа'] == 'Возврат')
         values['F5'] = df_osn[mask_hara_return]['К перечислению Продавцу за реализованный Товар'].sum()
-
         mask_hara_all = df_osn['Бренд'] == 'Harakiri'
         values['F7'] = df_osn[mask_hara_all]['Услуги по доставке товара покупателю'].sum()
         values['F9'] = df_osn[mask_hara_all]['Операции на приемке'].sum()
         values['F10'] = df_osn[mask_hara_all]['Общая сумма штрафов'].sum()
         values['F11'] = df_osn[mask_hara_all]['Удержания'].sum()
-
-        # ВБшный оборот Harakiri (основной)
         values['B32'] = df_osn[mask_hara_sale]['Цена розничная'].sum()
 
         # ===== ВЫКУПЫ - ЦАП ЦАРАПКИН =====
         mask_carp_vyk_sale = ((df_vyk['Бренд'] == 'Цап царапкин') | (df_vyk['Бренд'].isna())) & (df_vyk['Тип документа'] == 'Продажа')
         values['M4'] = df_vyk[mask_carp_vyk_sale]['К перечислению Продавцу за реализованный Товар'].sum()
-
         mask_carp_vyk_return = ((df_vyk['Бренд'] == 'Цап царапкин') | (df_vyk['Бренд'].isna())) & (df_vyk['Тип документа'] == 'Возврат')
         values['M5'] = df_vyk[mask_carp_vyk_return]['К перечислению Продавцу за реализованный Товар'].sum()
-
         mask_carp_vyk_all = (df_vyk['Бренд'] == 'Цап царапкин') | (df_vyk['Бренд'].isna())
         values['M7'] = df_vyk[mask_carp_vyk_all]['Услуги по доставке товара покупателю'].sum()
         values['M8'] = df_vyk[mask_carp_vyk_all]['Операции на приемке'].sum()
         values['M9'] = df_vyk['Общая сумма штрафов'].sum()
-
-        # ВБшный оборот ЦАП (выкупы)
         values['B47'] = df_vyk[mask_carp_vyk_sale]['Цена розничная'].sum()
 
         # ===== ВЫКУПЫ - HARAKIRI =====
         mask_hara_vyk_sale = (df_vyk['Бренд'] == 'Harakiri') & (df_vyk['Тип документа'] == 'Продажа')
         values['Q4'] = df_vyk[mask_hara_vyk_sale]['К перечислению Продавцу за реализованный Товар'].sum()
-
         mask_hara_vyk_return = (df_vyk['Бренд'] == 'Harakiri') & (df_vyk['Тип документа'] == 'Возврат')
         values['Q5'] = df_vyk[mask_hara_vyk_return]['К перечислению Продавцу за реализованный Товар'].sum()
-
         mask_hara_vyk_all = df_vyk['Бренд'] == 'Harakiri'
         values['Q7'] = df_vyk[mask_hara_vyk_all]['Услуги по доставке товара покупателю'].sum()
         values['Q8'] = df_vyk[mask_hara_vyk_all]['Операции на приемке'].sum()
         values['Q9'] = df_vyk[mask_hara_vyk_all]['Общая сумма штрафов'].sum()
-
-        # ВБшный оборот Harakiri (выкупы)
         values['B41'] = df_vyk[mask_hara_vyk_sale]['Цена розничная'].sum()
 
         # ===== ЭКВАЙРИНГ =====
@@ -820,12 +823,13 @@ def get_main_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ===== ПОДМЕНЮ "АНАЛИТИКА" =====
+# ===== ПОДМЕНЮ "АНАЛИТИКА" (только аналитика по артикулам) =====
 async def menu_analytics_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     keyboard = [
-        [InlineKeyboardButton("📦 Артикулы", callback_data="menu_articles")],
         [InlineKeyboardButton("📈 Аналитика по артикулам", callback_data="menu_analytics")],
         [InlineKeyboardButton("◀️ Назад", callback_data="back_to_menu")]
     ]
@@ -837,14 +841,17 @@ async def menu_analytics_main_callback(update: Update, context: ContextTypes.DEF
 
 # ===== КОМАНДЫ БОТА =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     await update.message.reply_text(
         "👋 Привет! Я бот для аналитики кабинета WB по брендам Цап царапкин & Harakiri.\n\n"
-        "📊 Используй меню ниже для быстрого доступа к функциям.\n"
-        "📰 Также я присылаю утренние (8:30) и вечерние (20:40) новостные сводки по теме Wildberries.",
+        "📊 Используй меню ниже для быстрого доступа к функциям.",
         reply_markup=get_main_menu()
     )
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     await update.message.reply_text(
         "📋 **Доступные команды:**\n"
         "/start — начать\n"
@@ -862,6 +869,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ОБРАБОТЧИКИ МЕНЮ ===
 async def menu_history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     context.user_data['history_page'] = 0
@@ -869,12 +878,9 @@ async def menu_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data['history_selected_for_delete'] = []
     await show_history_page(query, context, page=0)
 
-async def menu_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    await articles_full_cmd(update, context, is_callback=True)
-
 async def menu_analytics_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     context.user_data['analytics_selected'] = []
@@ -883,6 +889,8 @@ async def menu_analytics_callback(update: Update, context: ContextTypes.DEFAULT_
 
 # === НАСТРОЙКИ (НОВОСТИ) ===
 async def menu_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     keyboard = [
@@ -893,6 +901,8 @@ async def menu_settings_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 # === НОВОСТНОЙ РАЗДЕЛ (внутри настроек) ===
 async def news_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
@@ -914,6 +924,8 @@ async def news_settings_callback(update: Update, context: ContextTypes.DEFAULT_T
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def news_now_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
@@ -926,6 +938,8 @@ async def news_now_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]))
 
 async def news_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
@@ -935,6 +949,8 @@ async def news_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     await news_settings_callback(update, context)
 
 async def news_query_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
@@ -948,6 +964,8 @@ async def news_query_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
 
 async def news_time_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     keyboard = [
@@ -962,12 +980,14 @@ async def news_time_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text("Выберите время для утренней/вечерней сводки:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def news_time_set_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     data = query.data
     parts = data.split("_")
-    time_of_day = parts[2]  # morning или evening
-    time_str = parts[3]     # HH:MM
+    time_of_day = parts[2]
+    time_str = parts[3]
     user_id = update.effective_user.id
     if time_of_day == 'morning':
         set_news_settings(user_id, morning_time=time_str)
@@ -977,6 +997,8 @@ async def news_time_set_callback(update: Update, context: ContextTypes.DEFAULT_T
 
 # === ОБРАБОТЧИКИ ДЛЯ НОВОСТЕЙ (команды) ===
 async def news_now_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     user_id = update.effective_user.id
     settings = get_news_settings(user_id)
     articles = fetch_news(settings['query'], limit=10)
@@ -986,6 +1008,8 @@ async def news_now_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]))
 
 async def set_news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     user_id = update.effective_user.id
     settings = get_news_settings(user_id)
     status = "включены" if settings['enabled'] else "отключены"
@@ -998,6 +1022,8 @@ async def set_news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def set_news_query_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     user_id = update.effective_user.id
     args = context.args
     if not args:
@@ -1058,6 +1084,8 @@ async def show_analytics_selection(query, context, page):
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def analytics_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -1073,6 +1101,8 @@ async def analytics_toggle_callback(update: Update, context: ContextTypes.DEFAUL
         await show_analytics_selection(query, context, page)
 
 async def analytics_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -1082,6 +1112,8 @@ async def analytics_page_callback(update: Update, context: ContextTypes.DEFAULT_
         await show_analytics_selection(query, context, page)
 
 async def analytics_select_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     all_ids = get_all_report_ids()
@@ -1090,6 +1122,8 @@ async def analytics_select_all_callback(update: Update, context: ContextTypes.DE
     await show_analytics_selection(query, context, page)
 
 async def analytics_deselect_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     context.user_data['analytics_selected'] = []
@@ -1097,6 +1131,8 @@ async def analytics_deselect_all_callback(update: Update, context: ContextTypes.
     await show_analytics_selection(query, context, page)
 
 async def analytics_quick_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -1117,6 +1153,8 @@ async def analytics_quick_callback(update: Update, context: ContextTypes.DEFAULT
     await show_analytics_selection(query, context, page)
 
 async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     selected = context.user_data.get('analytics_selected', [])
@@ -1274,6 +1312,8 @@ async def show_history_page(query, context, page):
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
 async def history_toggle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -1289,6 +1329,8 @@ async def history_toggle_delete_callback(update: Update, context: ContextTypes.D
         await show_history_page(query, context, page)
 
 async def history_enable_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     context.user_data['history_delete_mode'] = True
@@ -1297,6 +1339,8 @@ async def history_enable_delete_callback(update: Update, context: ContextTypes.D
     await show_history_page(query, context, page)
 
 async def history_cancel_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     context.user_data['history_delete_mode'] = False
@@ -1305,6 +1349,8 @@ async def history_cancel_delete_callback(update: Update, context: ContextTypes.D
     await show_history_page(query, context, page)
 
 async def history_confirm_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     selected = context.user_data.get('history_selected_for_delete', [])
@@ -1319,6 +1365,8 @@ async def history_confirm_delete_callback(update: Update, context: ContextTypes.
     await query.message.reply_text(f"🗑️ Удалено {deleted} отчётов.")
 
 async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -1329,6 +1377,8 @@ async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 # === ПЕРЕХОД К ОТЧЁТУ ===
 async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -1549,8 +1599,10 @@ async def resend_report(query, context, report_id):
     except:
         pass
 
-# === АРТИКУЛЫ ===
+# === АРТИКУЛЫ (только для текущего отчёта) ===
 async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, is_callback=False):
+    if not await check_access(update):
+        return
     report_id = context.user_data.get('current_report_id')
     if not report_id:
         text = "❌ Нет активного отчёта.\n\nПожалуйста, загрузите новый отчёт или выберите существующий из архива."
@@ -1631,6 +1683,8 @@ async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     report_id = context.user_data.get('current_report_id')
@@ -1695,12 +1749,18 @@ async def articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ОБРАБОТЧИКИ РОСТА И ПАДЕНИЯ ===
 async def growth_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     await _show_sorted_articles(update, context, reverse=True)
 
 async def decline_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     await _show_sorted_articles(update, context, reverse=False)
 
 async def _show_sorted_articles(update, context, reverse=True):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     report_id = context.user_data.get('current_report_id')
@@ -1764,6 +1824,8 @@ async def _show_sorted_articles(update, context, reverse=True):
 
 # === ДЕТАЛЬНОЕ СРАВНЕНИЕ ===
 async def compare_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     report_id = context.user_data.get('current_report_id')
@@ -1842,6 +1904,8 @@ async def compare_articles_callback(update: Update, context: ContextTypes.DEFAUL
 
 # === ОБРАБОТЧИК "НАЗАД В МЕНЮ" ===
 async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
@@ -1851,6 +1915,8 @@ async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 # === ОБРАБОТКА ФАЙЛОВ ===
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     try:
         doc = update.message.document
         if not doc.file_name.endswith(('.xlsx', '.xls')):
@@ -1887,6 +1953,8 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === РУЧНЫЕ КОМАНДЫ osn/vyk ===
 async def handle_osn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     if 'current_file' not in context.user_data:
         await update.message.reply_text("❌ Сначала отправьте файл!")
         return
@@ -1897,6 +1965,8 @@ async def handle_osn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_and_send(update, context)
 
 async def handle_vyk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     if 'current_file' not in context.user_data:
         await update.message.reply_text("❌ Сначала отправьте файл!")
         return
@@ -1908,6 +1978,8 @@ async def handle_vyk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ОСНОВНАЯ ОБРАБОТКА ===
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     try:
         await update.message.reply_text("⏳ Обработка...")
 
@@ -2190,6 +2262,8 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === ОБРАБОТЧИК ТЕКСТА ===
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
     text = update.message.text
     if text.startswith('/'):
         return
@@ -2227,7 +2301,6 @@ def main():
 
     # Callbacks для меню
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
-    app.add_handler(CallbackQueryHandler(menu_articles_callback, pattern="^menu_articles$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_main_callback, pattern="^menu_analytics_main$"))
     app.add_handler(CallbackQueryHandler(menu_settings_callback, pattern="^menu_settings$"))
@@ -2257,7 +2330,7 @@ def main():
     app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
     app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
 
-    # Callbacks для артикулов
+    # Callbacks для артикулов (только из отчёта)
     app.add_handler(CallbackQueryHandler(articles_callback, pattern="^show_articles$"))
     app.add_handler(CallbackQueryHandler(growth_callback, pattern="^growth$"))
     app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline$"))
