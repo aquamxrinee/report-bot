@@ -4,6 +4,7 @@ Telegram бот для обработки еженедельных отчето�
 Деплой на Railway (бесплатно, 24/7)
 Полная версия с обновлением отчётов по периоду, ожиданием обоих файлов,
 сортировкой по дате, аналитикой с выбором, исправленной кнопкой "Выбрать все".
+Кнопка "Отменить все" появляется только при наличии выбранных отчётов.
 """
 
 import os
@@ -747,8 +748,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # === ОБРАБОТЧИКИ МЕНЮ ===
-# (удалён menu_stats_callback)
-
 async def menu_history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -923,9 +922,9 @@ async def show_analytics_selection(query, context, page):
         button_text = f"{checked} {file_name} ({date_period})"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"analytics_toggle_{report_id}")])
 
+    # Кнопки быстрого выбора
     quick_buttons = [
         InlineKeyboardButton("✅ Выбрать все", callback_data="analytics_select_all"),
-        InlineKeyboardButton("❌ Отменить все", callback_data="analytics_deselect_all"),
         InlineKeyboardButton("📅 Неделя (1)", callback_data="analytics_quick_1"),
         InlineKeyboardButton("📅 2 недели", callback_data="analytics_quick_2"),
         InlineKeyboardButton("📅 4 недели", callback_data="analytics_quick_4"),
@@ -933,6 +932,10 @@ async def show_analytics_selection(query, context, page):
     ]
     quick_rows = [quick_buttons[i:i+2] for i in range(0, len(quick_buttons), 2)]
     keyboard.extend(quick_rows)
+
+    # Кнопка "Отменить все" — только если есть выбранные отчёты
+    if selected:
+        keyboard.append([InlineKeyboardButton("❌ Отменить все", callback_data="analytics_deselect_all")])
 
     nav_buttons = []
     if current_page > 0:
@@ -1440,9 +1443,6 @@ async def resend_report(query, context, report_id):
         await query.delete_message()
     except:
         pass
-
-# === СТАТИСТИКА (удалена) ===
-# Удалён stats_cmd, так как он не используется.
 
 # === АРТИКУЛЫ ===
 async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, is_callback=False):
@@ -2176,6 +2176,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     # Планировщик новостей (UTC; для МСК нужно сдвинуть на +3 часа)
+    # Если хотите по МСК, замените hour на 5 и 17 соответственно.
     scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[app])
     scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])
     scheduler.start()
