@@ -32,6 +32,7 @@ def main():
     # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
+    print("✅ Flask запущен в потоке")
 
     # Создаём приложение бота
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
