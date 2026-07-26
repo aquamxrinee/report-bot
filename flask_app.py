@@ -1,7 +1,7 @@
 import os
 import traceback
 from flask import Flask, render_template, jsonify, request
-from config import logger, DB_PATH
+from config import logger
 from models import get_aggregated_metrics
 
 flask_app = Flask(__name__, template_folder='templates')
