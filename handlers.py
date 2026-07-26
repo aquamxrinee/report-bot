@@ -258,7 +258,7 @@ async def set_news_query_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     set_news_settings(user_id, query=new_query)
     await update.message.reply_text(f"✅ Поисковый запрос обновлён: `{new_query}`", parse_mode='Markdown')
 
-# ===== НАСТРОЙКИ СЕБЕСТОИМОСТИ (с логированием) =====
+# ===== НАСТРОЙКИ СЕБЕСТОИМОСТИ =====
 async def menu_costs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not await check_access(update):
@@ -1524,6 +1524,9 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         margin_carp = (profit_by_brand['Цап царапкин'] / revenue_by_brand['Цап царапкин'] * 100) if revenue_by_brand['Цап царапкин'] > 0 else 0
         margin_hara = (profit_by_brand['Harakiri'] / revenue_by_brand['Harakiri'] * 100) if revenue_by_brand['Harakiri'] > 0 else 0
 
+        # ЛОГИРОВАНИЕ МЕТРИК ПРИБЫЛИ ДО СОХРАНЕНИЯ
+        logger.info(f"💾 Метрики для сохранения: total_profit={total_profit}, margin={total_margin}")
+
         metrics = {
             'avg_acquiring': values.get('B56', 0),
             'median_acquiring': values.get('B59', 0),
@@ -1559,6 +1562,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             delete_report(existing_id)
             logger.info(f"🗑️ Удалён старый отчёт за период {start_date} — {end_date} (ID {existing_id})")
 
+        logger.info(f"📤 Передаём в БД: total_profit={total_profit}, margin={total_margin}")
         saved, report_id = save_report_to_db(
             file_name=Path(osn_file).name,
             file_hash=osn_hash,
@@ -1569,6 +1573,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             metrics=metrics,
             articles=articles
         )
+        logger.info(f"✅ Отчёт {report_id} сохранён, метрики записаны")
 
         with open(out_file, 'rb') as f:
             await update.message.reply_document(f, caption="✅ Готово!")
