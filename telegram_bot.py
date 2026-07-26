@@ -600,7 +600,14 @@ async def check_access(update:Update)->bool:
     return True
 
 class ReportProcessor:
-    def process_files(self,osn_path,vyk_path,template_path):
+def process_files(self,osn_path,vyk_path,template_path):
         df_osn=pd.read_excel(osn_path);df_vyk=pd.read_excel(vyk_path)
         logger.info(f"Колонки основного: {df_osn.columns.tolist()}")
-        logger.info(f"Колонки выкупов: {df_vyk.columns
+        logger.info(f"Колонки выкупов: {df_vyk.columns.tolist()}")
+        filename=Path(osn_path).name
+        match=re.search(r'(\d{1,2})\.(\d{2})-(\d{1,2})\.(\d{2})',filename)
+        date_range=f"{match.group(1)}.{match.group(2)}-{match.group(3)}.{match.group(4)}" if match else datetime.now().strftime("%d.%m")
+        values=self._calculate_all_values(df_osn,df_vyk,date_range)
+        self._fill_template(template_path,values)
+        articles=self._get_articles_stats(df_osn,df_vyk)
+        return values,articles,date_range
