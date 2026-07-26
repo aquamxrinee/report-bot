@@ -1,5 +1,6 @@
 import os
 import time
+import random
 import requests
 from datetime import datetime, timedelta
 from config import logger
@@ -8,55 +9,47 @@ WB_API_TOKEN = os.getenv("WB_API_TOKEN")
 STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1"
 ANALYTICS_API = "https://seller-analytics-api.wildberries.ru/api/analytics"
 
-# Кеш
 _cache = {
     "data": None,
     "timestamp": None,
     "error": None
 }
-CACHE_TTL = timedelta(minutes=30)  # увеличили до 30 минут
+CACHE_TTL = timedelta(minutes=30)  # увеличил до 30 минут
 
 def get_headers():
     return {"Authorization": f"Bearer {WB_API_TOKEN}"}
 
-def _safe_request(method, url, params=None, json=None):
+def _safe_request(method, url, params=None, json=None, retries=2):
     if not WB_API_TOKEN:
         return {"error": "WB_API_TOKEN не задан"}
-    try:
-        if method.upper() == "GET":
-            response = requests.get(url, headers=get_headers(), params=params, timeout=30)
-        else:
-            response = requests.post(url, headers=get_headers(), json=json, timeout=30)
-        
-        if response.status_code == 429:
-            logger.warning("⚠️ Превышен лимит запросов к WB API (429)")
-            retry_after = response.headers.get("Retry-After")
-            if retry_after:
-                wait = int(retry_after) + 1
-                logger.info(f"⏳ Ожидание {wait} секунд по Retry-After")
-                time.sleep(wait)
-                if method.upper() == "GET":
-                    response = requests.get(url, headers=get_headers(), params=params, timeout=30)
-                else:
-                    response = requests.post(url, headers=get_headers(), json=json, timeout=30)
+    for attempt in range(retries + 1):
+        try:
+            if method.upper() == "GET":
+                response = requests.get(url, headers=get_headers(), params=params, timeout=30)
             else:
-                # Если Retry-After нет, ждём 10 секунд и пробуем ещё раз
-                time.sleep(10)
-                if method.upper() == "GET":
-                    response = requests.get(url, headers=get_headers(), params=params, timeout=30)
+                response = requests.post(url, headers=get_headers(), json=json, timeout=30)
+            
+            if response.status_code == 429:
+                logger.warning(f"⚠️ Превышен лимит запросов к WB API (429), попытка {attempt+1}/{retries+1}")
+                retry_after = response.headers.get("Retry-After")
+                if retry_after:
+                    wait = int(retry_after) + 1
                 else:
-                    response = requests.post(url, headers=get_headers(), json=json, timeout=30)
-        
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.HTTPError as e:
-        logger.error(f"HTTP ошибка: {e}")
-        if response and response.status_code == 429:
-            return {"error": "Превышен лимит запросов. Попробуйте позже."}
-        return {"error": str(e)}
-    except Exception as e:
-        logger.error(f"Ошибка запроса: {e}")
-        return {"error": str(e)}
+                    wait = 5 + random.randint(1, 5)  # случайная задержка
+                logger.info(f"⏳ Ожидание {wait} секунд")
+                time.sleep(wait)
+                continue
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 429 and attempt < retries:
+                continue
+            logger.error(f"HTTP ошибка: {e}")
+            return {"error": str(e)}
+        except Exception as e:
+            logger.error(f"Ошибка запроса: {e}")
+            return {"error": str(e)}
+    return {"error": "Превышено количество попыток"}
 
 def get_sales(date_from: str, date_to: str = None):
     if not date_to:
@@ -65,10 +58,12 @@ def get_sales(date_from: str, date_to: str = None):
     params = {"dateFrom": date_from, "dateTo": date_to}
     return _safe_request("GET", url, params=params)
 
-def get_stocks():
-    # Исправлено: добавляем dateFrom
+def get_stocks(date_from: str = None):
+    if not date_from:
+        date_from = datetime.now().strftime("%Y-%m-%d")
+    # Правильный URL для остатков с обязательным параметром dateFrom
     url = f"{STATISTICS_API}/supplier/stocks"
-    params = {"dateFrom": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")}
+    params = {"dateFrom": date_from}
     return _safe_request("GET", url, params=params)
 
 def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = None):
@@ -80,13 +75,18 @@ def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = 
     payload = {
         "dateFrom": date_from,
         "dateTo": date_to,
-        "limit": 100,
-        "sort": "orders_desc",
-        "filters": {}
+        "limit": 100
     }
+    # В документации limit может быть до 100, но если не работает, убираем
     if nm_ids:
         payload["nmIds"] = nm_ids
-    return _safe_request("POST", url, json=payload)
+    # Попробуем без limit, если ошибка 400
+    result = _safe_request("POST", url, json=payload)
+    if isinstance(result, dict) and "error" in result and "400" in result["error"]:
+        logger.warning("Попытка без параметра limit")
+        del payload["limit"]
+        result = _safe_request("POST", url, json=payload)
+    return result
 
 def get_aggregated_stats(force_refresh=False):
     global _cache
@@ -101,8 +101,11 @@ def get_aggregated_stats(force_refresh=False):
     today = datetime.now().strftime("%Y-%m-%d")
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     
+    # Добавляем небольшие задержки между запросами, чтобы не бить лимит
     sales = get_sales(week_ago, today)
-    stocks = get_stocks()
+    time.sleep(1 + random.random())
+    stocks = get_stocks(today)  # остатки на сегодня
+    time.sleep(1 + random.random())
     funnel = get_sales_funnel(date_from=week_ago, date_to=today)
     
     result = {
@@ -121,7 +124,7 @@ def get_aggregated_stats(force_refresh=False):
         "last_update": now.isoformat()
     }
     
-    # Sales
+    # Обработка продаж
     if isinstance(sales, dict) and "error" in sales:
         result["error_sales"] = sales["error"]
     elif isinstance(sales, list):
@@ -131,14 +134,14 @@ def get_aggregated_stats(force_refresh=False):
         result["total_orders"] = total_orders
         result["avg_order_value"] = total_revenue / total_orders if total_orders > 0 else 0
     
-    # Stocks
+    # Обработка остатков
     if isinstance(stocks, dict) and "error" in stocks:
         result["error_stocks"] = stocks["error"]
     elif isinstance(stocks, list):
         result["total_stock"] = sum(item.get("quantity", 0) for item in stocks)
         result["unique_articles"] = len(set(item.get("nmId") for item in stocks if item.get("nmId")))
     
-    # Funnel
+    # Обработка воронки
     if isinstance(funnel, dict) and "error" in funnel:
         result["error_funnel"] = funnel["error"]
     elif isinstance(funnel, dict) and "data" in funnel:
