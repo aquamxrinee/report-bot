@@ -4,6 +4,7 @@ import sqlite3
 from flask import Flask, render_template, jsonify, request
 from config import logger, DB_PATH
 from models import get_aggregated_metrics
+from wb_api import get_aggregated_stats
 
 flask_app = Flask(__name__, template_folder='templates')
 
@@ -36,6 +37,16 @@ def stats():
         return jsonify(data)
     except Exception as e:
         logger.error(f"❌ Ошибка /api/stats: {e}\n{traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
+@flask_app.route('/api/wb_stats')
+def wb_stats():
+    logger.info("➡️ /api/wb_stats вызван")
+    try:
+        data = get_aggregated_stats()
+        return jsonify(data)
+    except Exception as e:
+        logger.error(f"❌ Ошибка /api/wb_stats: {e}\n{traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
 @flask_app.route('/api/debug_metrics')
