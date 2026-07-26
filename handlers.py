@@ -1,7 +1,6 @@
 import os
 import shutil
 import sqlite3
-import openpyxl
 from pathlib import Path
 from datetime import datetime, timedelta
 
