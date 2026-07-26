@@ -1,7 +1,8 @@
 import os
 import traceback
+import sqlite3
 from flask import Flask, render_template, jsonify, request
-from config import logger
+from config import logger, DB_PATH
 from models import get_aggregated_metrics
 
 flask_app = Flask(__name__, template_folder='templates')
@@ -35,6 +36,23 @@ def stats():
         return jsonify(data)
     except Exception as e:
         logger.error(f"❌ Ошибка /api/stats: {e}\n{traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
+@flask_app.route('/api/debug_metrics')
+def debug_metrics():
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM reports ORDER BY id DESC LIMIT 1")
+        row = cursor.fetchone()
+        if not row:
+            return jsonify({'error': 'Нет отчётов'}), 404
+        report_id = row[0]
+        cursor.execute("SELECT metric_name, metric_value FROM report_metrics WHERE report_id = ?", (report_id,))
+        metrics = cursor.fetchall()
+        conn.close()
+        return jsonify({'report_id': report_id, 'metrics': metrics})
+    except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 def run_flask():
