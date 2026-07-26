@@ -14,8 +14,8 @@ from models import (
     get_all_reports, get_all_report_ids, get_report_values, get_report_metrics,
     get_previous_report_id, get_previous_reports, get_article_stats_for_report,
     get_report_date_range, get_current_cost, get_cost_history,
-    delete_cost_history, delete_all_costs_for_article, set_product_cost,
-    delete_report, delete_reports, save_report_to_db,
+    delete_cost_history, delete_all_costs_for_article,
+    set_product_cost, delete_report, delete_reports, save_report_to_db,
     get_report_id_by_period, get_active_cost,
     get_news_settings, set_news_settings
 )
@@ -123,7 +123,7 @@ async def menu_settings_callback(update: Update, context: ContextTypes.DEFAULT_T
     ]
     await query.edit_message_text("⚙️ **Настройки**\n\nВыберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# ===== НОВОСТНОЙ РАЗДЕЛ (внутри настроек) =====
+# ===== НОВОСТНОЙ РАЗДЕЛ =====
 async def news_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -344,6 +344,7 @@ async def cost_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
         text += "\n"
         if date_to is not None:
             keyboard.append([InlineKeyboardButton(f"🗑️ Удалить запись от {date_from}", callback_data=f"cost_delete_{rec_id}")])
+    keyboard.append([InlineKeyboardButton("🗑️ Удалить все записи", callback_data=f"cost_delete_all_{article}")])
     keyboard.append([InlineKeyboardButton("◀️ Назад к деталям", callback_data=f"cost_edit_{article}")])
     keyboard.append([InlineKeyboardButton("◀️ Назад к списку", callback_data="menu_costs")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
@@ -360,6 +361,36 @@ async def cost_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await menu_costs_callback(update, context)
     else:
         await query.edit_message_text("❌ Не удалось удалить запись (возможно, она активна или уже удалена).")
+
+async def cost_delete_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    article = query.data.split("_")[3]
+    keyboard = [
+        [InlineKeyboardButton("✅ Да, удалить всё", callback_data=f"cost_confirm_delete_all_{article}")],
+        [InlineKeyboardButton("❌ Отмена", callback_data=f"cost_history_{article}")]
+    ]
+    await query.edit_message_text(
+        f"⚠️ Вы уверены, что хотите удалить **все** записи себестоимости для артикула `{article}`?\n"
+        "Это действие необратимо.",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
+
+async def cost_confirm_delete_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    article = query.data.split("_")[4]
+    deleted = delete_all_costs_for_article(article)
+    if deleted > 0:
+        await query.edit_message_text(f"✅ Удалено {deleted} записей для артикула `{article}`.", parse_mode='Markdown')
+    else:
+        await query.edit_message_text(f"❌ Не найдено записей для артикула `{article}`.", parse_mode='Markdown')
+    await menu_costs_callback(update, context)
 
 async def handle_cost_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
