@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Дашборд WB</title>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
+        * { box-sizing: border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, sans-serif;
             background: var(--tg-theme-bg-color);
@@ -13,60 +15,101 @@
             margin: 0;
             padding: 16px;
         }
-        .container {
-            max-width: 600px;
-            margin: 0 auto;
+        .container { max-width: 600px; margin: 0 auto; }
+        h1 {
+            font-size: 22px;
+            margin-top: 0;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
         .card {
             background: var(--tg-theme-secondary-bg-color);
-            border-radius: 12px;
+            border-radius: 14px;
             padding: 16px;
-            margin-bottom: 12px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            margin-bottom: 14px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.06);
         }
-        .stat {
+        .card-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--tg-theme-hint-color);
+            margin-bottom: 10px;
+            letter-spacing: 0.3px;
+        }
+        .stat-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .stat-item {
             display: flex;
-            justify-content: space-between;
-            padding: 8px 0;
-            border-bottom: 1px solid var(--tg-theme-hint-color);
+            flex-direction: column;
+            padding: 6px 0;
         }
-        .stat:last-child {
-            border-bottom: none;
-        }
-        .stat-label {
+        .stat-item .label {
+            font-size: 12px;
             color: var(--tg-theme-hint-color);
         }
-        .stat-value {
-            font-weight: bold;
+        .stat-item .value {
+            font-size: 18px;
+            font-weight: 700;
+            margin-top: 2px;
         }
-        .profit {
-            color: #2ecc71;
+        .stat-item .value.small { font-size: 16px; }
+        .profit { color: #2ecc71; }
+        .loss { color: #e74c3c; }
+        .accent { color: var(--tg-theme-button-color); }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: var(--tg-theme-hint-color);
+            border-radius: 6px;
+            overflow: hidden;
+            margin-top: 6px;
         }
-        .loss {
-            color: #e74c3c;
+        .progress-fill {
+            height: 100%;
+            border-radius: 6px;
+            transition: width 0.5s;
+        }
+        .chart-container {
+            position: relative;
+            height: 180px;
+            margin: 6px 0;
         }
         .btn {
             background: var(--tg-theme-button-color);
             color: var(--tg-theme-button-text-color);
             border: none;
             padding: 12px 20px;
-            border-radius: 8px;
+            border-radius: 10px;
             font-size: 16px;
+            font-weight: 500;
             cursor: pointer;
             width: 100%;
             margin-top: 8px;
+            transition: opacity 0.2s;
         }
-        .btn:active {
-            opacity: 0.7;
+        .btn:active { opacity: 0.7; }
+        .btn-outline {
+            background: transparent;
+            border: 1px solid var(--tg-theme-button-color);
+            color: var(--tg-theme-button-color);
         }
-        .loading {
-            text-align: center;
-            color: var(--tg-theme-hint-color);
-            padding: 20px;
+        .loading { text-align: center; color: var(--tg-theme-hint-color); padding: 30px 0; }
+        .error { color: #e74c3c; text-align: center; padding: 20px 0; }
+        .flex-row {
+            display: flex;
+            gap: 8px;
         }
-        .error {
-            color: red;
-            text-align: center;
+        .flex-row .btn { flex: 1; }
+
+        @media (max-width: 480px) {
+            .stat-grid { grid-template-columns: 1fr; }
+            .flex-row { flex-direction: column; }
         }
     </style>
 </head>
@@ -76,8 +119,10 @@
         <div id="stats">
             <div class="loading">Загрузка данных...</div>
         </div>
-        <button class="btn" id="refreshBtn">🔄 Обновить</button>
-        <button class="btn" id="historyBtn">📂 История</button>
+        <div class="flex-row">
+            <button class="btn" id="refreshBtn">🔄 Обновить</button>
+            <button class="btn btn-outline" id="historyBtn">📂 История</button>
+        </div>
     </div>
 
     <script>
@@ -89,46 +134,217 @@
         const refreshBtn = document.getElementById('refreshBtn');
         const historyBtn = document.getElementById('historyBtn');
 
+        let chartInstance = null;
+
         async function loadStats() {
             container.innerHTML = '<div class="loading">Загрузка...</div>';
             try {
-                const response = await fetch('/api/stats');
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    throw new Error(`HTTP ${response.status}: ${errorText}`);
-                }
-                const data = await response.json();
-                renderStats(data);
+                const [statsResponse, wbResponse] = await Promise.all([
+                    fetch('/api/stats'),
+                    fetch('/api/wb_stats')
+                ]);
+                if (!statsResponse.ok || !wbResponse.ok) throw new Error('Ошибка загрузки');
+                const statsData = await statsResponse.json();
+                const wbData = await wbResponse.json();
+                renderStats(statsData, wbData);
             } catch (e) {
                 console.error('Ошибка загрузки:', e);
                 container.innerHTML = `<div class="error">❌ Не удалось загрузить данные: ${e.message}</div>`;
             }
         }
 
-        function renderStats(data) {
+        function renderStats(statsData, wbData) {
             const safe = (val, fallback = 0) => (typeof val === 'number' && !isNaN(val)) ? val : fallback;
-            const total = safe(data.total_reports);
-            const wbTotal = safe(data.wb_total);
-            const wbCarp = safe(data.wb_carp);
-            const wbHara = safe(data.wb_hara);
-            const avgAcq = safe(data.avg_acquiring);
-            const profit = safe(data.total_profit);
-            const margin = safe(data.avg_margin);
+            const total = safe(statsData.total_reports);
+            const wbTotal = safe(statsData.wb_total);
+            const wbCarp = safe(statsData.wb_carp);
+            const wbHara = safe(statsData.wb_hara);
+            const avgAcq = safe(statsData.avg_acquiring);
+            const medianAcq = safe(statsData.median_acquiring);
+            const minAcq = safe(statsData.min_acquiring);
+            const maxAcq = safe(statsData.max_acquiring);
+            const profit = safe(statsData.total_profit);
+            const margin = safe(statsData.avg_margin);
 
-            let html = '<div class="card">';
-            html += `<div class="stat"><span class="stat-label">Всего отчётов</span><span class="stat-value">${total}</span></div>`;
-            html += `<div class="stat"><span class="stat-label">Общий оборот</span><span class="stat-value">${wbTotal.toFixed(2)} ₽</span></div>`;
-            html += `<div class="stat"><span class="stat-label">ЦАП оборот</span><span class="stat-value">${wbCarp.toFixed(2)} ₽</span></div>`;
-            html += `<div class="stat"><span class="stat-label">Харакири оборот</span><span class="stat-value">${wbHara.toFixed(2)} ₽</span></div>`;
-            html += `<div class="stat"><span class="stat-label">Средний эквайринг</span><span class="stat-value">${avgAcq.toFixed(2)} %</span></div>`;
-            html += '</div>';
+            const wbRevenue = safe(wbData.total_revenue);
+            const wbOrders = safe(wbData.total_orders);
+            const avgOrder = safe(wbData.avg_order_value);
+            const totalStock = safe(wbData.total_stock);
+            const uniqueArticles = safe(wbData.unique_articles);
+            const views = safe(wbData.views);
+            const cartAdds = safe(wbData.cart_adds);
+            const orders = safe(wbData.orders);
+            const purchases = safe(wbData.purchases);
+            const convViewCart = safe(wbData.conversion_view_to_cart);
+            const convCartOrder = safe(wbData.conversion_cart_to_order);
+            const convOrderPurchase = safe(wbData.conversion_order_to_purchase);
 
-            html += '<div class="card">';
-            html += `<div class="stat"><span class="stat-label">💰 Чистая прибыль</span><span class="stat-value ${profit >= 0 ? 'profit' : 'loss'}">${profit.toFixed(2)} ₽</span></div>`;
-            html += `<div class="stat"><span class="stat-label">📈 Средняя маржинальность</span><span class="stat-value">${margin.toFixed(2)} %</span></div>`;
-            html += '</div>';
+            const marginColor = margin >= 30 ? '#2ecc71' : (margin >= 15 ? '#f1c40f' : '#e74c3c');
+
+            let html = '';
+
+            // ---- Карточка: Общие показатели (из отчётов) ----
+            html += `<div class="card">
+                <div class="card-title">📋 Общие показатели (отчёты)</div>
+                <div class="stat-grid">
+                    <div class="stat-item">
+                        <span class="label">Всего отчётов</span>
+                        <span class="value">${total}</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">Общий оборот</span>
+                        <span class="value">${wbTotal.toFixed(0)} ₽</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">💰 Чистая прибыль</span>
+                        <span class="value ${profit >= 0 ? 'profit' : 'loss'}">${profit.toFixed(0)} ₽</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">📈 Маржинальность</span>
+                        <span class="value" style="color:${marginColor}">${margin.toFixed(1)}%</span>
+                        <div class="progress-bar">
+                            <div class="progress-fill" style="width:${Math.min(margin,100)}%; background:${marginColor};"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+
+            // ---- Карточка: Оборот по брендам + диаграмма ----
+            const carpPct = wbTotal > 0 ? (wbCarp / wbTotal * 100) : 0;
+            const haraPct = wbTotal > 0 ? (wbHara / wbTotal * 100) : 0;
+
+            html += `<div class="card">
+                <div class="card-title">🏷️ Оборот по брендам</div>
+                <div class="stat-grid">
+                    <div class="stat-item">
+                        <span class="label">🐱 ЦАП</span>
+                        <span class="value small">${wbCarp.toFixed(0)} ₽</span>
+                        <span style="font-size:13px; color:var(--tg-theme-hint-color);">${carpPct.toFixed(1)}%</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">⚔️ Харакири</span>
+                        <span class="value small">${wbHara.toFixed(0)} ₽</span>
+                        <span style="font-size:13px; color:var(--tg-theme-hint-color);">${haraPct.toFixed(1)}%</span>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <canvas id="brandChart"></canvas>
+                </div>
+            </div>`;
+
+            // ---- Карточка: Эквайринг ----
+            html += `<div class="card">
+                <div class="card-title">💳 Эквайринг</div>
+                <div class="stat-grid">
+                    <div class="stat-item">
+                        <span class="label">Средний</span>
+                        <span class="value small">${avgAcq.toFixed(2)}%</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">Медианный</span>
+                        <span class="value small">${medianAcq.toFixed(2)}%</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">Минимальный</span>
+                        <span class="value small">${minAcq.toFixed(2)}%</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">Максимальный</span>
+                        <span class="value small">${maxAcq.toFixed(2)}%</span>
+                    </div>
+                </div>
+            </div>`;
+
+            // ---- Карточка: Статистика WB (из API) ----
+            html += `<div class="card">
+                <div class="card-title">📊 Статистика WB (за 7 дней)</div>
+                <div class="stat-grid">
+                    <div class="stat-item">
+                        <span class="label">💰 Выручка</span>
+                        <span class="value">${wbRevenue.toFixed(0)} ₽</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">📦 Заказов</span>
+                        <span class="value">${wbOrders}</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">📊 Средний чек</span>
+                        <span class="value">${avgOrder.toFixed(0)} ₽</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">📦 На складе</span>
+                        <span class="value">${totalStock}</span>
+                    </div>
+                </div>
+                <div style="margin-top:12px; border-top:1px solid var(--tg-theme-hint-color); padding-top:12px;">
+                    <div style="font-size:13px; color:var(--tg-theme-hint-color);">Воронка продаж</div>
+                    <div class="stat-grid">
+                        <div class="stat-item">
+                            <span class="label">👁️ Просмотры</span>
+                            <span class="value small">${views}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="label">🛒 В корзину</span>
+                            <span class="value small">${cartAdds}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="label">📋 Заказы</span>
+                            <span class="value small">${orders}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="label">✅ Выкупы</span>
+                            <span class="value small">${purchases}</span>
+                        </div>
+                    </div>
+                    <div class="stat-grid" style="margin-top:8px;">
+                        <div class="stat-item">
+                            <span class="label">Просмотр → Корзина</span>
+                            <span class="value small">${convViewCart.toFixed(1)}%</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="label">Корзина → Заказ</span>
+                            <span class="value small">${convCartOrder.toFixed(1)}%</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="label">Заказ → Выкуп</span>
+                            <span class="value small">${convOrderPurchase.toFixed(1)}%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>`;
 
             container.innerHTML = html;
+
+            // ---- Рендер круговой диаграммы ----
+            setTimeout(() => {
+                const ctx = document.getElementById('brandChart');
+                if (!ctx) return;
+                if (chartInstance) chartInstance.destroy();
+
+                chartInstance = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['ЦАП', 'Харакири'],
+                        datasets: [{
+                            data: [wbCarp, wbHara],
+                            backgroundColor: ['#3498db', '#e67e22'],
+                            borderColor: ['#2980b9', '#d35400'],
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                position: 'bottom',
+                                labels: { color: '#aaa', font: { size: 12 } }
+                            }
+                        },
+                        cutout: '60%'
+                    }
+                });
+            }, 100);
         }
 
         historyBtn.addEventListener('click', () => {
