@@ -25,7 +25,7 @@ from services import (
     fetch_news, format_news_digest, detect_report_type, parse_date_from_period,
     ReportProcessor, scheduler, scheduled_morning_digest, scheduled_evening_digest
 )
-from wb_api import get_aggregated_stats   # для команды /wb_stats
+from wb_api import get_aggregated_stats  # <--- импортируем
 
 # ===== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ =====
 async def check_access(update: Update) -> bool:
@@ -73,34 +73,39 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/news_now — получить новости прямо сейчас\n"
         "/set_news — настроить новостные сводки\n"
         "/set_news_query — изменить поисковый запрос\n"
-        "/wb_stats — статистика Wildberries (API)\n\n"
+        "/wb_stats — статистика из Wildberries API\n\n"
         "Также можно использовать кнопки меню.",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
     )
 
+# ===== КОМАНДА /wb_stats =====
 async def wb_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для получения сводки по Wildberries API."""
     if not await check_access(update):
         return
-    data = get_aggregated_stats()
-    if "error" in data:
-        await update.message.reply_text(f"❌ Ошибка: {data['error']}")
-        return
-    msg = f"📊 **Статистика WB за 7 дней**\n\n"
-    msg += f"💰 Выручка: {data.get('total_revenue', 0):,.0f} ₽\n"
-    msg += f"📦 Заказов: {data.get('total_orders', 0)}\n"
-    msg += f"📊 Средний чек: {data.get('avg_order_value', 0):,.0f} ₽\n"
-    msg += f"📦 На складе: {data.get('total_stock', 0)} шт.\n"
-    msg += f"📦 Уникальных артикулов: {data.get('unique_articles', 0)}\n\n"
-    msg += f"👁️ Просмотры: {data.get('views', 0)}\n"
-    msg += f"🛒 В корзину: {data.get('cart_adds', 0)}\n"
-    msg += f"📋 Заказы: {data.get('orders', 0)}\n"
-    msg += f"✅ Выкупы: {data.get('purchases', 0)}\n\n"
-    msg += f"📈 Конверсия просмотр→корзина: {data.get('conversion_view_to_cart', 0):.1f}%\n"
-    msg += f"📈 Конверсия корзина→заказ: {data.get('conversion_cart_to_order', 0):.1f}%\n"
-    msg += f"📈 Конверсия заказ→выкуп: {data.get('conversion_order_to_purchase', 0):.1f}%"
-    await update.message.reply_text(msg, parse_mode='Markdown')
+    await update.message.reply_text("⏳ Загружаю статистику из Wildberries API...")
+    try:
+        data = get_aggregated_stats()
+        if "error" in data:
+            await update.message.reply_text(f"❌ Ошибка: {data['error']}")
+            return
+        msg = f"📊 **Статистика WB за 7 дней**\n\n"
+        msg += f"💰 Выручка: {data.get('total_revenue', 0):,.0f} ₽\n"
+        msg += f"📦 Заказов: {data.get('total_orders', 0)}\n"
+        msg += f"📊 Средний чек: {data.get('avg_order_value', 0):,.0f} ₽\n"
+        msg += f"📦 На складе: {data.get('total_stock', 0)} шт.\n"
+        msg += f"📦 Уникальных артикулов: {data.get('unique_articles', 0)}\n\n"
+        msg += f"👁️ Просмотры: {data.get('views', 0)}\n"
+        msg += f"🛒 В корзину: {data.get('cart_adds', 0)}\n"
+        msg += f"📋 Заказы: {data.get('orders', 0)}\n"
+        msg += f"✅ Выкупы: {data.get('purchases', 0)}\n\n"
+        msg += f"📈 Конверсия просмотр→корзина: {data.get('conversion_view_to_cart', 0):.1f}%\n"
+        msg += f"📈 Конверсия корзина→заказ: {data.get('conversion_cart_to_order', 0):.1f}%\n"
+        msg += f"📈 Конверсия заказ→выкуп: {data.get('conversion_order_to_purchase', 0):.1f}%"
+        await update.message.reply_text(msg, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Ошибка в /wb_stats: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
 
 # ===== ПОДМЕНЮ "АНАЛИТИКА" =====
 async def menu_analytics_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1549,7 +1554,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         margin_carp = (profit_by_brand['Цап царапкин'] / revenue_by_brand['Цап царапкин'] * 100) if revenue_by_brand['Цап царапкин'] > 0 else 0
         margin_hara = (profit_by_brand['Harakiri'] / revenue_by_brand['Harakiri'] * 100) if revenue_by_brand['Harakiri'] > 0 else 0
 
-        # ЛОГИРОВАНИЕ МЕТРИК ПРИБЫЛИ ДО СОХРАНЕНИЯ
         logger.info(f"💾 Метрики для сохранения: total_profit={total_profit}, margin={total_margin}")
 
         metrics = {
