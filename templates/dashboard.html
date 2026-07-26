@@ -106,6 +106,12 @@
             gap: 8px;
         }
         .flex-row .btn { flex: 1; }
+        .update-time {
+            font-size: 11px;
+            color: var(--tg-theme-hint-color);
+            margin-top: 6px;
+            text-align: right;
+        }
 
         @media (max-width: 480px) {
             .stat-grid { grid-template-columns: 1fr; }
@@ -119,7 +125,10 @@
         <div id="stats">
             <div class="loading">Загрузка данных...</div>
         </div>
-        <button class="btn" id="refreshBtn">🔄 Обновить</button>
+        <div class="flex-row">
+            <button class="btn" id="refreshBtn">🔄 Обновить</button>
+            <button class="btn btn-outline" id="historyBtn">📂 История</button>
+        </div>
     </div>
 
     <script>
@@ -129,13 +138,24 @@
 
         const container = document.getElementById('stats');
         const refreshBtn = document.getElementById('refreshBtn');
+        const historyBtn = document.getElementById('historyBtn');
 
         let chartInstance = null;
 
-        // Функция для форматирования чисел с разделителями тысяч
-        function formatNumber(num, decimals = 0) {
-            if (typeof num !== 'number' || isNaN(num)) return '0';
-            return num.toFixed(decimals).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+        // Форматирование чисел с разделителями
+        function formatNumber(num) {
+            if (num === undefined || num === null || isNaN(num)) return '0';
+            return num.toLocaleString('ru-RU', { maximumFractionDigits: 0 });
+        }
+
+        function formatCurrency(num) {
+            if (num === undefined || num === null || isNaN(num)) return '0 ₽';
+            return num.toLocaleString('ru-RU', { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + ' ₽';
+        }
+
+        function formatPercent(num) {
+            if (num === undefined || num === null || isNaN(num)) return '0%';
+            return num.toFixed(1) + '%';
         }
 
         async function loadStats() {
@@ -145,11 +165,7 @@
                     fetch('/api/stats'),
                     fetch('/api/wb_stats')
                 ]);
-                if (!statsResponse.ok || !wbResponse.ok) {
-                    const statsError = statsResponse.ok ? '' : await statsResponse.text();
-                    const wbError = wbResponse.ok ? '' : await wbResponse.text();
-                    throw new Error(`Ошибка загрузки: stats=${statsResponse.status}, wb=${wbResponse.status}`);
-                }
+                if (!statsResponse.ok || !wbResponse.ok) throw new Error('Ошибка загрузки');
                 const statsData = await statsResponse.json();
                 const wbData = await wbResponse.json();
                 renderStats(statsData, wbData);
@@ -184,6 +200,7 @@
             const convViewCart = safe(wbData.conversion_view_to_cart);
             const convCartOrder = safe(wbData.conversion_cart_to_order);
             const convOrderPurchase = safe(wbData.conversion_order_to_purchase);
+            const lastUpdate = wbData.last_update ? new Date(wbData.last_update).toLocaleString('ru-RU') : 'неизвестно';
 
             const marginColor = margin >= 30 ? '#2ecc71' : (margin >= 15 ? '#f1c40f' : '#e74c3c');
 
@@ -195,19 +212,19 @@
                 <div class="stat-grid">
                     <div class="stat-item">
                         <span class="label">Всего отчётов</span>
-                        <span class="value">${total}</span>
+                        <span class="value">${formatNumber(total)}</span>
                     </div>
                     <div class="stat-item">
                         <span class="label">Общий оборот</span>
-                        <span class="value">${formatNumber(wbTotal, 2)} ₽</span>
+                        <span class="value">${formatCurrency(wbTotal)}</span>
                     </div>
                     <div class="stat-item">
                         <span class="label">💰 Чистая прибыль</span>
-                        <span class="value ${profit >= 0 ? 'profit' : 'loss'}">${formatNumber(profit, 2)} ₽</span>
+                        <span class="value ${profit >= 0 ? 'profit' : 'loss'}">${formatCurrency(profit)}</span>
                     </div>
                     <div class="stat-item">
                         <span class="label">📈 Маржинальность</span>
-                        <span class="value" style="color:${marginColor}">${margin.toFixed(1)}%</span>
+                        <span class="value" style="color:${marginColor}">${formatPercent(margin)}</span>
                         <div class="progress-bar">
                             <div class="progress-fill" style="width:${Math.min(margin,100)}%; background:${marginColor};"></div>
                         </div>
@@ -224,13 +241,13 @@
                 <div class="stat-grid">
                     <div class="stat-item">
                         <span class="label">🐱 ЦАП</span>
-                        <span class="value small">${formatNumber(wbCarp, 2)} ₽</span>
-                        <span style="font-size:13px; color:var(--tg-theme-hint-color);">${carpPct.toFixed(1)}%</span>
+                        <span class="value small">${formatCurrency(wbCarp)}</span>
+                        <span style="font-size:13px; color:var(--tg-theme-hint-color);">${formatPercent(carpPct)}</span>
                     </div>
                     <div class="stat-item">
                         <span class="label">⚔️ Харакири</span>
-                        <span class="value small">${formatNumber(wbHara, 2)} ₽</span>
-                        <span style="font-size:13px; color:var(--tg-theme-hint-color);">${haraPct.toFixed(1)}%</span>
+                        <span class="value small">${formatCurrency(wbHara)}</span>
+                        <span style="font-size:13px; color:var(--tg-theme-hint-color);">${formatPercent(haraPct)}</span>
                     </div>
                 </div>
                 <div class="chart-container">
@@ -244,92 +261,81 @@
                 <div class="stat-grid">
                     <div class="stat-item">
                         <span class="label">Средний</span>
-                        <span class="value small">${avgAcq.toFixed(2)}%</span>
+                        <span class="value small">${formatPercent(avgAcq)}</span>
                     </div>
                     <div class="stat-item">
                         <span class="label">Медианный</span>
-                        <span class="value small">${medianAcq.toFixed(2)}%</span>
+                        <span class="value small">${formatPercent(medianAcq)}</span>
                     </div>
                     <div class="stat-item">
                         <span class="label">Минимальный</span>
-                        <span class="value small">${minAcq.toFixed(2)}%</span>
+                        <span class="value small">${formatPercent(minAcq)}</span>
                     </div>
                     <div class="stat-item">
                         <span class="label">Максимальный</span>
-                        <span class="value small">${maxAcq.toFixed(2)}%</span>
+                        <span class="value small">${formatPercent(maxAcq)}</span>
                     </div>
                 </div>
             </div>`;
 
             // ---- Карточка: Статистика WB (из API) ----
-            // Проверяем, есть ли ошибка от WB API
-            const wbError = wbData.error;
-            if (wbError) {
-                html += `<div class="card">
-                    <div class="card-title">⚠️ Ошибка WB API</div>
-                    <div class="error" style="color: var(--tg-theme-hint-color);">${wbError}</div>
-                    <div style="font-size:13px; color:var(--tg-theme-hint-color); margin-top:8px;">
-                        Проверьте токен WB_API_TOKEN и права доступа.
+            html += `<div class="card">
+                <div class="card-title">📊 Статистика WB (за 7 дней)</div>
+                <div class="stat-grid">
+                    <div class="stat-item">
+                        <span class="label">💰 Выручка</span>
+                        <span class="value">${formatCurrency(wbRevenue)}</span>
                     </div>
-                </div>`;
-            } else {
-                html += `<div class="card">
-                    <div class="card-title">📊 Статистика WB (за 7 дней)</div>
+                    <div class="stat-item">
+                        <span class="label">📦 Заказов</span>
+                        <span class="value">${formatNumber(wbOrders)}</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">📊 Средний чек</span>
+                        <span class="value">${formatCurrency(avgOrder)}</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="label">📦 На складе</span>
+                        <span class="value">${formatNumber(totalStock)}</span>
+                    </div>
+                </div>
+                <div style="margin-top:12px; border-top:1px solid var(--tg-theme-hint-color); padding-top:12px;">
+                    <div style="font-size:13px; color:var(--tg-theme-hint-color);">Воронка продаж</div>
                     <div class="stat-grid">
                         <div class="stat-item">
-                            <span class="label">💰 Выручка</span>
-                            <span class="value">${formatNumber(wbRevenue, 2)} ₽</span>
+                            <span class="label">👁️ Просмотры</span>
+                            <span class="value small">${formatNumber(views)}</span>
                         </div>
                         <div class="stat-item">
-                            <span class="label">📦 Заказов</span>
-                            <span class="value">${wbOrders}</span>
+                            <span class="label">🛒 В корзину</span>
+                            <span class="value small">${formatNumber(cartAdds)}</span>
                         </div>
                         <div class="stat-item">
-                            <span class="label">📊 Средний чек</span>
-                            <span class="value">${formatNumber(avgOrder, 2)} ₽</span>
+                            <span class="label">📋 Заказы</span>
+                            <span class="value small">${formatNumber(orders)}</span>
                         </div>
                         <div class="stat-item">
-                            <span class="label">📦 На складе</span>
-                            <span class="value">${formatNumber(totalStock)}</span>
+                            <span class="label">✅ Выкупы</span>
+                            <span class="value small">${formatNumber(purchases)}</span>
                         </div>
                     </div>
-                    <div style="margin-top:12px; border-top:1px solid var(--tg-theme-hint-color); padding-top:12px;">
-                        <div style="font-size:13px; color:var(--tg-theme-hint-color);">Воронка продаж</div>
-                        <div class="stat-grid">
-                            <div class="stat-item">
-                                <span class="label">👁️ Просмотры</span>
-                                <span class="value small">${formatNumber(views)}</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="label">🛒 В корзину</span>
-                                <span class="value small">${formatNumber(cartAdds)}</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="label">📋 Заказы</span>
-                                <span class="value small">${formatNumber(orders)}</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="label">✅ Выкупы</span>
-                                <span class="value small">${formatNumber(purchases)}</span>
-                            </div>
+                    <div class="stat-grid" style="margin-top:8px;">
+                        <div class="stat-item">
+                            <span class="label">Просмотр → Корзина</span>
+                            <span class="value small">${formatPercent(convViewCart)}</span>
                         </div>
-                        <div class="stat-grid" style="margin-top:8px;">
-                            <div class="stat-item">
-                                <span class="label">Просмотр → Корзина</span>
-                                <span class="value small">${convViewCart.toFixed(1)}%</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="label">Корзина → Заказ</span>
-                                <span class="value small">${convCartOrder.toFixed(1)}%</span>
-                            </div>
-                            <div class="stat-item">
-                                <span class="label">Заказ → Выкуп</span>
-                                <span class="value small">${convOrderPurchase.toFixed(1)}%</span>
-                            </div>
+                        <div class="stat-item">
+                            <span class="label">Корзина → Заказ</span>
+                            <span class="value small">${formatPercent(convCartOrder)}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="label">Заказ → Выкуп</span>
+                            <span class="value small">${formatPercent(convOrderPurchase)}</span>
                         </div>
                     </div>
-                </div>`;
-            }
+                </div>
+                <div class="update-time">🕒 Обновлено: ${lastUpdate}</div>
+            </div>`;
 
             container.innerHTML = html;
 
@@ -364,6 +370,10 @@
                 });
             }, 100);
         }
+
+        historyBtn.addEventListener('click', () => {
+            tg.sendData(JSON.stringify({ action: 'history' }));
+        });
 
         refreshBtn.addEventListener('click', loadStats);
         loadStats();
