@@ -25,7 +25,7 @@ from services import (
     fetch_news, format_news_digest, detect_report_type, parse_date_from_period,
     ReportProcessor, scheduler, scheduled_morning_digest, scheduled_evening_digest
 )
-from wb_api import get_aggregated_stats  # <-- импорт для команды
+from wb_api import get_aggregated_stats   # для команды /wb_stats
 
 # ===== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ =====
 async def check_access(update: Update) -> bool:
@@ -56,8 +56,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         "👋 Привет! Я бот для аналитики кабинета WB по брендам Цап царапкин & Harakiri.\n\n"
-        "📊 Используй меню ниже для быстрого доступа к функциям.\n"
-        "📈 Также доступна команда /wb_stats — статистика из API Wildberries.",
+        "📊 Используй меню ниже для быстрого доступа к функциям.",
         reply_markup=get_main_menu()
     )
 
@@ -74,17 +73,16 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/news_now — получить новости прямо сейчас\n"
         "/set_news — настроить новостные сводки\n"
         "/set_news_query — изменить поисковый запрос\n"
-        "/wb_stats — статистика из Wildberries API (выручка, заказы, остатки, воронка)\n\n"
+        "/wb_stats — статистика Wildberries (API)\n\n"
         "Также можно использовать кнопки меню.",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
     )
 
-# ===== КОМАНДА /wb_stats =====
 async def wb_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для получения сводки по Wildberries API."""
     if not await check_access(update):
         return
-    await update.message.reply_text("⏳ Загрузка статистики из Wildberries API...")
     data = get_aggregated_stats()
     if "error" in data:
         await update.message.reply_text(f"❌ Ошибка: {data['error']}")
@@ -1551,6 +1549,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         margin_carp = (profit_by_brand['Цап царапкин'] / revenue_by_brand['Цап царапкин'] * 100) if revenue_by_brand['Цап царапкин'] > 0 else 0
         margin_hara = (profit_by_brand['Harakiri'] / revenue_by_brand['Harakiri'] * 100) if revenue_by_brand['Harakiri'] > 0 else 0
 
+        # ЛОГИРОВАНИЕ МЕТРИК ПРИБЫЛИ ДО СОХРАНЕНИЯ
         logger.info(f"💾 Метрики для сохранения: total_profit={total_profit}, margin={total_margin}")
 
         metrics = {
