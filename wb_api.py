@@ -8,19 +8,18 @@ WB_API_TOKEN = os.getenv("WB_API_TOKEN")
 STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1"
 ANALYTICS_API = "https://seller-analytics-api.wildberries.ru/api/analytics"
 
-# Кеш для агрегированной статистики
+# Кеш
 _cache = {
     "data": None,
     "timestamp": None,
     "error": None
 }
-CACHE_TTL = timedelta(minutes=15)  # обновляем раз в 15 минут
+CACHE_TTL = timedelta(minutes=30)  # увеличили до 30 минут
 
 def get_headers():
     return {"Authorization": f"Bearer {WB_API_TOKEN}"}
 
 def _safe_request(method, url, params=None, json=None):
-    """Выполняет запрос с обработкой 429 и возвратом None при ошибке."""
     if not WB_API_TOKEN:
         return {"error": "WB_API_TOKEN не задан"}
     try:
@@ -31,20 +30,18 @@ def _safe_request(method, url, params=None, json=None):
         
         if response.status_code == 429:
             logger.warning("⚠️ Превышен лимит запросов к WB API (429)")
-            # Пытаемся прочитать Retry-After
             retry_after = response.headers.get("Retry-After")
             if retry_after:
                 wait = int(retry_after) + 1
                 logger.info(f"⏳ Ожидание {wait} секунд по Retry-After")
                 time.sleep(wait)
-                # Повторяем запрос один раз
                 if method.upper() == "GET":
                     response = requests.get(url, headers=get_headers(), params=params, timeout=30)
                 else:
                     response = requests.post(url, headers=get_headers(), json=json, timeout=30)
             else:
-                # Если Retry-After нет, ждём 5 секунд и пробуем ещё раз
-                time.sleep(5)
+                # Если Retry-After нет, ждём 10 секунд и пробуем ещё раз
+                time.sleep(10)
                 if method.upper() == "GET":
                     response = requests.get(url, headers=get_headers(), params=params, timeout=30)
                 else:
@@ -69,8 +66,10 @@ def get_sales(date_from: str, date_to: str = None):
     return _safe_request("GET", url, params=params)
 
 def get_stocks():
+    # Исправлено: добавляем dateFrom
     url = f"{STATISTICS_API}/supplier/stocks"
-    return _safe_request("GET", url)
+    params = {"dateFrom": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")}
+    return _safe_request("GET", url, params=params)
 
 def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = None):
     if not date_from:
@@ -78,17 +77,21 @@ def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = 
     if not date_to:
         date_to = datetime.now().strftime("%Y-%m-%d")
     url = f"{ANALYTICS_API}/v3/sales-funnel/products"
-    payload = {"dateFrom": date_from, "dateTo": date_to, "limit": 100}
+    payload = {
+        "dateFrom": date_from,
+        "dateTo": date_to,
+        "limit": 100,
+        "sort": "orders_desc",
+        "filters": {}
+    }
     if nm_ids:
         payload["nmIds"] = nm_ids
     return _safe_request("POST", url, json=payload)
 
 def get_aggregated_stats(force_refresh=False):
-    """Возвращает агрегированные метрики с кешированием."""
     global _cache
     now = datetime.now()
     
-    # Если кеш свежий и не запрошено принудительное обновление
     if not force_refresh and _cache["timestamp"] and (now - _cache["timestamp"]) < CACHE_TTL:
         logger.info("📦 Используем кешированные данные WB API")
         return _cache["data"] if _cache["data"] is not None else {"error": "Нет данных"}
@@ -118,7 +121,7 @@ def get_aggregated_stats(force_refresh=False):
         "last_update": now.isoformat()
     }
     
-    # Обработка продаж
+    # Sales
     if isinstance(sales, dict) and "error" in sales:
         result["error_sales"] = sales["error"]
     elif isinstance(sales, list):
@@ -128,14 +131,14 @@ def get_aggregated_stats(force_refresh=False):
         result["total_orders"] = total_orders
         result["avg_order_value"] = total_revenue / total_orders if total_orders > 0 else 0
     
-    # Обработка остатков
+    # Stocks
     if isinstance(stocks, dict) and "error" in stocks:
         result["error_stocks"] = stocks["error"]
     elif isinstance(stocks, list):
         result["total_stock"] = sum(item.get("quantity", 0) for item in stocks)
         result["unique_articles"] = len(set(item.get("nmId") for item in stocks if item.get("nmId")))
     
-    # Обработка воронки
+    # Funnel
     if isinstance(funnel, dict) and "error" in funnel:
         result["error_funnel"] = funnel["error"]
     elif isinstance(funnel, dict) and "data" in funnel:
@@ -152,11 +155,9 @@ def get_aggregated_stats(force_refresh=False):
         if result["orders"] > 0:
             result["conversion_order_to_purchase"] = (result["purchases"] / result["orders"]) * 100
     
-    # Если все запросы вернули ошибку, сохраняем это
     if any(k.startswith("error_") for k in result):
         result["error"] = "Часть данных не загрузилась"
     
-    # Сохраняем в кеш
     _cache["data"] = result
     _cache["timestamp"] = now
     return result
