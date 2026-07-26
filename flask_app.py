@@ -12,13 +12,6 @@ flask_app = Flask(__name__, template_folder='templates')
 def log_request():
     logger.info(f"📥 {request.method} {request.path}")
 
-@flask_app.after_request
-def add_cache_control(response):
-    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-    response.headers['Pragma'] = 'no-cache'
-    response.headers['Expires'] = '0'
-    return response
-
 @flask_app.route("/")
 def health():
     return "OK", 200
@@ -50,10 +43,8 @@ def stats():
 def wb_stats():
     logger.info("➡️ /api/wb_stats вызван")
     try:
-        data = get_aggregated_stats()
-        # Добавляем поле error, если оно есть
-        if 'error' in data:
-            logger.warning(f"WB API вернул ошибку: {data['error']}")
+        # force_refresh=False — используем кеш
+        data = get_aggregated_stats(force_refresh=False)
         return jsonify(data)
     except Exception as e:
         logger.error(f"❌ Ошибка /api/wb_stats: {e}\n{traceback.format_exc()}")
