@@ -1,7 +1,8 @@
 from flask import Flask, render_template, jsonify, request
-from config import logger
-from models import get_aggregated_metrics, DB_PATH
+from config import logger, DB_PATH
+from models import get_aggregated_metrics
 import sqlite3
+import traceback
 
 flask_app = Flask(__name__, template_folder='templates')
 
@@ -30,20 +31,26 @@ def ping():
 @flask_app.route('/mini')
 def mini_app():
     logger.info(f"Запрос /mini от {request.remote_addr}")
-    return render_template('dashboard.html')
+    try:
+        return render_template('dashboard.html')
+    except Exception as e:
+        logger.error(f"Ошибка в /mini: {e}\n{traceback.format_exc()}")
+        return f"Ошибка: {e}", 500
 
 @flask_app.route('/api/stats')
 def api_stats():
     logger.info(f"Запрос /api/stats от {request.remote_addr}")
     try:
         data = get_aggregated_metrics()
-        for key in ['total_reports', 'wb_total', 'wb_carp', 'wb_hara', 'avg_acquiring', 'median_acquiring', 'min_acquiring', 'max_acquiring', 'total_profit', 'avg_margin']:
+        for key in ['total_reports', 'wb_total', 'wb_carp', 'wb_hara', 
+                    'avg_acquiring', 'median_acquiring', 'min_acquiring', 
+                    'max_acquiring', 'total_profit', 'avg_margin']:
             if key not in data or not isinstance(data[key], (int, float)):
                 data[key] = 0
         logger.info(f"API stats OK: {data}")
         return jsonify(data)
     except Exception as e:
-        logger.error(f"Ошибка в /api/stats: {e}")
+        logger.error(f"Ошибка в /api/stats: {e}\n{traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
 @flask_app.route('/api/debug')
@@ -70,4 +77,7 @@ def debug_db():
         return jsonify({'error': str(e)}), 500
 
 def run_flask():
-    flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    try:
+        flask_app.run(host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    except Exception as e:
+        logger.error(f"Flask упал: {e}")
