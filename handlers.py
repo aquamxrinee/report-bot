@@ -18,8 +18,8 @@ from models import (
     set_product_cost, delete_report, delete_reports, save_report_to_db,
     get_report_id_by_period, get_active_cost,
     get_news_settings, set_news_settings,
-    calculate_file_hash,  # <--- добавили
-    get_all_articles_with_costs  # <--- добавили
+    calculate_file_hash,
+    get_all_articles_with_costs
 )
 from services import (
     fetch_news, format_news_digest, detect_report_type, parse_date_from_period,
