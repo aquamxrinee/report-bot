@@ -240,12 +240,14 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
         if metrics:
             for mname, mval in metrics.items():
                 try:
+                    logger.info(f"💾 Сохраняем метрику: {mname} = {mval}")
                     cursor.execute('''
                         INSERT INTO report_metrics (report_id, metric_name, metric_value)
                         VALUES (?, ?, ?)
                     ''', (report_id, mname, float(mval)))
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"❌ Ошибка вставки метрики {mname}: {e}")
+            logger.info(f"📊 Метрики сохранены, всего {len(metrics)} записей")
 
         if articles:
             for brand, data in articles.items():
