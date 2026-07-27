@@ -14,13 +14,13 @@ _cache = {
     "timestamp": None,
     "error": None
 }
-CACHE_TTL = timedelta(minutes=30)  # обновляем раз в 30 минут, чтобы снизить нагрузку
+CACHE_TTL = timedelta(hours=1)  # увеличен до 1 часа
 
 def get_headers():
     return {"Authorization": f"Bearer {WB_API_TOKEN}"}
 
-def _safe_request(method, url, params=None, json=None, max_retries=3):
-    """Выполняет запрос с повторными попытками при 429."""
+def _safe_request(method, url, params=None, json=None, max_retries=5):
+    """Выполняет запрос с повторными попытками при 429 и других ошибках."""
     if not WB_API_TOKEN:
         return {"error": "WB_API_TOKEN не задан"}
     
@@ -34,17 +34,20 @@ def _safe_request(method, url, params=None, json=None, max_retries=3):
             if response.status_code == 429:
                 logger.warning(f"⚠️ Превышен лимит запросов к WB API (429), попытка {attempt}/{max_retries}")
                 retry_after = response.headers.get("Retry-After")
-                wait = int(retry_after) + 1 if retry_after else 5 + attempt * 3
+                wait = int(retry_after) + 1 if retry_after else 10 + attempt * 5  # увеличен wait
                 logger.info(f"⏳ Ожидание {wait} секунд")
                 time.sleep(wait)
                 continue
             elif response.status_code == 404:
-                # Для 404 не повторяем, возвращаем ошибку
+                # Для 404 не повторяем, возвращаем ошибку, но не как критическую
                 logger.error(f"❌ 404 Not Found: {url}")
-                return {"error": f"404 Not Found: {url}"}
+                return {"error": f"404 Not Found: {url}", "status_code": 404}
             elif response.status_code == 400:
                 logger.error(f"❌ 400 Bad Request: {url}, response: {response.text[:200]}")
-                return {"error": f"400 Bad Request: {response.text[:200]}"}
+                return {"error": f"400 Bad Request: {response.text[:200]}", "status_code": 400}
+            elif response.status_code == 403:
+                logger.error(f"❌ 403 Forbidden: {url} — возможно, недостаточно прав")
+                return {"error": "403 Forbidden — недостаточно прав", "status_code": 403}
             else:
                 response.raise_for_status()
                 return response.json()
@@ -52,7 +55,7 @@ def _safe_request(method, url, params=None, json=None, max_retries=3):
             if response.status_code == 429:
                 continue
             logger.error(f"HTTP ошибка: {e}")
-            return {"error": str(e)}
+            return {"error": str(e), "status_code": getattr(response, 'status_code', None)}
         except Exception as e:
             logger.error(f"Ошибка запроса: {e}")
             return {"error": str(e)}
@@ -97,11 +100,13 @@ def get_aggregated_stats(force_refresh=False):
     today = datetime.now().strftime("%Y-%m-%d")
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     
-    # Выполняем запросы с задержкой между ними, чтобы избежать 429
+    # Увеличиваем задержки между запросами
+    time.sleep(2)  # небольшая задержка перед первым запросом
+    
     sales = get_sales(week_ago, today)
-    time.sleep(2)  # задержка между запросами
+    time.sleep(3)  # увеличенная задержка
     stocks = get_stocks()
-    time.sleep(2)
+    time.sleep(3)
     funnel = get_sales_funnel(date_from=week_ago, date_to=today)
     
     result = {
@@ -118,12 +123,13 @@ def get_aggregated_stats(force_refresh=False):
         "conversion_cart_to_order": 0,
         "conversion_order_to_purchase": 0,
         "last_update": now.isoformat(),
-        "error": None
+        "errors": [],          # список ошибок по каждому эндпоинту
+        "partial_error": False # флаг частичной ошибки
     }
     
     # Обработка продаж
     if isinstance(sales, dict) and "error" in sales:
-        result["error"] = sales["error"]
+        result["errors"].append(f"sales: {sales['error']}")
         logger.error(f"Ошибка продаж: {sales['error']}")
     elif isinstance(sales, list):
         total_revenue = sum(item.get("totalPrice", 0) for item in sales)
@@ -132,21 +138,27 @@ def get_aggregated_stats(force_refresh=False):
         result["total_orders"] = total_orders
         result["avg_order_value"] = total_revenue / total_orders if total_orders > 0 else 0
     else:
-        result["error"] = "Неизвестный формат ответа sales"
+        result["errors"].append("sales: неизвестный формат ответа")
+        logger.error("Неизвестный формат ответа sales")
     
-    # Обработка остатков
+    # Обработка остатков (если 404 — просто игнорируем, не считаем ошибкой)
     if isinstance(stocks, dict) and "error" in stocks:
-        result["error"] = result["error"] or stocks["error"]
-        logger.error(f"Ошибка остатков: {stocks['error']}")
+        if stocks.get("status_code") == 404:
+            logger.warning("⚠️ Эндпоинт stocks вернул 404 — игнорируем")
+            # не добавляем в errors, т.к. это не критично
+        else:
+            result["errors"].append(f"stocks: {stocks['error']}")
+            logger.error(f"Ошибка остатков: {stocks['error']}")
     elif isinstance(stocks, list):
         result["total_stock"] = sum(item.get("quantity", 0) for item in stocks)
         result["unique_articles"] = len(set(item.get("nmId") for item in stocks if item.get("nmId")))
     else:
-        result["error"] = result["error"] or "Неизвестный формат ответа stocks"
+        result["errors"].append("stocks: неизвестный формат ответа")
+        logger.error("Неизвестный формат ответа stocks")
     
     # Обработка воронки
     if isinstance(funnel, dict) and "error" in funnel:
-        result["error"] = result["error"] or funnel["error"]
+        result["errors"].append(f"funnel: {funnel['error']}")
         logger.error(f"Ошибка воронки: {funnel['error']}")
     elif isinstance(funnel, dict) and "data" in funnel:
         for item in funnel.get("data", []):
@@ -162,11 +174,13 @@ def get_aggregated_stats(force_refresh=False):
         if result["orders"] > 0:
             result["conversion_order_to_purchase"] = (result["purchases"] / result["orders"]) * 100
     else:
-        result["error"] = result["error"] or "Неизвестный формат ответа funnel"
+        result["errors"].append("funnel: неизвестный формат ответа")
+        logger.error("Неизвестный формат ответа funnel")
     
-    # Если все запросы вернули ошибку, помечаем
-    if result["error"]:
-        logger.warning(f"⚠️ Часть данных не загрузилась: {result['error']}")
+    # Если есть ошибки, помечаем как частичную ошибку
+    if result["errors"]:
+        result["partial_error"] = True
+        logger.warning(f"⚠️ Частичная ошибка при загрузке WB данных: {result['errors']}")
     else:
         logger.info("✅ Данные WB API успешно обновлены")
     
