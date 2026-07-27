@@ -21,8 +21,7 @@ def main():
     # === КОМАНДЫ ===
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("osn", handle_osn))
-    app.add_handler(CommandHandler("vyk", handle_vyk))
+    # Команды /osn и /vyk удалены, так как файлы обрабатываются через handle_file
     app.add_handler(CommandHandler("articles", articles_full_cmd))
     app.add_handler(CommandHandler("news_now", news_now_cmd))
     app.add_handler(CommandHandler("set_news", set_news_cmd))
@@ -52,6 +51,7 @@ def main():
     app.add_handler(CallbackQueryHandler(cost_delete_callback, pattern="^cost_delete_"))
     app.add_handler(CallbackQueryHandler(cost_delete_all_callback, pattern="^cost_delete_all_"))
     app.add_handler(CallbackQueryHandler(cost_confirm_delete_all_callback, pattern="^cost_confirm_delete_all_"))
+    app.add_handler(CallbackQueryHandler(cost_delete_record_callback, pattern="^cost_delete_record_"))
 
     # === АНАЛИТИКА ПО АРТИКУЛАМ ===
     app.add_handler(CallbackQueryHandler(analytics_toggle_callback, pattern="^analytics_toggle_"))
@@ -68,12 +68,13 @@ def main():
     app.add_handler(CallbackQueryHandler(history_enable_delete_callback, pattern="^history_enable_delete$"))
     app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
     app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
+    app.add_handler(CallbackQueryHandler(history_confirm_delete_yes_callback, pattern="^history_confirm_delete_yes$"))
 
     # === АРТИКУЛЫ (из отчёта) ===
     app.add_handler(CallbackQueryHandler(articles_callback, pattern="^show_articles$"))
-    app.add_handler(CallbackQueryHandler(growth_callback, pattern="^growth$"))
-    app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline$"))
-    app.add_handler(CallbackQueryHandler(compare_articles_callback, pattern="^compare_articles$"))
+    app.add_handler(CallbackQueryHandler(growth_callback, pattern="^growth_"))
+    app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline_"))
+    app.add_handler(CallbackQueryHandler(compare_articles_callback, pattern="^compare_articles_"))
 
     # === ОБРАБОТЧИКИ ФАЙЛОВ И ТЕКСТА ===
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
