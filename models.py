@@ -234,19 +234,28 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                         INSERT INTO report_values (report_id, cell_name, cell_value)
                         VALUES (?, ?, ?)
                     ''', (report_id, cell, float(val)))
-                except:
-                    pass
+                except Exception as e:
+                    logger.error(f"❌ Ошибка вставки значения ячейки {cell}: {e}")
 
         if metrics:
+            # Логируем наличие total_profit и margin
+            logger.info(f"📊 Получены метрики: {list(metrics.keys())}")
+            if 'total_profit' in metrics:
+                logger.info(f"   total_profit = {metrics['total_profit']}")
+            if 'margin' in metrics:
+                logger.info(f"   margin = {metrics['margin']}")
+            
             for mname, mval in metrics.items():
                 try:
-                    logger.info(f"💾 Сохраняем метрику: {mname} = {mval}")
+                    # Приводим к float, чтобы избежать ошибок типов
+                    float_val = float(mval)
+                    logger.info(f"💾 Сохраняем метрику: {mname} = {float_val}")
                     cursor.execute('''
                         INSERT INTO report_metrics (report_id, metric_name, metric_value)
                         VALUES (?, ?, ?)
-                    ''', (report_id, mname, float(mval)))
+                    ''', (report_id, mname, float_val))
                 except Exception as e:
-                    logger.error(f"❌ Ошибка вставки метрики {mname}: {e}")
+                    logger.error(f"❌ Ошибка вставки метрики {mname} (значение {mval}): {e}")
             logger.info(f"📊 Метрики сохранены, всего {len(metrics)} записей")
 
         if articles:
@@ -272,7 +281,7 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
         conn.close()
         return True, report_id
     except Exception as e:
-        logger.error(f"❌ Ошибка сохранения: {e}")
+        logger.error(f"❌ Критическая ошибка сохранения отчёта: {e}")
         return False, None
 
 def delete_report(report_id):
@@ -287,7 +296,8 @@ def delete_report(report_id):
         deleted = cursor.rowcount > 0
         conn.close()
         return deleted
-    except:
+    except Exception as e:
+        logger.error(f"Ошибка удаления отчёта {report_id}: {e}")
         return False
 
 def delete_reports(report_ids):
@@ -313,7 +323,8 @@ def get_all_reports(page=0, per_page=10):
         results = cursor.fetchall()
         conn.close()
         return results, total
-    except:
+    except Exception as e:
+        logger.error(f"Ошибка получения списка отчётов: {e}")
         return [], 0
 
 def get_all_report_ids():
@@ -324,7 +335,8 @@ def get_all_report_ids():
         rows = cursor.fetchall()
         conn.close()
         return [r[0] for r in rows]
-    except:
+    except Exception as e:
+        logger.error(f"Ошибка получения ID отчётов: {e}")
         return []
 
 def get_report_values(report_id):
@@ -335,7 +347,8 @@ def get_report_values(report_id):
         rows = cursor.fetchall()
         conn.close()
         return {row[0]: row[1] for row in rows}
-    except:
+    except Exception as e:
+        logger.error(f"Ошибка получения значений отчёта {report_id}: {e}")
         return {}
 
 def get_report_metrics(report_id):
@@ -346,7 +359,8 @@ def get_report_metrics(report_id):
         rows = cursor.fetchall()
         conn.close()
         return {row[0]: row[1] for row in rows}
-    except:
+    except Exception as e:
+        logger.error(f"Ошибка получения метрик отчёта {report_id}: {e}")
         return {}
 
 def get_previous_report_id(report_id):
@@ -363,7 +377,8 @@ def get_previous_report_id(report_id):
         result = cursor.fetchone()
         conn.close()
         return result[0] if result else None
-    except:
+    except Exception as e:
+        logger.error(f"Ошибка получения предыдущего отчёта: {e}")
         return None
 
 def get_previous_reports(current_start_date, limit=12):
@@ -380,7 +395,8 @@ def get_previous_reports(current_start_date, limit=12):
         results = cursor.fetchall()
         conn.close()
         return results
-    except:
+    except Exception as e:
+        logger.error(f"Ошибка получения предыдущих отчётов: {e}")
         return []
 
 def get_article_stats_for_report(report_id, brand=None):
@@ -404,7 +420,8 @@ def get_article_stats_for_report(report_id, brand=None):
         results = cursor.fetchall()
         conn.close()
         return {row[0]: {'quantity': row[1], 'revenue': row[2]} for row in results}
-    except:
+    except Exception as e:
+        logger.error(f"Ошибка получения статистики артикулов: {e}")
         return {}
 
 def get_report_date_range():
@@ -415,7 +432,8 @@ def get_report_date_range():
         row = cursor.fetchone()
         conn.close()
         return row[0], row[1]
-    except:
+    except Exception as e:
+        logger.error(f"Ошибка получения диапазона дат: {e}")
         return None, None
 
 def get_aggregated_metrics():
@@ -439,7 +457,7 @@ def get_aggregated_metrics():
         row = cursor.fetchone()
         conn.close()
         if row and row[0] is not None:
-            return {
+            result = {
                 'total_reports': row[0] or 0,
                 'wb_total': row[1] or 0,
                 'wb_carp': row[2] or 0,
@@ -451,6 +469,8 @@ def get_aggregated_metrics():
                 'total_profit': row[8] or 0,
                 'avg_margin': row[9] or 0
             }
+            logger.info(f"📊 Агрегированные метрики: total_profit={result['total_profit']}, avg_margin={result['avg_margin']}")
+            return result
         else:
             return {
                 'total_reports': 0,
@@ -491,7 +511,8 @@ def get_news_settings(user_id):
             return {'enabled': bool(row[0]), 'query': row[1], 'morning_time': row[2], 'evening_time': row[3]}
         else:
             return {'enabled': True, 'query': 'Wildberries OR ВБ OR Вайлдбериз OR Wildberries.ru', 'morning_time': '08:30', 'evening_time': '20:40'}
-    except:
+    except Exception as e:
+        logger.error(f"Ошибка получения настроек новостей: {e}")
         return {'enabled': True, 'query': 'Wildberries OR ВБ OR Вайлдбериз OR Wildberries.ru', 'morning_time': '08:30', 'evening_time': '20:40'}
 
 def set_news_settings(user_id, enabled=None, query=None, morning_time=None, evening_time=None):
