@@ -6,7 +6,6 @@ from config import TELEGRAM_BOT_TOKEN, logger
 from flask_app import run_flask
 from handlers import *
 from services import scheduler, scheduled_morning_digest, scheduled_evening_digest
-from wb_api import get_aggregated_stats  # для команды /wb_stats
 
 def main():
     print("🤖 Запуск бота...")
@@ -18,10 +17,12 @@ def main():
     # Создаём приложение бота
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # === КОМАНДЫ (только те, что определены в handlers.py) ===
+    # === КОМАНДЫ (только те, что есть в вашем handlers.py) ===
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("wb_stats", wb_stats_cmd))   # определена
+    app.add_handler(CommandHandler("news_now", news_now_cmd))
+    app.add_handler(CommandHandler("set_news", set_news_cmd))
+    app.add_handler(CommandHandler("set_news_query", set_news_query_cmd))
 
     # === CALLBACK'и для меню ===
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
@@ -46,7 +47,14 @@ def main():
     app.add_handler(CallbackQueryHandler(cost_delete_callback, pattern="^cost_delete_"))
     app.add_handler(CallbackQueryHandler(cost_delete_all_callback, pattern="^cost_delete_all_"))
     app.add_handler(CallbackQueryHandler(cost_confirm_delete_all_callback, pattern="^cost_confirm_delete_all_"))
-    app.add_handler(CallbackQueryHandler(cost_delete_record_callback, pattern="^cost_delete_record_"))
+
+    # === АНАЛИТИКА ===
+    app.add_handler(CallbackQueryHandler(analytics_toggle_callback, pattern="^analytics_toggle_"))
+    app.add_handler(CallbackQueryHandler(analytics_page_callback, pattern="^analytics_page_"))
+    app.add_handler(CallbackQueryHandler(analytics_select_all_callback, pattern="^analytics_select_all$"))
+    app.add_handler(CallbackQueryHandler(analytics_deselect_all_callback, pattern="^analytics_deselect_all$"))
+    app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
+    app.add_handler(CallbackQueryHandler(analytics_show_callback, pattern="^analytics_show$"))
 
     # === ИСТОРИЯ ===
     app.add_handler(CallbackQueryHandler(history_page_callback, pattern="^history_page_"))
@@ -55,14 +63,6 @@ def main():
     app.add_handler(CallbackQueryHandler(history_enable_delete_callback, pattern="^history_enable_delete$"))
     app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
     app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
-    app.add_handler(CallbackQueryHandler(history_confirm_delete_yes_callback, pattern="^history_confirm_delete_yes$"))
-
-    # === АНАЛИТИКА ПО АРТИКУЛАМ (только существующие) ===
-    app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
-    app.add_handler(CallbackQueryHandler(growth_callback, pattern="^growth_"))
-    app.add_handler(CallbackQueryHandler(decline_callback, pattern="^decline_"))
-    # Если есть compare_articles_callback — раскомментировать, но в коде его нет
-    # app.add_handler(CallbackQueryHandler(compare_articles_callback, pattern="^compare_articles_"))
 
     # === ОБРАБОТЧИКИ ФАЙЛОВ И ТЕКСТА ===
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
