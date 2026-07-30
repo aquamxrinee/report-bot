@@ -3,8 +3,9 @@ import shutil
 import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta
+import asyncio
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, filters
 
 from config import (
@@ -19,13 +20,18 @@ from models import (
     get_report_id_by_period, get_active_cost,
     get_news_settings, set_news_settings,
     calculate_file_hash,
-    get_all_articles_with_costs
+    get_all_articles_with_costs,
+    # Функции для СПП
+    get_last_spp, get_spp_history, is_muted, mute_article,
+    get_user_subscriptions, subscribe_user, unsubscribe_user,
+    init_spp_tables
 )
 from services import (
     fetch_news, format_news_digest, detect_report_type, parse_date_from_period,
     ReportProcessor, scheduler, scheduled_morning_digest, scheduled_evening_digest
 )
-from wb_api import get_aggregated_stats   # для команды /wb_stats
+from spp_parser import get_spp_for_article
+from spp_monitor import generate_spp_graph
 
 # ===== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ =====
 async def check_access(update: Update) -> bool:
@@ -72,35 +78,15 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/articles — детали по артикулам (текущий отчет)\n"
         "/news_now — получить новости прямо сейчас\n"
         "/set_news — настроить новостные сводки\n"
-        "/set_news_query — изменить поисковый запрос\n"
-        "/wb_stats — статистика Wildberries (API)\n\n"
+        "/set_news_query — изменить поисковый запрос\n\n"
+        "**Мониторинг СПП:**\n"
+        "/spp_subscribe <nm_id> [порог] — подписаться на изменения СПП\n"
+        "/spp_unsubscribe <nm_id> — отписаться\n"
+        "/spp_list — список ваших подписок\n\n"
         "Также можно использовать кнопки меню.",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
     )
-
-async def wb_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда для получения сводки по Wildberries API."""
-    if not await check_access(update):
-        return
-    data = get_aggregated_stats()
-    if "error" in data:
-        await update.message.reply_text(f"❌ Ошибка: {data['error']}")
-        return
-    msg = f"📊 **Статистика WB за 7 дней**\n\n"
-    msg += f"💰 Выручка: {data.get('total_revenue', 0):,.0f} ₽\n"
-    msg += f"📦 Заказов: {data.get('total_orders', 0)}\n"
-    msg += f"📊 Средний чек: {data.get('avg_order_value', 0):,.0f} ₽\n"
-    msg += f"📦 На складе: {data.get('total_stock', 0)} шт.\n"
-    msg += f"📦 Уникальных артикулов: {data.get('unique_articles', 0)}\n\n"
-    msg += f"👁️ Просмотры: {data.get('views', 0)}\n"
-    msg += f"🛒 В корзину: {data.get('cart_adds', 0)}\n"
-    msg += f"📋 Заказы: {data.get('orders', 0)}\n"
-    msg += f"✅ Выкупы: {data.get('purchases', 0)}\n\n"
-    msg += f"📈 Конверсия просмотр→корзина: {data.get('conversion_view_to_cart', 0):.1f}%\n"
-    msg += f"📈 Конверсия корзина→заказ: {data.get('conversion_cart_to_order', 0):.1f}%\n"
-    msg += f"📈 Конверсия заказ→выкуп: {data.get('conversion_order_to_purchase', 0):.1f}%"
-    await update.message.reply_text(msg, parse_mode='Markdown')
 
 # ===== ПОДМЕНЮ "АНАЛИТИКА" =====
 async def menu_analytics_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -146,9 +132,20 @@ async def menu_settings_callback(update: Update, context: ContextTypes.DEFAULT_T
     keyboard = [
         [InlineKeyboardButton("📰 Новости", callback_data="news_settings")],
         [InlineKeyboardButton("💰 Себестоимость", callback_data="menu_costs")],
+        [InlineKeyboardButton("📊 Мониторинг СПП", callback_data="menu_spp")],
         [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
     ]
     await query.edit_message_text("⚙️ **Настройки**\n\nВыберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "👋 Главное меню:",
+        reply_markup=get_main_menu()
+    )
 
 # ===== НОВОСТНОЙ РАЗДЕЛ =====
 async def news_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -718,39 +715,51 @@ async def show_history_page(query, context, page):
             callback_data = f"history_report_{report_id}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
-    nav_buttons = []
+    # Навигация
+    nav = []
     if current_page > 0:
-        nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"history_page_{current_page-1}"))
+        nav.append(InlineKeyboardButton("◀️", callback_data=f"history_page_{current_page-1}"))
     if current_page < total_pages - 1:
-        nav_buttons.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"history_page_{current_page+1}"))
-    if nav_buttons:
-        keyboard.append(nav_buttons)
+        nav.append(InlineKeyboardButton("▶️", callback_data=f"history_page_{current_page+1}"))
+    if nav:
+        keyboard.append(nav)
 
     if delete_mode:
-        keyboard.append([InlineKeyboardButton("🗑️ Удалить выбранные", callback_data="history_confirm_delete")])
+        keyboard.append([InlineKeyboardButton("✅ Удалить выбранные", callback_data="history_confirm_delete")])
         keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="history_cancel_delete")])
     else:
-        keyboard.append([InlineKeyboardButton("🗑️ Удалить отчеты", callback_data="history_enable_delete")])
+        keyboard.append([InlineKeyboardButton("🗑 Включить режим удаления", callback_data="history_enable_delete")])
 
     keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-async def history_toggle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
     query = update.callback_query
     await query.answer()
-    data = query.data
-    if data.startswith("history_toggle_delete_"):
-        report_id = int(data.split("_")[3])
-        selected = context.user_data.get('history_selected_for_delete', [])
-        if report_id in selected:
-            selected.remove(report_id)
-        else:
-            selected.append(report_id)
-        context.user_data['history_selected_for_delete'] = selected
-        page = context.user_data.get('history_page', 0)
-        await show_history_page(query, context, page)
+    page = int(query.data.split("_")[-1])
+    await show_history_page(query, context, page)
+
+async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    report_id = int(query.data.split("_")[-1])
+    metrics = get_report_metrics(report_id)
+    text = f"📊 **Отчёт ID {report_id}**\n\n"
+    if metrics:
+        for k, v in metrics.items():
+            text += f"{k}: {v:,.2f}\n"
+    else:
+        text += "Нет метрик.\n"
+    buttons = [
+        [InlineKeyboardButton("🔙 Назад к списку", callback_data="menu_history")],
+        [InlineKeyboardButton("🗑 Удалить отчёт", callback_data=f"history_confirm_delete_{report_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
 
 async def history_enable_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
@@ -759,8 +768,7 @@ async def history_enable_delete_callback(update: Update, context: ContextTypes.D
     await query.answer()
     context.user_data['history_delete_mode'] = True
     context.user_data['history_selected_for_delete'] = []
-    page = context.user_data.get('history_page', 0)
-    await show_history_page(query, context, page)
+    await show_history_page(query, context, page=context.user_data.get('history_page', 0))
 
 async def history_cancel_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
@@ -769,828 +777,129 @@ async def history_cancel_delete_callback(update: Update, context: ContextTypes.D
     await query.answer()
     context.user_data['history_delete_mode'] = False
     context.user_data['history_selected_for_delete'] = []
-    page = context.user_data.get('history_page', 0)
-    await show_history_page(query, context, page)
+    await show_history_page(query, context, page=context.user_data.get('history_page', 0))
+
+async def history_toggle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    report_id = int(query.data.split("_")[-1])
+    selected = context.user_data.get('history_selected_for_delete', [])
+    if report_id in selected:
+        selected.remove(report_id)
+    else:
+        selected.append(report_id)
+    context.user_data['history_selected_for_delete'] = selected
+    await show_history_page(query, context, page=context.user_data.get('history_page', 0))
 
 async def history_confirm_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
     query = update.callback_query
     await query.answer()
-    selected = context.user_data.get('history_selected_for_delete', [])
-    if not selected:
-        await query.answer("⚠️ Не выбрано ни одного отчёта.", show_alert=True)
-        return
-    deleted = delete_reports(selected)
-    context.user_data['history_delete_mode'] = False
-    context.user_data['history_selected_for_delete'] = []
-    page = context.user_data.get('history_page', 0)
-    await show_history_page(query, context, page)
-    await query.message.reply_text(f"🗑️ Удалено {deleted} отчётов.")
-
-async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    query = update.callback_query
-    await query.answer()
     data = query.data
-    if data.startswith("history_page_"):
-        page = int(data.split("_")[2])
-        context.user_data['history_page'] = page
-        await show_history_page(query, context, page)
-
-async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data.startswith("history_report_"):
-        report_id = int(data.split("_")[2])
-        await resend_report(query, context, report_id)
-
-async def resend_report(query, context, report_id):
-    values = get_report_values(report_id)
-    metrics = get_report_metrics(report_id)
-    if not values or not metrics:
-        await query.edit_message_text("❌ Данные отчёта не найдены.", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    if data == "history_confirm_delete":
+        # множественное удаление
+        selected = context.user_data.get('history_selected_for_delete', [])
+        if not selected:
+            await query.edit_message_text("Нет выбранных отчётов.", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад", callback_data="menu_history")]
+            ]))
+            return
+        deleted = delete_reports(selected)
+        context.user_data['history_delete_mode'] = False
+        context.user_data['history_selected_for_delete'] = []
+        await query.edit_message_text(f"✅ Удалено {deleted} отчётов.", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Назад к списку", callback_data="menu_history")]
         ]))
-        return
-
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('SELECT file_name, date_period FROM reports WHERE id = ?', (report_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if not row:
-        await query.edit_message_text("❌ Отчёт не найден.", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-        ]))
-        return
-    file_name, date_period = row
-
-    prev_id = get_previous_report_id(report_id)
-    prev_metrics = get_report_metrics(prev_id) if prev_id else None
-
-    context.user_data['current_report_id'] = report_id
-    context.user_data['current_period'] = date_period
-
-    msg = f"📊 **Статистика отчёта**\n\n"
-    msg += f"📄 **{file_name}**\n"
-    msg += f"📅 Период: {date_period}\n\n"
-
-    avg_acquiring = metrics.get('avg_acquiring', 0)
-    median_acquiring = metrics.get('median_acquiring', 0)
-    wb_total = metrics.get('wb_total', 0)
-    wb_carp = metrics.get('wb_carp', 0)
-    wb_hara = metrics.get('wb_hara', 0)
-    carp_orders = metrics.get('carp_orders', 0)
-    hara_orders = metrics.get('hara_orders', 0)
-    carp_vyk_orders = metrics.get('carp_vyk_orders', 0)
-    hara_vyk_orders = metrics.get('hara_vyk_orders', 0)
-    k_carp = metrics.get('k_vyvodu_carp', 0)
-    k_hara = metrics.get('k_vyvodu_hara', 0)
-    k_total = metrics.get('k_vyvodu_total', 0)
-    reklama_carp = metrics.get('reklama_carp', 0)
-    reklama_hara = metrics.get('reklama_hara', 0)
-    shtrafy = metrics.get('shtrafy', 0)
-    nalog = metrics.get('nalog', 0)
-    profit = metrics.get('total_profit', 0)
-    margin = metrics.get('margin', 0)
-    profit_carp = metrics.get('profit_carp', 0)
-    profit_hara = metrics.get('profit_hara', 0)
-    margin_carp = metrics.get('margin_carp', 0)
-    margin_hara = metrics.get('margin_hara', 0)
-
-    tax_hara = wb_hara * 0.01
-    k_hara_after_tax = k_hara - tax_hara
-
-    def fmt_change(current, previous, unit='₽', is_percent=False):
-        if previous is None:
-            return ""
-        if is_percent:
-            diff_pp = current - previous
-            diff_percent = (diff_pp / previous * 100) if previous != 0 else 0
-            return f"(было {previous:.2f}%, {diff_pp:+.2f} п.п., {diff_percent:+.1f}%)"
-        else:
-            diff_abs = current - previous
-            diff_percent = (diff_abs / previous * 100) if previous != 0 else 0
-            return f"(было {previous:,.2f} {unit}, {diff_abs:+.2f} {unit}, {diff_percent:+.1f}%)"
-
-    msg += f"💳 **Средний эквайринг:** {avg_acquiring:.2f}%"
-    if prev_metrics:
-        prev_avg = prev_metrics.get('avg_acquiring', 0)
-        msg += " " + fmt_change(avg_acquiring, prev_avg, is_percent=True)
-    msg += "\n"
-    msg += f"📊 **Медианный эквайринг:** {median_acquiring:.2f}%"
-    if prev_metrics:
-        prev_med = prev_metrics.get('median_acquiring', 0)
-        msg += " " + fmt_change(median_acquiring, prev_med, is_percent=True)
-    msg += "\n\n"
-
-    msg += f"💰 **ВБшный оборот общий:** {wb_total:,.2f} ₽"
-    if prev_metrics:
-        prev_wb = prev_metrics.get('wb_total', 0)
-        msg += " " + fmt_change(wb_total, prev_wb, '₽')
-    msg += "\n"
-    msg += f"   🐱 ЦАП: {wb_carp:,.2f} ₽"
-    if prev_metrics:
-        prev_carp = prev_metrics.get('wb_carp', 0)
-        msg += " " + fmt_change(wb_carp, prev_carp, '₽')
-    msg += "\n"
-    msg += f"   ⚔️ Харакири: {wb_hara:,.2f} ₽"
-    if prev_metrics:
-        prev_hara = prev_metrics.get('wb_hara', 0)
-        msg += " " + fmt_change(wb_hara, prev_hara, '₽')
-    msg += "\n\n"
-
-    msg += f"📦 **Заказы (осн):** ЦАП {carp_orders:.0f} шт."
-    if prev_metrics:
-        prev_carp_ord = prev_metrics.get('carp_orders', 0)
-        diff = carp_orders - prev_carp_ord
-        diff_percent = (diff / prev_carp_ord * 100) if prev_carp_ord != 0 else 0
-        msg += f" (было {prev_carp_ord:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
-    msg += f", Харакири {hara_orders:.0f} шт."
-    if prev_metrics:
-        prev_hara_ord = prev_metrics.get('hara_orders', 0)
-        diff = hara_orders - prev_hara_ord
-        diff_percent = (diff / prev_hara_ord * 100) if prev_hara_ord != 0 else 0
-        msg += f" (было {prev_hara_ord:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
-    msg += "\n"
-    msg += f"📦 **Заказы (вык):** ЦАП {carp_vyk_orders:.0f} шт."
-    if prev_metrics:
-        prev_carp_vyk = prev_metrics.get('carp_vyk_orders', 0)
-        diff = carp_vyk_orders - prev_carp_vyk
-        diff_percent = (diff / prev_carp_vyk * 100) if prev_carp_vyk != 0 else 0
-        msg += f" (было {prev_carp_vyk:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
-    msg += f", Харакири {hara_vyk_orders:.0f} шт."
-    if prev_metrics:
-        prev_hara_vyk = prev_metrics.get('hara_vyk_orders', 0)
-        diff = hara_vyk_orders - prev_hara_vyk
-        diff_percent = (diff / prev_hara_vyk * 100) if prev_hara_vyk != 0 else 0
-        msg += f" (было {prev_hara_vyk:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
-    msg += "\n\n"
-
-    msg += f"💸 **К выводу ЦАП:** {k_carp:,.2f} ₽"
-    if prev_metrics:
-        prev_k_carp = prev_metrics.get('k_vyvodu_carp', 0)
-        msg += " " + fmt_change(k_carp, prev_k_carp, '₽')
-    msg += "\n"
-    msg += f"💸 **К выводу Харакири:** {k_hara:,.2f} ₽"
-    if prev_metrics:
-        prev_k_hara = prev_metrics.get('k_vyvodu_hara', 0)
-        msg += " " + fmt_change(k_hara, prev_k_hara, '₽')
-    msg += "\n"
-    msg += f"💸 **Итого к выводу:** {k_total:,.2f} ₽"
-    if prev_metrics:
-        prev_k_total = prev_metrics.get('k_vyvodu_total', 0)
-        msg += " " + fmt_change(k_total, prev_k_total, '₽')
-    msg += "\n"
-    msg += f"💸 **Харакири (с вычетом налога):** {k_hara_after_tax:,.2f} ₽"
-    if prev_metrics:
-        prev_k_hara_after = prev_metrics.get('k_vyvodu_hara', 0) - (prev_metrics.get('wb_hara', 0) * 0.01)
-        msg += " " + fmt_change(k_hara_after_tax, prev_k_hara_after, '₽')
-    msg += "\n\n"
-
-    msg += f"📢 **Реклама:** ЦАП {reklama_carp:,.2f} ₽"
-    if prev_metrics:
-        prev_reklama_carp = prev_metrics.get('reklama_carp', 0)
-        msg += " " + fmt_change(reklama_carp, prev_reklama_carp, '₽')
-    msg += f", Харакири {reklama_hara:,.2f} ₽"
-    if prev_metrics:
-        prev_reklama_hara = prev_metrics.get('reklama_hara', 0)
-        msg += " " + fmt_change(reklama_hara, prev_reklama_hara, '₽')
-    msg += "\n"
-
-    msg += f"⚠️ **Штрафы:** {shtrafy:,.2f} ₽"
-    if prev_metrics:
-        prev_shtrafy = prev_metrics.get('shtrafy', 0)
-        msg += " " + fmt_change(shtrafy, prev_shtrafy, '₽')
-    msg += "\n"
-
-    msg += f"🧾 **Налог общий:** {nalog:,.2f} ₽"
-    if prev_metrics:
-        prev_nalog = prev_metrics.get('nalog', 0)
-        msg += " " + fmt_change(nalog, prev_nalog, '₽')
-    msg += "\n"
-
-    msg += f"\n💰 **Чистая прибыль:** {profit:,.2f} ₽"
-    if prev_metrics:
-        prev_profit = prev_metrics.get('total_profit', 0)
-        msg += " " + fmt_change(profit, prev_profit, '₽')
-    msg += f"\n📈 **Маржинальность:** {margin:.2f} %"
-    if prev_metrics:
-        prev_margin = prev_metrics.get('margin', 0)
-        msg += " " + fmt_change(margin, prev_margin, is_percent=True)
-    msg += f"\n   🐱 ЦАП прибыль: {profit_carp:,.2f} ₽, марж. {margin_carp:.2f}%"
-    if prev_metrics:
-        prev_profit_carp = prev_metrics.get('profit_carp', 0)
-        prev_margin_carp = prev_metrics.get('margin_carp', 0)
-        msg += " " + fmt_change(profit_carp, prev_profit_carp, '₽')
-        msg += f", марж. {fmt_change(margin_carp, prev_margin_carp, is_percent=True)}"
-    msg += f"\n   ⚔️ Харакири прибыль: {profit_hara:,.2f} ₽, марж. {margin_hara:.2f}%"
-    if prev_metrics:
-        prev_profit_hara = prev_metrics.get('profit_hara', 0)
-        prev_margin_hara = prev_metrics.get('margin_hara', 0)
-        msg += " " + fmt_change(profit_hara, prev_profit_hara, '₽')
-        msg += f", марж. {fmt_change(margin_hara, prev_margin_hara, is_percent=True)}"
-    msg += "\n"
-
-    await query.message.reply_text(msg, parse_mode='Markdown')
-
-    # Восстановление шаблона
-    template_path = Path("/app/шаблон.xlsx")
-    if not template_path.exists():
-        for p in [Path("шаблон.xlsx"), TEMP_DIR / "template.xlsx"]:
-            if p.exists():
-                template_path = p
-                break
-    if not template_path.exists():
-        wb = openpyxl.Workbook()
-        template_path = TEMP_DIR / "template.xlsx"
-        wb.save(template_path)
-
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    out_file = TEMP_DIR / f"шаблон_{timestamp}.xlsx"
-    shutil.copy(template_path, out_file)
-
-    wb = openpyxl.load_workbook(out_file, data_only=False, keep_links=False, keep_vba=False)
-    ws = wb.active
-    for cell, val in values.items():
-        ws[cell] = val
-        if isinstance(val, float) and val != int(val):
-            ws[cell].number_format = '0.00'
-    ws.sheet_view.calcMode = 'manual'
-    wb.save(out_file)
-
-    with open(out_file, 'rb') as f:
-        await query.message.reply_document(f, caption="✅ Шаблон восстановлен")
-
-    articles = get_article_stats_for_report(report_id)
-    if articles:
-        context.user_data['articles_data'] = articles
-        keyboard = [
-            [InlineKeyboardButton("📦 Детали по артикулам", callback_data="show_articles")],
-            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-        ]
-        await query.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        await query.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-        ]))
-
-    try:
-        os.remove(out_file)
-    except:
-        pass
-
-    try:
-        await query.delete_message()
-    except:
-        pass
-
-# ===== АРТИКУЛЫ (только для текущего отчёта) =====
-async def articles_full_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE, is_callback=False):
-    if not await check_access(update):
-        return
-    report_id = context.user_data.get('current_report_id')
-    if not report_id:
-        text = "❌ Нет активного отчёта.\n\nПожалуйста, загрузите новый отчёт или выберите существующий из архива."
-        keyboard = [
-            [InlineKeyboardButton("📂 Перейти в архив", callback_data="menu_history")],
-            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-        ]
-        if is_callback:
-            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-        else:
-            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
-        return
-
-    current_articles = get_article_stats_for_report(report_id)
-    if not current_articles:
-        text = "❌ Нет данных по артикулам для этого отчёта."
-        if is_callback:
-            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+    elif data.startswith("history_confirm_delete_"):
+        # одиночное удаление
+        report_id = int(data.split("_")[-1])
+        if delete_report(report_id):
+            await query.edit_message_text("✅ Отчёт удалён.", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад к списку", callback_data="menu_history")]
             ]))
         else:
-            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+            await query.edit_message_text("❌ Ошибка удаления.", reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад к списку", callback_data="menu_history")]
             ]))
-        return
 
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("SELECT start_date FROM reports WHERE id = ?", (report_id,))
-    row = cursor.fetchone()
-    prev_start_date = row[0] if row else None
-    conn.close()
-
-    previous_articles = {}
-    if prev_start_date:
-        prev_reports = get_previous_reports(prev_start_date, limit=1)
-        if prev_reports:
-            prev_id = prev_reports[0][0]
-            previous_articles = get_article_stats_for_report(prev_id)
-
-    all_items = []
-    for art, data in current_articles.items():
-        cur_q = data['quantity']
-        cur_r = data['revenue']
-        prev_q = previous_articles.get(art, {}).get('quantity', 0)
-        prev_r = previous_articles.get(art, {}).get('revenue', 0)
-        change_q = cur_q - prev_q
-        change_r_percent = ((cur_r - prev_r) / prev_r * 100) if prev_r else 0 if cur_q == 0 else float('inf')
-        all_items.append((art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r))
-
-    all_items.sort(key=lambda x: x[2], reverse=True)
-    period = context.user_data.get('current_period', '')
-
-    msg = f"📦 **Все артикулы** ({period})\n\n"
-    for art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r in all_items:
-        if prev_q == 0 and cur_q == 0:
-            delta_str = "нет данных"
-        elif prev_q == 0:
-            delta_str = f"🆕 +{cur_q} шт."
-        else:
-            arrow = "📈" if change_q > 0 else "📉" if change_q < 0 else "➖"
-            delta_str = f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
-        msg += f"**{art}**\n   Продажи: {cur_q:,.0f} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
-        if len(msg) > 4000:
-            msg += "\n… (сообщение обрезано)"
-            break
-
-    keyboard = [
-        [InlineKeyboardButton("📈 Топ-10 по росту", callback_data="growth")],
-        [InlineKeyboardButton("📉 Топ-10 по падению", callback_data="decline")],
-        [InlineKeyboardButton("📊 Детальное сравнение", callback_data="compare_articles")],
-        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    if is_callback:
-        await update.callback_query.edit_message_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
-    else:
-        await update.message.reply_text(msg, reply_markup=reply_markup, parse_mode='Markdown')
-
-async def articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    query = update.callback_query
-    await query.answer()
-    report_id = context.user_data.get('current_report_id')
-    if not report_id:
-        await query.edit_message_text("❌ Нет данных по артикулам для текущего отчета.")
-        return
-
-    current_articles = get_article_stats_for_report(report_id)
-    if not current_articles:
-        await query.edit_message_text("❌ Нет данных по артикулам.")
-        return
-
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("SELECT start_date FROM reports WHERE id = ?", (report_id,))
-    row = cursor.fetchone()
-    prev_start_date = row[0] if row else None
-    conn.close()
-
-    previous_articles = {}
-    if prev_start_date:
-        prev_reports = get_previous_reports(prev_start_date, limit=1)
-        if prev_reports:
-            prev_id = prev_reports[0][0]
-            previous_articles = get_article_stats_for_report(prev_id)
-
-    all_items = []
-    for art, data in current_articles.items():
-        cur_q = data['quantity']
-        cur_r = data['revenue']
-        prev_q = previous_articles.get(art, {}).get('quantity', 0)
-        prev_r = previous_articles.get(art, {}).get('revenue', 0)
-        change_q = cur_q - prev_q
-        change_r_percent = ((cur_r - prev_r) / prev_r * 100) if prev_r else 0 if cur_q == 0 else float('inf')
-        all_items.append((art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r))
-
-    all_items.sort(key=lambda x: x[2], reverse=True)
-    top = all_items[:10]
-    period = context.user_data.get('current_period', '')
-
-    msg = f"📦 **Топ-10 артикулов** ({period})\n\n"
-    for art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r in top:
-        if prev_q == 0 and cur_q == 0:
-            delta_str = "нет данных"
-        elif prev_q == 0:
-            delta_str = f"🆕 +{cur_q} шт."
-        else:
-            arrow = "📈" if change_q > 0 else "📉" if change_q < 0 else "➖"
-            delta_str = f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
-        msg += f"**{art}**\n   Продажи: {cur_q:,.0f} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
-
-    if len(all_items) > 10:
-        msg += f"… и еще {len(all_items)-10}. Используйте /articles для полного списка."
-
-    keyboard = [
-        [InlineKeyboardButton("📈 Топ-10 по росту", callback_data="growth")],
-        [InlineKeyboardButton("📉 Топ-10 по падению", callback_data="decline")],
-        [InlineKeyboardButton("📊 Детальное сравнение", callback_data="compare_articles")],
-        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-    ]
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-# ===== ОБРАБОТЧИКИ РОСТА И ПАДЕНИЯ =====
-async def growth_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    await _show_sorted_articles(update, context, reverse=True)
-
-async def decline_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    await _show_sorted_articles(update, context, reverse=False)
-
-async def _show_sorted_articles(update, context, reverse=True):
-    if not await check_access(update):
-        return
-    query = update.callback_query
-    await query.answer()
-    report_id = context.user_data.get('current_report_id')
-    if not report_id:
-        await query.edit_message_text("❌ Нет данных для текущего отчета.")
-        return
-
-    current_articles = get_article_stats_for_report(report_id)
-    if not current_articles:
-        await query.edit_message_text("❌ Нет данных по артикулам.")
-        return
-
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("SELECT start_date FROM reports WHERE id = ?", (report_id,))
-    row = cursor.fetchone()
-    prev_start_date = row[0] if row else None
-    conn.close()
-
-    previous_articles = {}
-    if prev_start_date:
-        prev_reports = get_previous_reports(prev_start_date, limit=1)
-        if prev_reports:
-            prev_id = prev_reports[0][0]
-            previous_articles = get_article_stats_for_report(prev_id)
-
-    items = []
-    for art, data in current_articles.items():
-        cur_q = data['quantity']
-        cur_r = data['revenue']
-        prev_q = previous_articles.get(art, {}).get('quantity', 0)
-        prev_r = previous_articles.get(art, {}).get('revenue', 0)
-        if prev_q == 0 and cur_q == 0:
-            continue
-        change_q = cur_q - prev_q
-        change_r_percent = ((cur_r - prev_r) / prev_r * 100) if prev_r else 0 if cur_q == 0 else float('inf')
-        items.append((art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r))
-
-    items.sort(key=lambda x: x[4], reverse=reverse)
-    top = items[:10]
-    period = context.user_data.get('current_period', '')
-
-    label = "росту" if reverse else "падению"
-    msg = f"📈 **Топ-10 по {label}** ({period})\n\n"
-    for art, cur_q, cur_r, change_q, change_r_percent, prev_q, prev_r in top:
-        if prev_q == 0:
-            delta_str = f"🆕 +{cur_q} шт."
-        else:
-            arrow = "📈" if change_q > 0 else "📉" if change_q < 0 else "➖"
-            delta_str = f"{arrow} {change_q:+.0f} шт. ({change_r_percent:+.1f}%)"
-        msg += f"**{art}**\n   Продажи: {cur_q:,.0f} шт. | {cur_r:,.2f} ₽\n   Изм.: {delta_str}\n\n"
-
-    if not top:
-        msg = "Нет данных для отображения."
-
-    keyboard = [
-        [InlineKeyboardButton("◀️ Назад к списку", callback_data="show_articles")],
-        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-    ]
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-# ===== ДЕТАЛЬНОЕ СРАВНЕНИЕ =====
-async def compare_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    query = update.callback_query
-    await query.answer()
-    report_id = context.user_data.get('current_report_id')
-    if not report_id:
-        await query.edit_message_text("❌ Нет данных для сравнения.")
-        return
-
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("SELECT start_date FROM reports WHERE id = ?", (report_id,))
-    row = cursor.fetchone()
-    if not row:
-        conn.close()
-        await query.edit_message_text("❌ Ошибка: отчёт не найден.")
-        return
-    current_start = row[0]
-    conn.close()
-
-    prev_reports = get_previous_reports(current_start, limit=12)
-    if not prev_reports:
-        await query.edit_message_text("❌ Нет предыдущих отчетов для сравнения.")
-        return
-
-    prev_ids = [r[0] for r in prev_reports]
-    current_articles = get_article_stats_for_report(report_id)
-    if not current_articles:
-        await query.edit_message_text("❌ Нет данных по артикулам в текущем отчете.")
-        return
-
-    periods = {
-        '2 недели': prev_ids[:2],
-        'месяц': prev_ids[:4],
-        'квартал': prev_ids[:12]
-    }
-
-    msg = f"📊 **Сравнение со средними показателями**\n(период: {context.user_data.get('current_period', '')})\n\n"
-
-    for period_name, ids in periods.items():
-        if not ids:
-            msg += f"**{period_name}:** Нет данных\n\n"
-            continue
-        all_articles = {}
-        for pid in ids:
-            arts = get_article_stats_for_report(pid)
-            for art, data in arts.items():
-                if art not in all_articles:
-                    all_articles[art] = {'qty': [], 'rev': []}
-                all_articles[art]['qty'].append(data['quantity'])
-                all_articles[art]['rev'].append(data['revenue'])
-        avg_articles = {}
-        for art, vals in all_articles.items():
-            avg_articles[art] = {
-                'avg_quantity': sum(vals['qty']) / len(vals['qty']),
-                'avg_revenue': sum(vals['rev']) / len(vals['rev'])
-            }
-        msg += f"**{period_name}** (среднее по {len(ids)} отчетам):\n"
-        top_cur = sorted(current_articles.items(), key=lambda x: x[1]['revenue'], reverse=True)[:5]
-        for art, data in top_cur:
-            cur_q = data['quantity']
-            cur_r = data['revenue']
-            if art in avg_articles:
-                avg_q = avg_articles[art]['avg_quantity']
-                avg_r = avg_articles[art]['avg_revenue']
-                change_q = ((cur_q - avg_q) / avg_q * 100) if avg_q else 0
-                change_r = ((cur_r - avg_r) / avg_r * 100) if avg_r else 0
-                msg += f"• {art}: {cur_q:,.0f} шт. (Δ {change_q:+.1f}%) | {cur_r:,.2f} ₽ (Δ {change_r:+.1f}%)\n"
-            else:
-                msg += f"• {art}: {cur_q:,.0f} шт. (новинка) | {cur_r:,.2f} ₽\n"
-        msg += "\n"
-
-    keyboard = [
-        [InlineKeyboardButton("◀️ Назад к списку", callback_data="show_articles")],
-        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-    ]
-    await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-
-# ===== ОБРАБОТЧИК "НАЗАД В МЕНЮ" =====
-async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "🏠 Главное меню. Выберите действие:",
-        reply_markup=get_main_menu()
-    )
-
-# ===== ОБРАБОТКА ФАЙЛОВ =====
+# ===== ОБРАБОТЧИК ФАЙЛОВ (ОРИГИНАЛЬНАЯ ЛОГИКА) =====
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
-    try:
-        doc = update.message.document
-        if not doc.file_name.endswith(('.xlsx', '.xls')):
-            await update.message.reply_text("❌ Нужен Excel файл")
-            return
-
-        file = await context.bot.get_file(doc.file_id)
-        file_path = TEMP_DIR / doc.file_name
-        await file.download_to_drive(file_path)
-
-        report_type = detect_report_type(doc.file_name)
-        if not report_type:
-            context.user_data['current_file'] = str(file_path)
-            context.user_data['current_file_hash'] = calculate_file_hash(file_path)
-            await update.message.reply_text("❓ Тип не определен. Используйте /osn или /vyk")
-            return
-
-        if 'files' not in context.user_data:
-            context.user_data['files'] = {}
-        context.user_data['files'][report_type] = str(file_path)
-        if report_type == 'osn':
-            context.user_data['osn_hash'] = calculate_file_hash(file_path)
-            await update.message.reply_text("✅ Основной отчет получен")
-        else:
-            context.user_data['vyk_hash'] = calculate_file_hash(file_path)
-            await update.message.reply_text("✅ Отчет по выкупам получен")
-
-        if 'osn' in context.user_data['files'] and 'vyk' in context.user_data['files']:
-            await process_and_send(update, context)
-
-    except Exception as e:
-        logger.error(f"Ошибка загрузки: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
-
-# ===== РУЧНЫЕ КОМАНДЫ osn/vyk =====
-async def handle_osn(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
+    user_id = update.effective_user.id
+    document = update.message.document
+    if not document:
+        await update.message.reply_text("❌ Это не файл.")
         return
-    if 'current_file' not in context.user_data:
-        await update.message.reply_text("❌ Сначала отправьте файл!")
+    file_name = document.file_name or "unknown.xlsx"
+    if not (file_name.endswith('.xlsx') or file_name.endswith('.xls')):
+        await update.message.reply_text("❌ Поддерживаются только Excel-файлы (.xlsx, .xls).")
         return
-    context.user_data['files']['osn'] = context.user_data['current_file']
-    context.user_data['osn_hash'] = context.user_data['current_file_hash']
-    await update.message.reply_text("✅ Основной отчет сохранен")
+
+    # Сохраняем файл во временную папку
+    temp_path = Path(TEMP_DIR) / f"{datetime.now().timestamp()}_{file_name}"
+    temp_path.parent.mkdir(parents=True, exist_ok=True)
+    file = await document.get_file()
+    await file.download_to_drive(temp_path)
+
+    # Определяем тип файла
+    report_type = detect_report_type(file_name)
+    if not report_type:
+        await update.message.reply_text("❌ Не удалось определить тип файла. В имени должно быть «осн» или «вык».")
+        temp_path.unlink(missing_ok=True)
+        return
+
+    # Сохраняем в user_data
+    if 'files' not in context.user_data:
+        context.user_data['files'] = {}
+    context.user_data['files'][report_type] = str(temp_path)
+
+    # Проверяем, есть ли второй файл
     if 'osn' in context.user_data['files'] and 'vyk' in context.user_data['files']:
+        # Оба файла загружены — запускаем обработку
         await process_and_send(update, context)
+    else:
+        await update.message.reply_text(f"✅ Файл «{file_name}» загружен. Жду второй файл (для {'вык' if report_type == 'osn' else 'осн'}).")
 
-async def handle_vyk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    if 'current_file' not in context.user_data:
-        await update.message.reply_text("❌ Сначала отправьте файл!")
-        return
-    context.user_data['files']['vyk'] = context.user_data['current_file']
-    context.user_data['vyk_hash'] = context.user_data['current_file_hash']
-    await update.message.reply_text("✅ Отчет по выкупам сохранен")
-    if 'osn' in context.user_data['files'] and 'vyk' in context.user_data['files']:
-        await process_and_send(update, context)
-
-# ===== ОСНОВНАЯ ОБРАБОТКА =====
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
+    user_id = update.effective_user.id
+    files = context.user_data.get('files', {})
+    osn_path = files.get('osn')
+    vyk_path = files.get('vyk')
+    
+    if not osn_path or not vyk_path:
+        await update.message.reply_text("❌ Не хватает файлов. Нужны оба: осн и вык.")
         return
+    
+    await update.message.reply_text("🔄 Обрабатываю отчёты...")
+    
     try:
-        await update.message.reply_text("⏳ Обработка...")
-
-        osn_file = context.user_data['files']['osn']
-        vyk_file = context.user_data['files']['vyk']
-        osn_hash = context.user_data.get('osn_hash')
-
-        template_path = Path("/app/шаблон.xlsx")
-        if not template_path.exists():
-            for p in [Path("шаблон.xlsx"), TEMP_DIR / "template.xlsx"]:
-                if p.exists():
-                    template_path = p
-                    break
-        if not template_path.exists():
-            wb = openpyxl.Workbook()
-            template_path = TEMP_DIR / "template.xlsx"
-            wb.save(template_path)
-
-        wb_coeff = openpyxl.load_workbook(template_path, data_only=True)
-        ws_coeff = wb_coeff.active
-        b23_val = ws_coeff['B23'].value
-        c23_val = ws_coeff['C23'].value
-        wb_coeff.close()
-
-        try:
-            b23 = float(b23_val) if b23_val is not None and isinstance(b23_val, (int, float)) else 0.0
-        except:
-            b23 = 0.0
-        try:
-            c23 = float(c23_val) if c23_val is not None and isinstance(c23_val, (int, float)) else 0.0
-        except:
-            c23 = 0.0
-
-        logger.info(f"Коэффициенты: B23={b23}, C23={c23}")
-
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        out_file = TEMP_DIR / f"шаблон_{timestamp}.xlsx"
-        shutil.copy(template_path, out_file)
-
         processor = ReportProcessor()
-        values, articles, date_period = processor.process_files(osn_file, vyk_file, str(out_file))
-
-        for k in values:
-            try:
-                values[k] = float(values[k])
-            except:
-                values[k] = 0.0
-
+        template_path = Path("шаблон.xlsx")
+        if not template_path.exists():
+            await update.message.reply_text("❌ Файл шаблона 'шаблон.xlsx' не найден на сервере.")
+            return
+        
+        # Обработка
+        values, articles, date_period = processor.process_files(osn_path, vyk_path, template_path)
         start_date, end_date = parse_date_from_period(date_period)
-        if not start_date:
-            start_date = end_date = datetime.now().strftime("%Y-%m-%d")
-
-        def f(key):
-            return values.get(key, 0.0)
-
-        b4, b5, b7, b9, b10, b11 = f('B4'), f('B5'), f('B7'), f('B9'), f('B10'), f('B11')
-        b26, b29, b32, b44, b47, b41 = f('B26'), f('B29'), f('B32'), f('B44'), f('B47'), f('B41')
-        f4, f5, f7, f9, f10, f11 = f('F4'), f('F5'), f('F7'), f('F9'), f('F10'), f('F11')
-        m4, m5, m7, m8, m9 = f('M4'), f('M5'), f('M7'), f('M8'), f('M9')
-        q4, q5, q7, q8, q9 = f('Q4'), f('Q5'), f('Q7'), f('Q8'), f('Q9')
-
-        b6 = b4 - b5
-        f6 = f4 - f5
-        m6 = m4 - m5
-        q6 = q4 - q5
-        b8 = b26 * b23
-        f8 = b26 * c23
-        b12 = b29 * b23
-        f12 = b29 * c23
-
-        b13 = b6 - b7 - b8 - b9 - b10 - b11 - b12
-        f13 = f6 - f7 - f8 - f9 - f10 - f11 - f12
-        m10 = m6 - m7 - m8 - m9
-        q10 = q6 - q7 - q8 - q9
-
-        b35 = (b32 + b41) * 0.01
-        b50 = (b44 + b47) * 0.01
-
-        wb_total = b44 + b47 + b32 + b41
-        wb_carp = b44 + b47
-        wb_hara = b32 + b41
-        k_carp = b13 + m10
-        k_hara = f13 + q10
-        reklama_carp = b11
-        reklama_hara = f11
-        shtrafy = b10 + f10
-        nalog = b35 + b50
-
-        carp_orders = sum(a.get('quantity', 0) for a in articles.get('Цап царапкин', {}).get('sales', {}).values())
-        hara_orders = sum(a.get('quantity', 0) for a in articles.get('Harakiri', {}).get('sales', {}).values())
-        carp_vyk_orders = sum(a.get('quantity', 0) for a in articles.get('Цап царапкин', {}).get('vyk', {}).values())
-        hara_vyk_orders = sum(a.get('quantity', 0) for a in articles.get('Harakiri', {}).get('vyk', {}).values())
-
+        
+        # Сохраняем в БД
+        file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
+        metrics = extract_metrics(values, articles, start_date, end_date)
+        
         # ===== РАСЧЁТ ПРИБЫЛИ =====
-        total_profit = 0
-        total_revenue = 0
-        profit_by_brand = {'Цап царапкин': 0, 'Harakiri': 0}
-        revenue_by_brand = {'Цап царапкин': 0, 'Harakiri': 0}
-        conn = sqlite3.connect(str(DB_PATH))
-        cursor = conn.cursor()
-        for brand, data in articles.items():
-            for art, stats in data.get('sales', {}).items():
-                qty = stats.get('quantity', 0)
-                rev = stats.get('revenue', 0)
-                cost = get_active_cost(art, end_date)
-                if cost is None:
-                    cost = 0
-                profit = rev - (cost * qty)
-                total_profit += profit
-                total_revenue += rev
-                if brand in profit_by_brand:
-                    profit_by_brand[brand] += profit
-                    revenue_by_brand[brand] += rev
-        conn.close()
-        total_margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
-        margin_carp = (profit_by_brand['Цап царапкин'] / revenue_by_brand['Цап царапкин'] * 100) if revenue_by_brand['Цап царапкин'] > 0 else 0
-        margin_hara = (profit_by_brand['Harakiri'] / revenue_by_brand['Harakiri'] * 100) if revenue_by_brand['Harakiri'] > 0 else 0
-
-        # ЛОГИРОВАНИЕ МЕТРИК ПРИБЫЛИ ДО СОХРАНЕНИЯ
-        logger.info(f"💾 Метрики для сохранения: total_profit={total_profit}, margin={total_margin}")
-
-        metrics = {
-            'avg_acquiring': values.get('B56', 0),
-            'median_acquiring': values.get('B59', 0),
-            'min_acquiring': values.get('B62', 0),
-            'max_acquiring': values.get('B65', 0),
-            'wb_total': wb_total,
-            'wb_carp': wb_carp,
-            'wb_hara': wb_hara,
-            'k_vyvodu_carp': k_carp,
-            'k_vyvodu_hara': k_hara,
-            'k_vyvodu_total': k_carp + k_hara,
-            'reklama_carp': reklama_carp,
-            'reklama_hara': reklama_hara,
-            'shtrafy': shtrafy,
-            'nalog': nalog,
-            'carp_orders': carp_orders,
-            'hara_orders': hara_orders,
-            'carp_vyk_orders': carp_vyk_orders,
-            'hara_vyk_orders': hara_vyk_orders,
-            'total_profit': total_profit,
-            'margin': total_margin,
-            'profit_carp': profit_by_brand['Цап царапкин'],
-            'profit_hara': profit_by_brand['Harakiri'],
-            'margin_carp': margin_carp,
-            'margin_hara': margin_hara
-        }
-
-        if osn_hash is None:
-            osn_hash = calculate_file_hash(Path(osn_file))
-
-        existing_id = get_report_id_by_period(start_date, end_date)
-        if existing_id:
-            delete_report(existing_id)
-            logger.info(f"🗑️ Удалён старый отчёт за период {start_date} — {end_date} (ID {existing_id})")
-
-        logger.info(f"📤 Передаём в БД: total_profit={total_profit}, margin={total_margin}")
-        saved, report_id = save_report_to_db(
-            file_name=Path(osn_file).name,
-            file_hash=osn_hash,
+        total_profit, margin = calculate_profit_and_margin(articles, start_date, end_date)
+        metrics['total_profit'] = total_profit
+        metrics['margin'] = margin
+        
+        # Сохраняем в БД
+        success, report_id = save_report_to_db(
+            file_name=Path(osn_path).name,
+            file_hash=file_hash,
             date_period=date_period,
             start_date=start_date,
             end_date=end_date,
@@ -1598,187 +907,248 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             metrics=metrics,
             articles=articles
         )
-        logger.info(f"✅ Отчёт {report_id} сохранён, метрики записаны")
-
-        with open(out_file, 'rb') as f:
-            await update.message.reply_document(f, caption="✅ Готово!")
-
-        context.user_data['articles_data'] = articles
-        context.user_data['current_period'] = date_period
-        context.user_data['current_report_id'] = report_id
-
-        prev_id = get_previous_report_id(report_id)
-        prev_metrics = get_report_metrics(prev_id) if prev_id else None
-
-        def fmt_change(current, previous, unit='₽', is_percent=False):
-            if previous is None:
-                return ""
-            if is_percent:
-                diff_pp = current - previous
-                diff_percent = (diff_pp / previous * 100) if previous != 0 else 0
-                return f"(было {previous:.2f}%, {diff_pp:+.2f} п.п., {diff_percent:+.1f}%)"
-            else:
-                diff_abs = current - previous
-                diff_percent = (diff_abs / previous * 100) if previous != 0 else 0
-                return f"(было {previous:,.2f} {unit}, {diff_abs:+.2f} {unit}, {diff_percent:+.1f}%)"
-
-        msg = "📊 **Статистика обработки:**\n\n"
-        msg += "• Основной отчет: ЦАП + HARAKIRI ✅\n"
-        msg += "• По выкупам: ЦАП + HARAKIRI ✅\n\n"
-
-        avg_acquiring = values.get('B56', 0)
-        msg += f"💳 **Средний эквайринг:** {avg_acquiring:.2f} %"
-        if prev_metrics:
-            prev_avg = prev_metrics.get('avg_acquiring', 0)
-            msg += " " + fmt_change(avg_acquiring, prev_avg, is_percent=True)
-        msg += "\n"
-        median_acquiring = values.get('B59', 0)
-        msg += f"📊 **Медианный эквайринг:** {median_acquiring:.2f} %"
-        if prev_metrics:
-            prev_med = prev_metrics.get('median_acquiring', 0)
-            msg += " " + fmt_change(median_acquiring, prev_med, is_percent=True)
-        msg += "\n\n"
-
-        msg += f"💰 **ВБшный оборот общий:** {wb_total:,.2f} ₽"
-        if prev_metrics:
-            prev_wb = prev_metrics.get('wb_total', 0)
-            msg += " " + fmt_change(wb_total, prev_wb, '₽')
-        msg += "\n"
-        msg += f"   🐱 ЦАП: {wb_carp:,.2f} ₽"
-        if prev_metrics:
-            prev_carp = prev_metrics.get('wb_carp', 0)
-            msg += " " + fmt_change(wb_carp, prev_carp, '₽')
-        msg += "\n"
-        msg += f"   ⚔️ Харакири: {wb_hara:,.2f} ₽"
-        if prev_metrics:
-            prev_hara = prev_metrics.get('wb_hara', 0)
-            msg += " " + fmt_change(wb_hara, prev_hara, '₽')
-        msg += "\n\n"
-
-        msg += f"📦 **Заказы (осн):** ЦАП {carp_orders:.0f} шт."
-        if prev_metrics:
-            prev_carp_ord = prev_metrics.get('carp_orders', 0)
-            diff = carp_orders - prev_carp_ord
-            diff_percent = (diff / prev_carp_ord * 100) if prev_carp_ord != 0 else 0
-            msg += f" (было {prev_carp_ord:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
-        msg += f", Харакири {hara_orders:.0f} шт."
-        if prev_metrics:
-            prev_hara_ord = prev_metrics.get('hara_orders', 0)
-            diff = hara_orders - prev_hara_ord
-            diff_percent = (diff / prev_hara_ord * 100) if prev_hara_ord != 0 else 0
-            msg += f" (было {prev_hara_ord:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
-        msg += "\n"
-        msg += f"📦 **Заказы (вык):** ЦАП {carp_vyk_orders:.0f} шт."
-        if prev_metrics:
-            prev_carp_vyk = prev_metrics.get('carp_vyk_orders', 0)
-            diff = carp_vyk_orders - prev_carp_vyk
-            diff_percent = (diff / prev_carp_vyk * 100) if prev_carp_vyk != 0 else 0
-            msg += f" (было {prev_carp_vyk:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
-        msg += f", Харакири {hara_vyk_orders:.0f} шт."
-        if prev_metrics:
-            prev_hara_vyk = prev_metrics.get('hara_vyk_orders', 0)
-            diff = hara_vyk_orders - prev_hara_vyk
-            diff_percent = (diff / prev_hara_vyk * 100) if prev_hara_vyk != 0 else 0
-            msg += f" (было {prev_hara_vyk:.0f} шт., {diff:+.0f} шт., {diff_percent:+.1f}%)"
-        msg += "\n\n"
-
-        tax_hara = wb_hara * 0.01
-        k_hara_after_tax = k_hara - tax_hara
-
-        msg += f"💸 **К выводу ЦАП:** {k_carp:,.2f} ₽"
-        if prev_metrics:
-            prev_k_carp = prev_metrics.get('k_vyvodu_carp', 0)
-            msg += " " + fmt_change(k_carp, prev_k_carp, '₽')
-        msg += "\n"
-        msg += f"💸 **К выводу Харакири:** {k_hara:,.2f} ₽"
-        if prev_metrics:
-            prev_k_hara = prev_metrics.get('k_vyvodu_hara', 0)
-            msg += " " + fmt_change(k_hara, prev_k_hara, '₽')
-        msg += "\n"
-        msg += f"💸 **Итого к выводу:** {k_carp + k_hara:,.2f} ₽"
-        if prev_metrics:
-            prev_k_total = prev_metrics.get('k_vyvodu_total', 0)
-            msg += " " + fmt_change(k_carp + k_hara, prev_k_total, '₽')
-        msg += "\n"
-        msg += f"💸 **Харакири (с вычетом налога):** {k_hara_after_tax:,.2f} ₽"
-        if prev_metrics:
-            prev_k_hara_after = prev_metrics.get('k_vyvodu_hara', 0) - (prev_metrics.get('wb_hara', 0) * 0.01)
-            msg += " " + fmt_change(k_hara_after_tax, prev_k_hara_after, '₽')
-        msg += "\n\n"
-
-        msg += f"📢 **Реклама:** ЦАП {reklama_carp:,.2f} ₽"
-        if prev_metrics:
-            prev_reklama_carp = prev_metrics.get('reklama_carp', 0)
-            msg += " " + fmt_change(reklama_carp, prev_reklama_carp, '₽')
-        msg += f", Харакири {reklama_hara:,.2f} ₽"
-        if prev_metrics:
-            prev_reklama_hara = prev_metrics.get('reklama_hara', 0)
-            msg += " " + fmt_change(reklama_hara, prev_reklama_hara, '₽')
-        msg += "\n"
-
-        msg += f"⚠️ **Штрафы:** {shtrafy:,.2f} ₽"
-        if prev_metrics:
-            prev_shtrafy = prev_metrics.get('shtrafy', 0)
-            msg += " " + fmt_change(shtrafy, prev_shtrafy, '₽')
-        msg += "\n"
-
-        msg += f"🧾 **Налог общий:** {nalog:,.2f} ₽"
-        if prev_metrics:
-            prev_nalog = prev_metrics.get('nalog', 0)
-            msg += " " + fmt_change(nalog, prev_nalog, '₽')
-        msg += "\n"
-
-        msg += f"\n💰 **Чистая прибыль:** {total_profit:,.2f} ₽"
-        if prev_metrics:
-            prev_profit = prev_metrics.get('total_profit', 0)
-            msg += " " + fmt_change(total_profit, prev_profit, '₽')
-        msg += f"\n📈 **Маржинальность:** {total_margin:.2f} %"
-        if prev_metrics:
-            prev_margin = prev_metrics.get('margin', 0)
-            msg += " " + fmt_change(total_margin, prev_margin, is_percent=True)
-        msg += f"\n   🐱 ЦАП прибыль: {profit_by_brand['Цап царапкин']:,.2f} ₽, марж. {margin_carp:.2f}%"
-        if prev_metrics:
-            prev_profit_carp = prev_metrics.get('profit_carp', 0)
-            prev_margin_carp = prev_metrics.get('margin_carp', 0)
-            msg += " " + fmt_change(profit_by_brand['Цап царапкин'], prev_profit_carp, '₽')
-            msg += f", марж. {fmt_change(margin_carp, prev_margin_carp, is_percent=True)}"
-        msg += f"\n   ⚔️ Харакири прибыль: {profit_by_brand['Harakiri']:,.2f} ₽, марж. {margin_hara:.2f}%"
-        if prev_metrics:
-            prev_profit_hara = prev_metrics.get('profit_hara', 0)
-            prev_margin_hara = prev_metrics.get('margin_hara', 0)
-            msg += " " + fmt_change(profit_by_brand['Harakiri'], prev_profit_hara, '₽')
-            msg += f", марж. {fmt_change(margin_hara, prev_margin_hara, is_percent=True)}"
-        msg += "\n\n✅ Отчет сохранен"
-
-        await update.message.reply_text(msg, parse_mode='Markdown')
-
-        keyboard = [
-            [InlineKeyboardButton("📦 Детали по артикулам", callback_data="show_articles")],
-            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-        ]
-        await update.message.reply_text("Выберите действие:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-        for f in [out_file, osn_file, vyk_file]:
-            try:
-                os.remove(f)
-            except:
-                pass
+        
+        if not success:
+            await update.message.reply_text("❌ Ошибка сохранения отчёта в БД.")
+            return
+        
+        # Отправляем заполненный шаблон
+        with open(template_path, 'rb') as f:
+            await update.message.reply_document(
+                document=f,
+                filename=f"отчёт_{date_period}.xlsx",
+                caption=f"✅ Отчёт за период {date_period} обработан и сохранён!"
+            )
+        
+        # Показываем краткую сводку
+        summary = (
+            f"📊 *Сводка за {date_period}*\n"
+            f"💰 Общий оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
+            f"🟢 ЦАП: {format_number(metrics.get('wb_carp', 0))} ₽\n"
+            f"🔴 Harakiri: {format_number(metrics.get('wb_hara', 0))} ₽\n"
+            f"💳 Средний эквайринг: {metrics.get('avg_acquiring', 0):.2f}%\n"
+            f"📈 Чистая прибыль: {format_number(total_profit)} ₽\n"
+            f"📊 Маржинальность: {margin:.2f}%\n"
+        )
+        await update.message.reply_text(summary, parse_mode='Markdown')
+        
+        # Очищаем временные файлы
+        for p in [osn_path, vyk_path]:
+            Path(p).unlink(missing_ok=True)
         context.user_data['files'] = {}
-        context.user_data['current_file'] = None
-        context.user_data['current_file_hash'] = None
-
+        
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+        logger.error(f"Ошибка обработки: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ОБРАБОТКИ =====
+def parse_date_from_period(date_period):
+    try:
+        parts = date_period.split('-')
+        start = parts[0].strip()
+        end = parts[1].strip()
+        year = datetime.now().year
+        start_dt = datetime.strptime(start + f".{year}", "%d.%m.%Y")
+        end_dt = datetime.strptime(end + f".{year}", "%d.%m.%Y")
+        return start_dt.strftime("%Y-%m-%d"), end_dt.strftime("%Y-%m-%d")
+    except:
+        return None, None
+
+def calculate_hash(file_path):
+    import hashlib
+    md5 = hashlib.md5()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(4096), b""):
+            md5.update(chunk)
+    return md5.hexdigest()
+
+def format_number(num):
+    if num is None:
+        return "0"
+    if isinstance(num, float) and num.is_integer():
+        return f"{int(num):,}".replace(",", " ")
+    return f"{num:,.2f}".replace(",", " ")
+
+def extract_metrics(values, articles, start_date, end_date):
+    metrics = {
+        'avg_acquiring': values.get('B56', 0),
+        'median_acquiring': values.get('B59', 0),
+        'min_acquiring': values.get('B62', 0),
+        'max_acquiring': values.get('B65', 0),
+        'wb_carp': values.get('B44', 0),
+        'wb_hara': values.get('B32', 0),
+        'wb_total': values.get('B44', 0) + values.get('B32', 0),
+        'k_vyvodu_carp': values.get('B4', 0),
+        'k_vyvodu_hara': values.get('F4', 0),
+        'reklama_carp': 0,
+        'reklama_hara': 0,
+        'shtrafy': values.get('B10', 0),
+        'nalog': 0,
+        'carp_orders': 0,
+        'hara_orders': 0,
+        'profit_carp': 0,
+        'profit_hara': 0,
+        'margin_carp': 0,
+        'margin_hara': 0,
+    }
+    return metrics
+
+def calculate_profit_and_margin(articles, start_date, end_date):
+    total_profit = 0
+    total_revenue = 0
+    for brand, data in articles.items():
+        for key in ['sales', 'vyk']:
+            for article, stats in data.get(key, {}).items():
+                quantity = stats.get('quantity', 0)
+                revenue = stats.get('revenue', 0)
+                if quantity == 0 or revenue == 0:
+                    continue
+                cost = get_active_cost(article, end_date)
+                if cost is None:
+                    cost = 0
+                profit = revenue - (cost * quantity)
+                total_profit += profit
+                total_revenue += revenue
+    margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
+    return total_profit, margin
 
 # ===== ОБРАБОТЧИК ТЕКСТА =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
-    text = update.message.text
-    if text.startswith('/'):
-        return
+    # Если ожидается ввод себестоимости
     if context.user_data.get('waiting_for_cost'):
         await handle_cost_input(update, context)
         return
-    await update.message.reply_text("Используйте кнопки меню или команды.", reply_markup=get_main_menu())
+    # Если ожидается ввод запроса новостей (не обрабатываем здесь, т.к. делаем через колбэки)
+    await update.message.reply_text("Используйте кнопки меню или команды из /help")
+
+# ===== КОМАНДЫ ДЛЯ УПРАВЛЕНИЯ СПП =====
+async def spp_subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подписка на отслеживание СПП по артикулу (nm_id)"""
+    if not await check_access(update):
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "❌ Укажите артикул (nm_id).\n"
+            "Пример: /spp_subscribe 123456789 5\n"
+            "где 5 — порог изменения в процентных пунктах (по умолчанию 5)"
+        )
+        return
+    try:
+        nm_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Артикул должен быть числом.")
+        return
+
+    threshold = 5.0
+    if len(args) > 1:
+        try:
+            threshold = float(args[1])
+        except ValueError:
+            pass
+
+    user_id = update.effective_user.id
+    subscribe_user(user_id, nm_id, threshold)
+    await update.message.reply_text(
+        f"✅ Вы подписались на отслеживание СПП для артикула {nm_id}.\n"
+        f"Порог изменения: {threshold} п.п."
+    )
+
+async def spp_unsubscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отписка от отслеживания СПП"""
+    if not await check_access(update):
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Укажите артикул (nm_id).")
+        return
+    try:
+        nm_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Артикул должен быть числом.")
+        return
+
+    user_id = update.effective_user.id
+    unsubscribe_user(user_id, nm_id)
+    await update.message.reply_text(f"✅ Вы отписались от отслеживания СПП для артикула {nm_id}.")
+
+async def spp_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Список подписок пользователя"""
+    if not await check_access(update):
+        return
+    user_id = update.effective_user.id
+    subs = get_user_subscriptions(user_id)
+    if not subs:
+        await update.message.reply_text("📭 У вас нет активных подписок на СПП.")
+        return
+    text = "📋 Ваши подписки на СПП:\n\n"
+    for sub in subs:
+        text += f"• {sub['nm_id']} (порог: {sub['threshold']} п.п.)\n"
+    await update.message.reply_text(text)
+
+# ===== КОЛБЭКИ ДЛЯ КНОПОК УВЕДОМЛЕНИЙ О СПП =====
+async def spp_mute_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик кнопки 'Глушить на 2ч'"""
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    nm_id = int(query.data.split("_")[2])
+    user_id = update.effective_user.id
+
+    mute_article(user_id, nm_id, hours=2)
+    await query.edit_message_reply_markup(
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔇 Заглушено на 2ч", callback_data="spp_muted")]
+        ])
+    )
+
+async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик кнопки 'График' — отправляет изображение"""
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    nm_id = int(query.data.split("_")[2])
+
+    img_base64 = generate_spp_graph(nm_id)
+    if not img_base64:
+        await query.edit_message_text("❌ Недостаточно данных для построения графика.")
+        return
+
+    # Отправляем изображение
+    await query.message.reply_photo(
+        photo=img_base64,
+        caption=f"📈 График изменения СПП для артикула {nm_id}"
+    )
+    # Редактируем исходное сообщение (убираем кнопки или оставляем)
+    await query.edit_message_reply_markup(
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📈 Обновить график", callback_data=f"spp_graph_{nm_id}")],
+            [InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_{nm_id}")]
+        ])
+    )
+
+async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Меню управления подписками на СПП"""
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    subs = get_user_subscriptions(user_id)
+    text = "📊 **Мониторинг СПП**\n\n"
+    if subs:
+        text += "Ваши подписки:\n"
+        for sub in subs:
+            text += f"• Артикул {sub['nm_id']} (порог {sub['threshold']} п.п.)\n"
+        text += "\nИспользуйте команды для управления:\n"
+    else:
+        text += "У вас нет подписок.\n"
+    text += "/spp_subscribe <nm_id> [порог] — подписаться\n"
+    text += "/spp_unsubscribe <nm_id> — отписаться\n"
+    text += "/spp_list — список подписок\n"
+    keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")]]
+    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
