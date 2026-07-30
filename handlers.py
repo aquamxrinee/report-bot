@@ -29,7 +29,7 @@ from models import (
     init_spp_global_settings, get_spp_global_settings, set_spp_global_settings
 )
 from services import (
-    fetch_news, format_news_digest, detect_report_type, parse_date_from_period,
+    detect_report_type, parse_date_from_period,
     ReportProcessor, scheduler, scheduled_morning_digest, scheduled_evening_digest
 )
 from spp_parser import get_spp_for_article
@@ -80,10 +80,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/articles — детали по артикулам (текущий отчет)\n"
         "/news_now — получить новости прямо сейчас\n"
         "/set_news — настроить новостные сводки\n"
-        "/set_news_query — изменить поисковый запрос\n\n"
+        "/set_news_query — изменить поисковый запрос (не используется)\n\n"
         "**Мониторинг СПП:**\n"
         "Все настройки доступны через кнопки в меню «Настройки → Мониторинг СПП»\n"
-        "Также доступны команды:\n"
         "/spp_check — запустить проверку сейчас\n\n"
         "Также можно использовать кнопки меню.",
         parse_mode='Markdown',
@@ -161,14 +160,13 @@ async def news_settings_callback(update: Update, context: ContextTypes.DEFAULT_T
     status = "✅ Включены" if settings['enabled'] else "❌ Отключены"
     text = f"⚙️ **Настройки новостей**\n\n"
     text += f"Статус: {status}\n"
-    text += f"Поисковый запрос: `{settings['query']}`\n"
+    text += f"Поисковый запрос: `{settings['query']}` (не используется — новости из канала @news4sellers)\n"
     text += f"Утреннее время: {settings['morning_time']}\n"
     text += f"Вечернее время: {settings['evening_time']}\n\n"
     text += "Выберите действие:"
     keyboard = [
         [InlineKeyboardButton("📰 Получить новости сейчас", callback_data="news_now")],
         [InlineKeyboardButton("🔄 Вкл/Выкл", callback_data="news_toggle")],
-        [InlineKeyboardButton("📝 Изменить запрос", callback_data="news_query")],
         [InlineKeyboardButton("🕐 Изменить время", callback_data="news_time")],
         [InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")]
     ]
@@ -181,12 +179,21 @@ async def news_now_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = update.effective_user.id
     settings = get_news_settings(user_id)
-    articles = fetch_news(settings['query'], limit=10)
-    text = format_news_digest(articles, "📰 **Свежие новости по теме Wildberries**")
-    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("◀️ Назад к настройкам", callback_data="menu_settings")],
-        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-    ]))
+    
+    # Парсим новости через веб-версию
+    from tg_news_parser import fetch_channel_messages, format_news_digest
+    messages = fetch_channel_messages("news4sellers", limit=10)
+    text = format_news_digest(messages, "📰 **Свежие новости маркетплейсов**")
+    
+    await query.edit_message_text(
+        text,
+        parse_mode='Markdown',
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Назад к настройкам", callback_data="menu_settings")],
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        ])
+    )
 
 async def news_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
@@ -198,21 +205,6 @@ async def news_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     new_enabled = not settings['enabled']
     set_news_settings(user_id, enabled=new_enabled)
     await news_settings_callback(update, context)
-
-async def news_query_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    query = update.callback_query
-    await query.answer()
-    await query.edit_message_text(
-        "📝 Введите новый поисковый запрос для новостей.\n"
-        "Например: `Wildberries OR ВБ`\n"
-        "Используйте команду /set_news_query <запрос>",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ Назад", callback_data="news_settings")]
-        ]),
-        parse_mode='Markdown'
-    )
 
 async def news_time_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
@@ -247,15 +239,25 @@ async def news_time_set_callback(update: Update, context: ContextTypes.DEFAULT_T
     await news_settings_callback(update, context)
 
 async def news_now_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /news_now — получить новости прямо сейчас"""
     if not await check_access(update):
         return
     user_id = update.effective_user.id
     settings = get_news_settings(user_id)
-    articles = fetch_news(settings['query'], limit=10)
-    text = format_news_digest(articles, "📰 **Свежие новости по теме Wildberries**")
-    await update.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
-    ]))
+    
+    # Парсим новости через веб-версию
+    from tg_news_parser import fetch_channel_messages, format_news_digest
+    messages = fetch_channel_messages("news4sellers", limit=10)
+    text = format_news_digest(messages, "📰 **Свежие новости маркетплейсов**")
+    
+    await update.message.reply_text(
+        text,
+        parse_mode='Markdown',
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
+        ])
+    )
 
 async def set_news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
@@ -265,23 +267,19 @@ async def set_news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "включены" if settings['enabled'] else "отключены"
     text = f"Текущие настройки новостей:\n"
     text += f"Рассылка: {status}\n"
-    text += f"Запрос: `{settings['query']}`\n"
     text += f"Утро: {settings['morning_time']}\n"
     text += f"Вечер: {settings['evening_time']}\n\n"
+    text += "Новости берутся из канала @news4sellers\n"
     text += "Используйте меню для настройки (кнопка '⚙️ Настройки' в главном меню)."
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def set_news_query_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
-    user_id = update.effective_user.id
-    args = context.args
-    if not args:
-        await update.message.reply_text("❌ Укажите запрос. Пример: /set_news_query Wildberries OR ВБ")
-        return
-    new_query = ' '.join(args)
-    set_news_settings(user_id, query=new_query)
-    await update.message.reply_text(f"✅ Поисковый запрос обновлён: `{new_query}`", parse_mode='Markdown')
+    await update.message.reply_text(
+        "ℹ️ Поисковый запрос больше не используется.\n"
+        "Новости теперь берутся из канала @news4sellers."
+    )
 
 # ===== НАСТРОЙКИ СЕБЕСТОИМОСТИ =====
 async def menu_costs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -736,6 +734,7 @@ async def show_history_page(query, context, page):
     keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
+# ===== ПРОДОЛЖЕНИЕ ИСТОРИИ =====
 async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -803,7 +802,6 @@ async def history_confirm_delete_callback(update: Update, context: ContextTypes.
     await query.answer()
     data = query.data
     if data == "history_confirm_delete":
-        # множественное удаление
         selected = context.user_data.get('history_selected_for_delete', [])
         if not selected:
             await query.edit_message_text("Нет выбранных отчётов.", reply_markup=InlineKeyboardMarkup([
@@ -817,7 +815,6 @@ async def history_confirm_delete_callback(update: Update, context: ContextTypes.
             [InlineKeyboardButton("◀️ Назад к списку", callback_data="menu_history")]
         ]))
     elif data.startswith("history_confirm_delete_"):
-        # одиночное удаление
         report_id = int(data.split("_")[-1])
         if delete_report(report_id):
             await query.edit_message_text("✅ Отчёт удалён.", reply_markup=InlineKeyboardMarkup([
@@ -828,7 +825,9 @@ async def history_confirm_delete_callback(update: Update, context: ContextTypes.
                 [InlineKeyboardButton("◀️ Назад к списку", callback_data="menu_history")]
             ]))
 
-# ===== ОБРАБОТЧИК ФАЙЛОВ (ОРИГИНАЛЬНАЯ ЛОГИКА) =====
+# ============================================================
+# ===== ОБРАБОТЧИК ФАЙЛОВ (оригинальная логика) =====
+# ============================================================
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -842,27 +841,22 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Поддерживаются только Excel-файлы (.xlsx, .xls).")
         return
 
-    # Сохраняем файл во временную папку
     temp_path = Path(TEMP_DIR) / f"{datetime.now().timestamp()}_{file_name}"
     temp_path.parent.mkdir(parents=True, exist_ok=True)
     file = await document.get_file()
     await file.download_to_drive(temp_path)
 
-    # Определяем тип файла
     report_type = detect_report_type(file_name)
     if not report_type:
         await update.message.reply_text("❌ Не удалось определить тип файла. В имени должно быть «осн» или «вык».")
         temp_path.unlink(missing_ok=True)
         return
 
-    # Сохраняем в user_data
     if 'files' not in context.user_data:
         context.user_data['files'] = {}
     context.user_data['files'][report_type] = str(temp_path)
 
-    # Проверяем, есть ли второй файл
     if 'osn' in context.user_data['files'] and 'vyk' in context.user_data['files']:
-        # Оба файла загружены — запускаем обработку
         await process_and_send(update, context)
     else:
         await update.message.reply_text(f"✅ Файл «{file_name}» загружен. Жду второй файл (для {'вык' if report_type == 'osn' else 'осн'}).")
@@ -886,20 +880,16 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Файл шаблона 'шаблон.xlsx' не найден на сервере.")
             return
         
-        # Обработка
         values, articles, date_period = processor.process_files(osn_path, vyk_path, template_path)
         start_date, end_date = parse_date_from_period(date_period)
         
-        # Сохраняем в БД
         file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
         metrics = extract_metrics(values, articles, start_date, end_date)
         
-        # ===== РАСЧЁТ ПРИБЫЛИ =====
         total_profit, margin = calculate_profit_and_margin(articles, start_date, end_date)
         metrics['total_profit'] = total_profit
         metrics['margin'] = margin
         
-        # Сохраняем в БД
         success, report_id = save_report_to_db(
             file_name=Path(osn_path).name,
             file_hash=file_hash,
@@ -915,7 +905,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Ошибка сохранения отчёта в БД.")
             return
         
-        # Отправляем заполненный шаблон
         with open(template_path, 'rb') as f:
             await update.message.reply_document(
                 document=f,
@@ -923,7 +912,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=f"✅ Отчёт за период {date_period} обработан и сохранён!"
             )
         
-        # Показываем краткую сводку
         summary = (
             f"📊 *Сводка за {date_period}*\n"
             f"💰 Общий оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
@@ -935,7 +923,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(summary, parse_mode='Markdown')
         
-        # Очищаем временные файлы
         for p in [osn_path, vyk_path]:
             Path(p).unlink(missing_ok=True)
         context.user_data['files'] = {}
@@ -944,7 +931,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка обработки: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ ОБРАБОТКИ =====
+# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 def parse_date_from_period(date_period):
     try:
         parts = date_period.split('-')
@@ -1019,11 +1006,9 @@ def calculate_profit_and_margin(articles, start_date, end_date):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
-    # Если ожидается ввод себестоимости
     if context.user_data.get('waiting_for_cost'):
         await handle_cost_input(update, context)
         return
-    # Если ожидается ввод nm_id для подписки
     if context.user_data.get('spp_awaiting_subscribe'):
         await spp_handle_subscribe_input(update, context)
         return
@@ -1033,10 +1018,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===== БЛОК МОНИТОРИНГА СПП (упрощённое управление) =====
 # ============================================================
 
-# ---- Команды (оставляем для совместимости, но советуем кнопки) ----
-
+# ---- Команды ----
 async def spp_check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Ручной запуск проверки СПП (для теста)"""
     if not await check_access(update):
         return
     await update.message.reply_text("🔄 Запускаю проверку СПП...")
@@ -1048,7 +1031,6 @@ async def spp_check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 async def spp_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Список подписок (дублируется кнопкой «Мои подписки»)"""
     if not await check_access(update):
         return
     user_id = update.effective_user.id
@@ -1061,28 +1043,25 @@ async def spp_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"• {sub['nm_id']} (порог: {sub['threshold']} п.п.)\n"
     await update.message.reply_text(text)
 
-# ---- Колбэки для кнопок в меню СПП ----
-
+# ---- Колбэки для меню СПП ----
 async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Главное меню мониторинга СПП (упрощённое)"""
     if not await check_access(update):
         return
     query = update.callback_query
     await query.answer()
-    
     settings = get_spp_global_settings()
     status = "✅ Включён" if settings['enabled'] else "❌ Отключён"
-    
     text = (
         "📊 *Мониторинг СПП*\n\n"
+        "СПП — это скидка постоянного покупателя, которую Wildberries "
+        "добавляет покупателю. Она меняется динамически.\n\n"
         f"Глобальный статус: {status}\n"
         f"Интервал проверки: {settings['interval_minutes']} мин.\n"
         f"Порог по умолчанию: {settings['default_threshold']} п.п.\n\n"
-        "Управление подписками:"
+        "Выберите действие:"
     )
-    
     keyboard = [
-        [InlineKeyboardButton("➕ Подписаться на артикул", callback_data="spp_subscribe_button")],
+        [InlineKeyboardButton("➕ Подписаться на артикул", callback_data="spp_show_articles")],
         [InlineKeyboardButton("📋 Мои подписки", callback_data="spp_my_subscriptions")],
         [InlineKeyboardButton("🔃 Вкл/Выкл мониторинг", callback_data="spp_toggle_global")],
         [InlineKeyboardButton("🎯 Изменить порог", callback_data="spp_threshold")],
@@ -1090,93 +1069,92 @@ async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def spp_subscribe_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кнопка «Подписаться» – просит ввести nm_id"""
+async def spp_show_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
     query = update.callback_query
     await query.answer()
-    context.user_data['spp_awaiting_subscribe'] = True
+    articles = get_all_articles_with_costs()
+    if not articles:
+        await query.edit_message_text(
+            "📭 Нет доступных артикулов. Сначала загрузите отчёты.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")]
+            ])
+        )
+        return
+    keyboard = []
+    for item in articles[:30]:
+        article = item['article']
+        label = article[:40]
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"spp_subscribe_article_{article}")])
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")])
     await query.edit_message_text(
-        "📝 Введите **nmId** артикула (число), на который хотите подписаться.\n"
-        "Например: `123456789`\n\n"
-        "Вы также можете указать порог через пробел: `123456789 10` (по умолчанию 5 п.п.)",
+        "📋 **Выберите артикул для подписки:**\n\n"
+        "После подписки бот будет отслеживать изменения СПП по этому товару.",
         parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ Отмена", callback_data="menu_spp")]
-        ])
-    )
-
-async def spp_handle_subscribe_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ввода nm_id для подписки"""
-    if not await check_access(update):
-        return
-    if not context.user_data.get('spp_awaiting_subscribe'):
-        return
-    
-    text = update.message.text.strip()
-    parts = text.split()
-    if not parts:
-        await update.message.reply_text("❌ Введите число (nmId).")
-        return
-    
-    try:
-        nm_id = int(parts[0])
-    except ValueError:
-        await update.message.reply_text("❌ Некорректный nmId. Введите число.")
-        return
-    
-    threshold = 5.0
-    if len(parts) > 1:
-        try:
-            threshold = float(parts[1])
-        except ValueError:
-            pass
-    
-    user_id = update.effective_user.id
-    subscribe_user(user_id, nm_id, threshold)
-    context.user_data['spp_awaiting_subscribe'] = False
-    
-    keyboard = [[InlineKeyboardButton("◀️ Назад к настройкам", callback_data="menu_spp")]]
-    await update.message.reply_text(
-        f"✅ Вы подписались на отслеживание СПП для артикула {nm_id}.\n"
-        f"Порог изменения: {threshold} п.п.",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+async def spp_subscribe_article_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    article = query.data.replace("spp_subscribe_article_", "")
+    user_id = update.effective_user.id
+    nm_id = get_nm_id_by_article(article)  # нужно реализовать
+    if not nm_id:
+        await query.edit_message_text(
+            f"❌ Не удалось найти nm_id для артикула {article}.\n"
+            "Пожалуйста, убедитесь, что артикул загружен в систему.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад", callback_data="spp_show_articles")]
+            ])
+        )
+        return
+    threshold = get_spp_global_settings()['default_threshold']
+    subscribe_user(user_id, nm_id, threshold)
+    await query.edit_message_text(
+        f"✅ Вы подписались на отслеживание СПП для артикула {article}.\n"
+        f"Порог изменения: {threshold} п.п.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Назад к настройкам", callback_data="menu_spp")]
+        ])
+    )
+
 async def spp_my_subscriptions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список подписок с кнопкой отписки для каждой"""
     if not await check_access(update):
         return
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
     subs = get_user_subscriptions(user_id)
-    
     if not subs:
         await query.edit_message_text(
-            "📭 У вас нет активных подписок.",
+            "📭 У вас нет активных подписок на артикулы.",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Подписаться", callback_data="spp_subscribe_button")],
+                [InlineKeyboardButton("➕ Выбрать артикулы", callback_data="spp_show_articles")],
                 [InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")]
             ])
         )
         return
-    
     text = "📋 *Ваши подписки:*\n\n"
     keyboard = []
     for sub in subs:
-        text += f"• Артикул `{sub['nm_id']}` — порог {sub['threshold']} п.п.\n"
+        article_name = get_article_by_nm_id(sub['nm_id'])  # нужно реализовать
+        text += f"• {article_name} — порог {sub['threshold']} п.п.\n"
         keyboard.append([
-            InlineKeyboardButton(f"❌ Отписаться от {sub['nm_id']}", callback_data=f"spp_unsubscribe_{sub['nm_id']}")
+            InlineKeyboardButton(
+                f"❌ Отписаться от {article_name}",
+                callback_data=f"spp_unsubscribe_{sub['nm_id']}"
+            )
         ])
-    keyboard.append([InlineKeyboardButton("➕ Подписаться", callback_data="spp_subscribe_button")])
+    keyboard.append([InlineKeyboardButton("➕ Выбрать артикулы", callback_data="spp_show_articles")])
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")])
-    
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def spp_unsubscribe_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Колбэк для кнопки «Отписаться» у конкретного артикула"""
     if not await check_access(update):
         return
     query = update.callback_query
@@ -1184,13 +1162,10 @@ async def spp_unsubscribe_button_callback(update: Update, context: ContextTypes.
     nm_id = int(query.data.split("_")[2])
     user_id = update.effective_user.id
     unsubscribe_user(user_id, nm_id)
-    # Возвращаемся к списку подписок
     await spp_my_subscriptions_callback(update, context)
 
-# ---- Глобальные настройки (кнопки) ----
-
+# ---- Глобальные настройки ----
 async def spp_toggle_global_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Включить/выключить глобальный мониторинг"""
     if not await check_access(update):
         return
     query = update.callback_query
@@ -1201,7 +1176,6 @@ async def spp_toggle_global_callback(update: Update, context: ContextTypes.DEFAU
     await menu_spp_callback(update, context)
 
 async def spp_threshold_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Изменить порог по умолчанию"""
     if not await check_access(update):
         return
     query = update.callback_query
@@ -1224,10 +1198,8 @@ async def spp_set_threshold_callback(update: Update, context: ContextTypes.DEFAU
     set_spp_global_settings(default_threshold=threshold)
     await menu_spp_callback(update, context)
 
-# ---- Дополнительные колбэки для уведомлений (оставляем) ----
-
+# ---- Колбэки для уведомлений ----
 async def spp_mute_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кнопка «Глушить на 2ч» в уведомлении"""
     if not await check_access(update):
         return
     query = update.callback_query
@@ -1242,7 +1214,6 @@ async def spp_mute_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Кнопка «График» в уведомлении"""
     if not await check_access(update):
         return
     query = update.callback_query
@@ -1261,4 +1232,46 @@ async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("📈 Обновить график", callback_data=f"spp_graph_{nm_id}")],
             [InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_{nm_id}")]
         ])
+    )
+
+# ---- Вспомогательные функции для работы с артикулами (заглушки) ----
+def get_nm_id_by_article(article_name: str) -> int:
+    # TODO: реализовать поиск nm_id по артикулу из БД
+    # Пока возвращаем 0
+    return 0
+
+def get_article_by_nm_id(nm_id: int) -> str:
+    # TODO: реализовать поиск названия по nm_id
+    return f"Товар {nm_id}"
+
+# ---- Обработка ввода для подписки через текст ----
+async def spp_handle_subscribe_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    if not context.user_data.get('spp_awaiting_subscribe'):
+        return
+    text = update.message.text.strip()
+    parts = text.split()
+    if not parts:
+        await update.message.reply_text("❌ Введите число (nmId).")
+        return
+    try:
+        nm_id = int(parts[0])
+    except ValueError:
+        await update.message.reply_text("❌ Некорректный nmId. Введите число.")
+        return
+    threshold = 5.0
+    if len(parts) > 1:
+        try:
+            threshold = float(parts[1])
+        except ValueError:
+            pass
+    user_id = update.effective_user.id
+    subscribe_user(user_id, nm_id, threshold)
+    context.user_data['spp_awaiting_subscribe'] = False
+    keyboard = [[InlineKeyboardButton("◀️ Назад к настройкам", callback_data="menu_spp")]]
+    await update.message.reply_text(
+        f"✅ Вы подписались на отслеживание СПП для артикула {nm_id}.\n"
+        f"Порог изменения: {threshold} п.п.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
