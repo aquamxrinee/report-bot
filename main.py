@@ -46,8 +46,6 @@ def main():
     # Команды СПП (оставляем для совместимости)
     app.add_handler(CommandHandler("spp_check", spp_check_cmd))
     app.add_handler(CommandHandler("spp_list", spp_list_cmd))
-    # Команды /spp_subscribe и /spp_unsubscribe больше не нужны, но оставляем если кто-то привык
-    # При желании их можно удалить, но лучше оставить
 
     # === CALLBACK'и для меню ===
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
@@ -90,19 +88,14 @@ def main():
     app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
 
     # === СПП (упрощённое управление через кнопки) ===
-    # Основное меню
     app.add_handler(CallbackQueryHandler(menu_spp_callback, pattern="^menu_spp$"))
-    # Кнопка "Подписаться"
-    app.add_handler(CallbackQueryHandler(spp_subscribe_button_callback, pattern="^spp_subscribe_button$"))
-    # Кнопка "Мои подписки"
+    app.add_handler(CallbackQueryHandler(spp_show_articles_callback, pattern="^spp_show_articles$"))
+    app.add_handler(CallbackQueryHandler(spp_subscribe_article_callback, pattern="^spp_subscribe_article_"))
     app.add_handler(CallbackQueryHandler(spp_my_subscriptions_callback, pattern="^spp_my_subscriptions$"))
-    # Кнопка отписки для конкретного артикула
     app.add_handler(CallbackQueryHandler(spp_unsubscribe_button_callback, pattern="^spp_unsubscribe_"))
-    # Глобальные настройки
     app.add_handler(CallbackQueryHandler(spp_toggle_global_callback, pattern="^spp_toggle_global$"))
     app.add_handler(CallbackQueryHandler(spp_threshold_callback, pattern="^spp_threshold$"))
     app.add_handler(CallbackQueryHandler(spp_set_threshold_callback, pattern="^spp_set_threshold_"))
-    # Уведомления
     app.add_handler(CallbackQueryHandler(spp_mute_callback, pattern="^spp_mute_"))
     app.add_handler(CallbackQueryHandler(spp_graph_callback, pattern="^spp_graph_"))
 
