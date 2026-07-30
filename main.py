@@ -1,4 +1,6 @@
 import threading
+import asyncio
+from datetime import datetime, timedelta
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -7,8 +9,9 @@ from config import TELEGRAM_BOT_TOKEN, logger
 from flask_app import run_flask
 from handlers import *
 from services import scheduler, scheduled_morning_digest, scheduled_evening_digest
-from wb_api import get_aggregated_stats  # для фонового обновления кеша
-
+from models import init_spp_tables
+from spp_monitor import monitor_spp
+from wb_api import get_aggregated_stats
 
 def refresh_wb_cache():
     """Фоновая задача: обновляет кеш WB API каждый час"""
@@ -16,11 +19,13 @@ def refresh_wb_cache():
     try:
         get_aggregated_stats(force_refresh=True)
     except Exception as e:
-        logger.error(f"❌ Ошибка фонового обновления: {e}")
-
+        logger.error(f"❌ Ошибка фонового обновления WB: {e}")
 
 def main():
     print("🤖 Запуск бота...")
+
+    # Инициализация таблиц БД (включая СПП)
+    init_spp_tables()
 
     # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask, daemon=True)
@@ -35,6 +40,12 @@ def main():
     app.add_handler(CommandHandler("news_now", news_now_cmd))
     app.add_handler(CommandHandler("set_news", set_news_cmd))
     app.add_handler(CommandHandler("set_news_query", set_news_query_cmd))
+    app.add_handler(CommandHandler("spp_subscribe", spp_subscribe_cmd))
+    app.add_handler(CommandHandler("spp_unsubscribe", spp_unsubscribe_cmd))
+    app.add_handler(CommandHandler("spp_list", spp_list_cmd))
+    # Команда /osn и /vyk можно добавить, если они есть в вашем оригинальном коде,
+    # но они не определены в текущем handlers.py (мы их не добавляли). 
+    # Если нужны, раскомментируйте и добавьте соответствующие функции.
 
     # === CALLBACK'и для меню ===
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
@@ -76,23 +87,32 @@ def main():
     app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
     app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
 
+    # === СПП ===
+    app.add_handler(CallbackQueryHandler(menu_spp_callback, pattern="^menu_spp$"))
+    app.add_handler(CallbackQueryHandler(spp_mute_callback, pattern="^spp_mute_"))
+    app.add_handler(CallbackQueryHandler(spp_graph_callback, pattern="^spp_graph_"))
+
     # === ОБРАБОТЧИКИ ФАЙЛОВ И ТЕКСТА ===
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     # === ПЛАНИРОВЩИКИ ===
-    # Новости: утро и вечер
+    # Новости
     scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[app])
     scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])
-
-    # Фоновое обновление WB API каждый час
+    # Обновление WB API каждый час
     scheduler.add_job(refresh_wb_cache, IntervalTrigger(hours=1))
+    # Мониторинг СПП — запускаем сразу и затем каждый час
+    scheduler.add_job(
+        lambda: asyncio.run(monitor_spp(app)),
+        IntervalTrigger(hours=1),
+        next_run_time=datetime.now() + timedelta(minutes=1)
+    )
 
     scheduler.start()
 
     print("✅ Бот готов, запускаем polling...")
     app.run_polling(allowed_updates=[])
-
 
 if __name__ == "__main__":
     main()
