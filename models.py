@@ -716,3 +716,55 @@ def get_all_tracked_articles() -> List[int]:
     rows = cursor.fetchall()
     conn.close()
     return [row[0] for row in rows]
+# ===== ГЛОБАЛЬНЫЕ НАСТРОЙКИ СПП =====
+def init_spp_global_settings():
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS spp_global_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER DEFAULT 1,
+            interval_minutes INTEGER DEFAULT 60,
+            default_threshold REAL DEFAULT 5.0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('SELECT COUNT(*) FROM spp_global_settings')
+    if cursor.fetchone()[0] == 0:
+        cursor.execute('''
+            INSERT INTO spp_global_settings (id, enabled, interval_minutes, default_threshold)
+            VALUES (1, 1, 60, 5.0)
+        ''')
+    conn.commit()
+    conn.close()
+    logger.info("✅ Глобальные настройки СПП инициализированы")
+
+def get_spp_global_settings():
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('SELECT enabled, interval_minutes, default_threshold FROM spp_global_settings WHERE id = 1')
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {'enabled': bool(row[0]), 'interval_minutes': row[1], 'default_threshold': row[2]}
+    return {'enabled': True, 'interval_minutes': 60, 'default_threshold': 5.0}
+
+def set_spp_global_settings(enabled=None, interval_minutes=None, default_threshold=None):
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    updates = []
+    params = []
+    if enabled is not None:
+        updates.append("enabled = ?")
+        params.append(1 if enabled else 0)
+    if interval_minutes is not None:
+        updates.append("interval_minutes = ?")
+        params.append(interval_minutes)
+    if default_threshold is not None:
+        updates.append("default_threshold = ?")
+        params.append(default_threshold)
+    if updates:
+        params.append(1)
+        cursor.execute(f"UPDATE spp_global_settings SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = 1", params)
+        conn.commit()
+    conn.close()
