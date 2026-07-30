@@ -82,10 +82,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/set_news — настроить новостные сводки\n"
         "/set_news_query — изменить поисковый запрос\n\n"
         "**Мониторинг СПП:**\n"
-        "/spp_subscribe <nm_id> [порог] — подписаться на изменения СПП\n"
-        "/spp_unsubscribe <nm_id> — отписаться\n"
-        "/spp_list — список ваших подписок\n"
-        "/spp_check — запустить проверку СПП сейчас (для теста)\n\n"
+        "Все настройки доступны через кнопки в меню «Настройки → Мониторинг СПП»\n"
+        "Также доступны команды:\n"
+        "/spp_check — запустить проверку сейчас\n\n"
         "Также можно использовать кнопки меню.",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
@@ -127,7 +126,7 @@ async def menu_analytics_callback(update: Update, context: ContextTypes.DEFAULT_
     context.user_data['analytics_page'] = 0
     await show_analytics_selection(query, context, page=0)
 
-# ===== НАСТРОЙКИ (здесь появляется кнопка "Мониторинг СПП") =====
+# ===== НАСТРОЙКИ =====
 async def menu_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -136,7 +135,7 @@ async def menu_settings_callback(update: Update, context: ContextTypes.DEFAULT_T
     keyboard = [
         [InlineKeyboardButton("📰 Новости", callback_data="news_settings")],
         [InlineKeyboardButton("💰 Себестоимость", callback_data="menu_costs")],
-        [InlineKeyboardButton("📊 Мониторинг СПП", callback_data="menu_spp")],   # <-- ЭТА КНОПКА
+        [InlineKeyboardButton("📊 Мониторинг СПП", callback_data="menu_spp")],
         [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
     ]
     await query.edit_message_text("⚙️ **Настройки**\n\nВыберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
@@ -1024,168 +1023,172 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get('waiting_for_cost'):
         await handle_cost_input(update, context)
         return
+    # Если ожидается ввод nm_id для подписки
+    if context.user_data.get('spp_awaiting_subscribe'):
+        await spp_handle_subscribe_input(update, context)
+        return
     await update.message.reply_text("Используйте кнопки меню или команды из /help")
 
-# ===== КОМАНДЫ ДЛЯ УПРАВЛЕНИЯ СПП =====
-async def spp_subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подписка на отслеживание СПП по артикулу (nm_id)"""
-    if not await check_access(update):
-        return
-    args = context.args
-    if not args:
-        await update.message.reply_text(
-            "❌ Укажите артикул (nm_id).\n"
-            "Пример: /spp_subscribe 123456789 5\n"
-            "где 5 — порог изменения в процентных пунктах (по умолчанию 5)"
-        )
-        return
-    try:
-        nm_id = int(args[0])
-    except ValueError:
-        await update.message.reply_text("❌ Артикул должен быть числом.")
-        return
+# ============================================================
+# ===== БЛОК МОНИТОРИНГА СПП (упрощённое управление) =====
+# ============================================================
 
-    threshold = 5.0
-    if len(args) > 1:
-        try:
-            threshold = float(args[1])
-        except ValueError:
-            pass
+# ---- Команды (оставляем для совместимости, но советуем кнопки) ----
 
-    user_id = update.effective_user.id
-    subscribe_user(user_id, nm_id, threshold)
-    await update.message.reply_text(
-        f"✅ Вы подписались на отслеживание СПП для артикула {nm_id}.\n"
-        f"Порог изменения: {threshold} п.п."
-    )
-
-async def spp_unsubscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отписка от отслеживания СПП"""
-    if not await check_access(update):
-        return
-    args = context.args
-    if not args:
-        await update.message.reply_text("❌ Укажите артикул (nm_id).")
-        return
-    try:
-        nm_id = int(args[0])
-    except ValueError:
-        await update.message.reply_text("❌ Артикул должен быть числом.")
-        return
-
-    user_id = update.effective_user.id
-    unsubscribe_user(user_id, nm_id)
-    await update.message.reply_text(f"✅ Вы отписались от отслеживания СПП для артикула {nm_id}.")
-
-async def spp_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Список подписок пользователя"""
-    if not await check_access(update):
-        return
-    user_id = update.effective_user.id
-    subs = get_user_subscriptions(user_id)
-    if not subs:
-        await update.message.reply_text("📭 У вас нет активных подписок на СПП.")
-        return
-    text = "📋 Ваши подписки на СПП:\n\n"
-    for sub in subs:
-        text += f"• {sub['nm_id']} (порог: {sub['threshold']} п.п.)\n"
-    await update.message.reply_text(text)
-
-# ===== ВРЕМЕННАЯ КОМАНДА ДЛЯ РУЧНОГО ЗАПУСКА МОНИТОРИНГА =====
 async def spp_check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ручной запуск проверки СПП (для теста)"""
     if not await check_access(update):
         return
     await update.message.reply_text("🔄 Запускаю проверку СПП...")
     try:
-        # Запускаем мониторинг один раз
         await monitor_spp(context.bot_data.get('application', context.application))
         await update.message.reply_text("✅ Проверка завершена.")
     except Exception as e:
         logger.error(f"Ошибка при ручной проверке СПП: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ===== КОЛБЭКИ ДЛЯ КНОПОК УВЕДОМЛЕНИЙ О СПП =====
-async def spp_mute_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик кнопки 'Глушить на 2ч'"""
+async def spp_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Список подписок (дублируется кнопкой «Мои подписки»)"""
     if not await check_access(update):
         return
-    query = update.callback_query
-    await query.answer()
-    nm_id = int(query.data.split("_")[2])
     user_id = update.effective_user.id
-
-    mute_article(user_id, nm_id, hours=2)
-    await query.edit_message_reply_markup(
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔇 Заглушено на 2ч", callback_data="spp_muted")]
-        ])
-    )
-
-async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик кнопки 'График' — отправляет изображение"""
-    if not await check_access(update):
+    subs = get_user_subscriptions(user_id)
+    if not subs:
+        await update.message.reply_text("📭 У вас нет активных подписок.")
         return
-    query = update.callback_query
-    await query.answer()
-    nm_id = int(query.data.split("_")[2])
+    text = "📋 Ваши подписки:\n\n"
+    for sub in subs:
+        text += f"• {sub['nm_id']} (порог: {sub['threshold']} п.п.)\n"
+    await update.message.reply_text(text)
 
-    img_base64 = generate_spp_graph(nm_id)
-    if not img_base64:
-        await query.edit_message_text("❌ Недостаточно данных для построения графика.")
-        return
-
-    # Отправляем изображение
-    await query.message.reply_photo(
-        photo=img_base64,
-        caption=f"📈 График изменения СПП для артикула {nm_id}"
-    )
-    # Редактируем исходное сообщение (убираем кнопки или оставляем)
-    await query.edit_message_reply_markup(
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("📈 Обновить график", callback_data=f"spp_graph_{nm_id}")],
-            [InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_{nm_id}")]
-        ])
-    )
+# ---- Колбэки для кнопок в меню СПП ----
 
 async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Меню управления подписками на СПП и глобальными настройками"""
+    """Главное меню мониторинга СПП (упрощённое)"""
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    
+    settings = get_spp_global_settings()
+    status = "✅ Включён" if settings['enabled'] else "❌ Отключён"
+    
+    text = (
+        "📊 *Мониторинг СПП*\n\n"
+        f"Глобальный статус: {status}\n"
+        f"Интервал проверки: {settings['interval_minutes']} мин.\n"
+        f"Порог по умолчанию: {settings['default_threshold']} п.п.\n\n"
+        "Управление подписками:"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("➕ Подписаться на артикул", callback_data="spp_subscribe_button")],
+        [InlineKeyboardButton("📋 Мои подписки", callback_data="spp_my_subscriptions")],
+        [InlineKeyboardButton("🔃 Вкл/Выкл мониторинг", callback_data="spp_toggle_global")],
+        [InlineKeyboardButton("🎯 Изменить порог", callback_data="spp_threshold")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")]
+    ]
+    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def spp_subscribe_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка «Подписаться» – просит ввести nm_id"""
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    context.user_data['spp_awaiting_subscribe'] = True
+    await query.edit_message_text(
+        "📝 Введите **nmId** артикула (число), на который хотите подписаться.\n"
+        "Например: `123456789`\n\n"
+        "Вы также можете указать порог через пробел: `123456789 10` (по умолчанию 5 п.п.)",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Отмена", callback_data="menu_spp")]
+        ])
+    )
+
+async def spp_handle_subscribe_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ввода nm_id для подписки"""
+    if not await check_access(update):
+        return
+    if not context.user_data.get('spp_awaiting_subscribe'):
+        return
+    
+    text = update.message.text.strip()
+    parts = text.split()
+    if not parts:
+        await update.message.reply_text("❌ Введите число (nmId).")
+        return
+    
+    try:
+        nm_id = int(parts[0])
+    except ValueError:
+        await update.message.reply_text("❌ Некорректный nmId. Введите число.")
+        return
+    
+    threshold = 5.0
+    if len(parts) > 1:
+        try:
+            threshold = float(parts[1])
+        except ValueError:
+            pass
+    
+    user_id = update.effective_user.id
+    subscribe_user(user_id, nm_id, threshold)
+    context.user_data['spp_awaiting_subscribe'] = False
+    
+    keyboard = [[InlineKeyboardButton("◀️ Назад к настройкам", callback_data="menu_spp")]]
+    await update.message.reply_text(
+        f"✅ Вы подписались на отслеживание СПП для артикула {nm_id}.\n"
+        f"Порог изменения: {threshold} п.п.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def spp_my_subscriptions_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список подписок с кнопкой отписки для каждой"""
     if not await check_access(update):
         return
     query = update.callback_query
     await query.answer()
     user_id = update.effective_user.id
     subs = get_user_subscriptions(user_id)
-    settings = get_spp_global_settings()
-
-    text = "📊 **Мониторинг СПП**\n\n"
-    text += f"Глобальный статус: {'✅ Включён' if settings['enabled'] else '❌ Отключён'}\n"
-    text += f"Интервал проверки: {settings['interval_minutes']} мин.\n"
-    text += f"Порог по умолчанию: {settings['default_threshold']} п.п.\n\n"
-
-    if subs:
-        text += "Ваши подписки:\n"
-        for sub in subs:
-            text += f"• Артикул {sub['nm_id']} (порог {sub['threshold']} п.п.)\n"
-        text += "\n"
-    else:
-        text += "У вас нет подписок.\n\n"
-
-    text += "**Команды:**\n"
-    text += "/spp_subscribe <nm_id> [порог] — подписаться\n"
-    text += "/spp_unsubscribe <nm_id> — отписаться\n"
-    text += "/spp_list — список подписок\n"
-    text += "/spp_check — запустить проверку сейчас\n\n"
-
-    keyboard = [
-        [InlineKeyboardButton("🔃 Переключить глобальный статус", callback_data="spp_toggle_global")],
-        [InlineKeyboardButton("⏱️ Интервал проверки", callback_data="spp_interval")],
-        [InlineKeyboardButton("🎯 Порог по умолчанию", callback_data="spp_threshold")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")]
-    ]
+    
+    if not subs:
+        await query.edit_message_text(
+            "📭 У вас нет активных подписок.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Подписаться", callback_data="spp_subscribe_button")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")]
+            ])
+        )
+        return
+    
+    text = "📋 *Ваши подписки:*\n\n"
+    keyboard = []
+    for sub in subs:
+        text += f"• Артикул `{sub['nm_id']}` — порог {sub['threshold']} п.п.\n"
+        keyboard.append([
+            InlineKeyboardButton(f"❌ Отписаться от {sub['nm_id']}", callback_data=f"spp_unsubscribe_{sub['nm_id']}")
+        ])
+    keyboard.append([InlineKeyboardButton("➕ Подписаться", callback_data="spp_subscribe_button")])
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")])
+    
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-# ===== КОЛБЭКИ ДЛЯ ГЛОБАЛЬНЫХ НАСТРОЕК =====
+async def spp_unsubscribe_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Колбэк для кнопки «Отписаться» у конкретного артикула"""
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    nm_id = int(query.data.split("_")[2])
+    user_id = update.effective_user.id
+    unsubscribe_user(user_id, nm_id)
+    # Возвращаемся к списку подписок
+    await spp_my_subscriptions_callback(update, context)
+
+# ---- Глобальные настройки (кнопки) ----
+
 async def spp_toggle_global_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Включить/выключить глобальный мониторинг"""
     if not await check_access(update):
@@ -1195,29 +1198,6 @@ async def spp_toggle_global_callback(update: Update, context: ContextTypes.DEFAU
     settings = get_spp_global_settings()
     new_enabled = not settings['enabled']
     set_spp_global_settings(enabled=new_enabled)
-    await menu_spp_callback(update, context)
-
-async def spp_interval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Изменить интервал проверки"""
-    if not await check_access(update):
-        return
-    query = update.callback_query
-    await query.answer()
-    keyboard = [
-        [InlineKeyboardButton("30 минут", callback_data="spp_set_interval_30")],
-        [InlineKeyboardButton("60 минут", callback_data="spp_set_interval_60")],
-        [InlineKeyboardButton("120 минут", callback_data="spp_set_interval_120")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")]
-    ]
-    await query.edit_message_text("Выберите интервал проверки (минуты):", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def spp_set_interval_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    query = update.callback_query
-    await query.answer()
-    minutes = int(query.data.split("_")[-1])
-    set_spp_global_settings(interval_minutes=minutes)
     await menu_spp_callback(update, context)
 
 async def spp_threshold_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1243,3 +1223,42 @@ async def spp_set_threshold_callback(update: Update, context: ContextTypes.DEFAU
     threshold = float(query.data.split("_")[-1])
     set_spp_global_settings(default_threshold=threshold)
     await menu_spp_callback(update, context)
+
+# ---- Дополнительные колбэки для уведомлений (оставляем) ----
+
+async def spp_mute_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка «Глушить на 2ч» в уведомлении"""
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    nm_id = int(query.data.split("_")[2])
+    user_id = update.effective_user.id
+    mute_article(user_id, nm_id, hours=2)
+    await query.edit_message_reply_markup(
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔇 Заглушено на 2ч", callback_data="spp_muted")]
+        ])
+    )
+
+async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Кнопка «График» в уведомлении"""
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    nm_id = int(query.data.split("_")[2])
+    img_base64 = generate_spp_graph(nm_id)
+    if not img_base64:
+        await query.edit_message_text("❌ Недостаточно данных для построения графика.")
+        return
+    await query.message.reply_photo(
+        photo=img_base64,
+        caption=f"📈 График изменения СПП для артикула {nm_id}"
+    )
+    await query.edit_message_reply_markup(
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📈 Обновить график", callback_data=f"spp_graph_{nm_id}")],
+            [InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_{nm_id}")]
+        ])
+    )
