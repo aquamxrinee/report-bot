@@ -127,6 +127,7 @@ async def menu_analytics_callback(update: Update, context: ContextTypes.DEFAULT_
     context.user_data['analytics_page'] = 0
     await show_analytics_selection(query, context, page=0)
 
+# ===== НАСТРОЙКИ (здесь появляется кнопка "Мониторинг СПП") =====
 async def menu_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -135,7 +136,7 @@ async def menu_settings_callback(update: Update, context: ContextTypes.DEFAULT_T
     keyboard = [
         [InlineKeyboardButton("📰 Новости", callback_data="news_settings")],
         [InlineKeyboardButton("💰 Себестоимость", callback_data="menu_costs")],
-        [InlineKeyboardButton("📊 Мониторинг СПП", callback_data="menu_spp")],
+        [InlineKeyboardButton("📊 Мониторинг СПП", callback_data="menu_spp")],   # <-- ЭТА КНОПКА
         [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
     ]
     await query.edit_message_text("⚙️ **Настройки**\n\nВыберите раздел:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
