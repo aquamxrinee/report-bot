@@ -43,10 +43,11 @@ def main():
     app.add_handler(CommandHandler("news_now", news_now_cmd))
     app.add_handler(CommandHandler("set_news", set_news_cmd))
     app.add_handler(CommandHandler("set_news_query", set_news_query_cmd))
-    app.add_handler(CommandHandler("spp_subscribe", spp_subscribe_cmd))
-    app.add_handler(CommandHandler("spp_unsubscribe", spp_unsubscribe_cmd))
-    app.add_handler(CommandHandler("spp_list", spp_list_cmd))
+    # Команды СПП (оставляем для совместимости)
     app.add_handler(CommandHandler("spp_check", spp_check_cmd))
+    app.add_handler(CommandHandler("spp_list", spp_list_cmd))
+    # Команды /spp_subscribe и /spp_unsubscribe больше не нужны, но оставляем если кто-то привык
+    # При желании их можно удалить, но лучше оставить
 
     # === CALLBACK'и для меню ===
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
@@ -88,16 +89,22 @@ def main():
     app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
     app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
 
-    # === СПП ===
+    # === СПП (упрощённое управление через кнопки) ===
+    # Основное меню
     app.add_handler(CallbackQueryHandler(menu_spp_callback, pattern="^menu_spp$"))
-    app.add_handler(CallbackQueryHandler(spp_mute_callback, pattern="^spp_mute_"))
-    app.add_handler(CallbackQueryHandler(spp_graph_callback, pattern="^spp_graph_"))
-    # Колбэки для глобальных настроек
+    # Кнопка "Подписаться"
+    app.add_handler(CallbackQueryHandler(spp_subscribe_button_callback, pattern="^spp_subscribe_button$"))
+    # Кнопка "Мои подписки"
+    app.add_handler(CallbackQueryHandler(spp_my_subscriptions_callback, pattern="^spp_my_subscriptions$"))
+    # Кнопка отписки для конкретного артикула
+    app.add_handler(CallbackQueryHandler(spp_unsubscribe_button_callback, pattern="^spp_unsubscribe_"))
+    # Глобальные настройки
     app.add_handler(CallbackQueryHandler(spp_toggle_global_callback, pattern="^spp_toggle_global$"))
-    app.add_handler(CallbackQueryHandler(spp_interval_callback, pattern="^spp_interval$"))
-    app.add_handler(CallbackQueryHandler(spp_set_interval_callback, pattern="^spp_set_interval_"))
     app.add_handler(CallbackQueryHandler(spp_threshold_callback, pattern="^spp_threshold$"))
     app.add_handler(CallbackQueryHandler(spp_set_threshold_callback, pattern="^spp_set_threshold_"))
+    # Уведомления
+    app.add_handler(CallbackQueryHandler(spp_mute_callback, pattern="^spp_mute_"))
+    app.add_handler(CallbackQueryHandler(spp_graph_callback, pattern="^spp_graph_"))
 
     # === ОБРАБОТЧИКИ ФАЙЛОВ И ТЕКСТА ===
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
@@ -109,8 +116,7 @@ def main():
     scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])
     # Обновление WB API каждый час
     scheduler.add_job(refresh_wb_cache, IntervalTrigger(hours=1))
-    # Мониторинг СПП — запускаем сразу и затем с интервалом из глобальных настроек
-    # Пока используем фиксированный интервал 1 час, позже можно динамически считывать настройки
+    # Мониторинг СПП — запускаем сразу и затем с интервалом 1 час
     scheduler.add_job(
         lambda: asyncio.run(monitor_spp(app)),
         IntervalTrigger(hours=1),
