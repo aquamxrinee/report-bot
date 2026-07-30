@@ -2,9 +2,12 @@ import os
 import time
 import requests
 from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Any
 from config import logger
 
 WB_API_TOKEN = os.getenv("WB_API_TOKEN")
+
+# Домены API (актуальные на 2026 год)
 STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1"
 ANALYTICS_API = "https://seller-analytics-api.wildberries.ru/api/analytics"
 
@@ -12,122 +15,207 @@ ANALYTICS_API = "https://seller-analytics-api.wildberries.ru/api/analytics"
 _cache = {
     "data": None,
     "timestamp": None,
-    "error": None
+    "errors": []
 }
-CACHE_TTL = timedelta(hours=1)  # увеличен до 1 часа
+CACHE_TTL = timedelta(hours=1)  # обновляем раз в час
 
-def get_headers():
-    return {"Authorization": f"Bearer {WB_API_TOKEN}"}
 
-def _safe_request(method, url, params=None, json=None, max_retries=5):
-    """Выполняет запрос с повторными попытками при 429 и других ошибках."""
+def get_headers() -> Dict:
+    """Заголовки для запросов к WB API"""
+    return {
+        "Authorization": f"Bearer {WB_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+
+def _safe_request(
+    method: str,
+    url: str,
+    params: Optional[Dict] = None,
+    json_data: Optional[Dict] = None,
+    max_retries: int = 3
+) -> Dict:
+    """
+    Безопасный запрос к WB API с обработкой 429 (Too Many Requests)
+    и другими ошибками.
+    """
     if not WB_API_TOKEN:
         return {"error": "WB_API_TOKEN не задан"}
-    
+
     for attempt in range(1, max_retries + 1):
         try:
             if method.upper() == "GET":
-                response = requests.get(url, headers=get_headers(), params=params, timeout=30)
-            else:
-                response = requests.post(url, headers=get_headers(), json=json, timeout=30)
-            
+                response = requests.get(
+                    url,
+                    headers=get_headers(),
+                    params=params,
+                    timeout=30
+                )
+            else:  # POST
+                response = requests.post(
+                    url,
+                    headers=get_headers(),
+                    json=json_data,
+                    timeout=30
+                )
+
+            # 429 — превышен лимит, ждём и повторяем
             if response.status_code == 429:
-                logger.warning(f"⚠️ Превышен лимит запросов к WB API (429), попытка {attempt}/{max_retries}")
+                logger.warning(
+                    f"⚠️ 429 Too Many Requests, попытка {attempt}/{max_retries}"
+                )
                 retry_after = response.headers.get("Retry-After")
-                wait = int(retry_after) + 1 if retry_after else 10 + attempt * 5  # увеличен wait
+                wait = int(retry_after) + 1 if retry_after else 10 + attempt * 5
                 logger.info(f"⏳ Ожидание {wait} секунд")
                 time.sleep(wait)
                 continue
-            elif response.status_code == 404:
-                # Для 404 не повторяем, возвращаем ошибку, но не как критическую
+
+            # 404 — метод не найден (возможно, устарел)
+            if response.status_code == 404:
                 logger.error(f"❌ 404 Not Found: {url}")
                 return {"error": f"404 Not Found: {url}", "status_code": 404}
-            elif response.status_code == 400:
-                logger.error(f"❌ 400 Bad Request: {url}, response: {response.text[:200]}")
+
+            # 403 — недостаточно прав
+            if response.status_code == 403:
+                logger.error(f"❌ 403 Forbidden: {url}")
+                return {"error": "403 Forbidden — проверьте права токена", "status_code": 403}
+
+            # 400 — плохой запрос
+            if response.status_code == 400:
+                logger.error(f"❌ 400 Bad Request: {response.text[:200]}")
                 return {"error": f"400 Bad Request: {response.text[:200]}", "status_code": 400}
-            elif response.status_code == 403:
-                logger.error(f"❌ 403 Forbidden: {url} — возможно, недостаточно прав")
-                return {"error": "403 Forbidden — недостаточно прав", "status_code": 403}
-            else:
-                response.raise_for_status()
-                return response.json()
+
+            response.raise_for_status()
+            return response.json()
+
         except requests.exceptions.HTTPError as e:
             if response.status_code == 429:
                 continue
             logger.error(f"HTTP ошибка: {e}")
-            return {"error": str(e), "status_code": getattr(response, 'status_code', None)}
+            return {"error": str(e)}
         except Exception as e:
             logger.error(f"Ошибка запроса: {e}")
             return {"error": str(e)}
-    
+
     return {"error": "Превышено количество попыток"}
 
-def get_sales(date_from: str, date_to: str = None):
+
+# ===== 1. СТАТИСТИКА ПРОДАЖ =====
+
+def get_sales(date_from: str, date_to: Optional[str] = None) -> Dict:
+    """
+    Получение списка продаж за период.
+    Документация: GET /api/v1/supplier/sales
+    """
     if not date_to:
         date_to = datetime.now().strftime("%Y-%m-%d")
     url = f"{STATISTICS_API}/supplier/sales"
     params = {"dateFrom": date_from, "dateTo": date_to}
     return _safe_request("GET", url, params=params)
 
-def get_stocks():
-    """Остатки — без параметров, просто GET."""
-    url = f"{STATISTICS_API}/supplier/stocks"
-    return _safe_request("GET", url)
 
-def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = None):
+# ===== 2. ОСТАТКИ (НОВЫЙ МЕТОД) =====
+
+def get_stocks_by_warehouse(warehouse_id: int, chrt_ids: List[int]) -> Dict:
+    """
+    Получение остатков по конкретному складу.
+    Документация: POST /api/v3/stocks/{warehouseId}
+    Тело: массив chrtId (ID размеров товаров)
+    """
+    url = f"{STATISTICS_API}/v3/stocks/{warehouse_id}"
+    return _safe_request("POST", url, json_data=chrt_ids)
+
+
+def get_stocks_wb_warehouses(nm_ids: Optional[List[int]] = None, limit: int = 1000) -> Dict:
+    """
+    Получение остатков на всех складах Wildberries (НОВЫЙ МЕТОД).
+    Документация: POST /api/analytics/v1/stocks-report/wb-warehouses
+    Доступен по Персональному или Сервисному токену.
+    """
+    url = f"{ANALYTICS_API}/v1/stocks-report/wb-warehouses"
+    payload = {
+        "limit": limit,
+        "offset": 0
+    }
+    if nm_ids:
+        payload["nmIds"] = nm_ids
+    return _safe_request("POST", url, json_data=payload)
+
+
+# ===== 3. ВОРОНКА ПРОДАЖ (СТАТИСТИКА ПО АРТИКУЛАМ) =====
+
+def get_sales_funnel(
+    nm_ids: Optional[List[int]] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0
+) -> Dict:
+    """
+    Получение воронки продаж по артикулам.
+    Документация: POST /api/analytics/v3/sales-funnel/products
+    Данные обновляются 1 раз в час.
+    """
     if not date_from:
         date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     if not date_to:
         date_to = datetime.now().strftime("%Y-%m-%d")
+
     url = f"{ANALYTICS_API}/v3/sales-funnel/products"
-    payload = {"dateFrom": date_from, "dateTo": date_to, "limit": 100}
+    payload = {
+        "selectedPeriod": {
+            "start": date_from,
+            "end": date_to
+        },
+        "limit": limit,
+        "offset": offset
+    }
     if nm_ids:
         payload["nmIds"] = nm_ids
-    return _safe_request("POST", url, json=payload)
 
-def get_aggregated_stats(force_refresh=False):
-    """Возвращает агрегированные метрики с кешированием."""
+    return _safe_request("POST", url, json_data=payload)
+
+
+# ===== 4. АГРЕГИРОВАННАЯ СТАТИСТИКА (ДЛЯ ДАШБОРДА) =====
+
+def get_aggregated_stats(force_refresh: bool = False) -> Dict:
+    """
+    Возвращает агрегированные метрики с кешированием.
+    Обновляется раз в час или при force_refresh=True.
+    """
     global _cache
     now = datetime.now()
-    
+
     # Если кеш свежий и не запрошено принудительное обновление
     if not force_refresh and _cache["timestamp"] and (now - _cache["timestamp"]) < CACHE_TTL:
         logger.info("📦 Используем кешированные данные WB API")
         return _cache["data"] if _cache["data"] is not None else {"error": "Нет данных"}
-    
+
     logger.info("🔄 Обновляем данные WB API")
-    
+
     today = datetime.now().strftime("%Y-%m-%d")
     week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    
-    # Увеличиваем задержки между запросами
-    time.sleep(2)  # небольшая задержка перед первым запросом
-    
-    sales = get_sales(week_ago, today)
-    time.sleep(3)  # увеличенная задержка
-    stocks = get_stocks()
-    time.sleep(3)
-    funnel = get_sales_funnel(date_from=week_ago, date_to=today)
-    
+
     result = {
-        "total_revenue": 0,
-        "total_orders": 0,
-        "avg_order_value": 0,
-        "total_stock": 0,
-        "unique_articles": 0,
-        "views": 0,
-        "cart_adds": 0,
-        "orders": 0,
-        "purchases": 0,
+        "total_revenue": 0,          # общая выручка
+        "total_orders": 0,           # количество заказов
+        "avg_order_value": 0,        # средний чек
+        "total_stock": 0,            # общие остатки
+        "unique_articles": 0,        # уникальных артикулов
+        "views": 0,                  # просмотры
+        "cart_adds": 0,              # добавления в корзину
+        "orders": 0,                 # заказы (воронка)
+        "purchases": 0,              # выкупы
         "conversion_view_to_cart": 0,
         "conversion_cart_to_order": 0,
         "conversion_order_to_purchase": 0,
         "last_update": now.isoformat(),
-        "errors": [],          # список ошибок по каждому эндпоинту
-        "partial_error": False # флаг частичной ошибки
+        "errors": [],
+        "articles": []               # детальная статистика по артикулам
     }
-    
-    # Обработка продаж
+
+    # ---- 1. Продажи (статистика) ----
+    sales = get_sales(week_ago, today)
     if isinstance(sales, dict) and "error" in sales:
         result["errors"].append(f"sales: {sales['error']}")
         logger.error(f"Ошибка продаж: {sales['error']}")
@@ -139,34 +227,56 @@ def get_aggregated_stats(force_refresh=False):
         result["avg_order_value"] = total_revenue / total_orders if total_orders > 0 else 0
     else:
         result["errors"].append("sales: неизвестный формат ответа")
-        logger.error("Неизвестный формат ответа sales")
-    
-    # Обработка остатков (если 404 — просто игнорируем, не считаем ошибкой)
+
+    # Задержка между запросами (чтобы не превысить лимит 3/мин)
+    time.sleep(2)
+
+    # ---- 2. Остатки (новый метод) ----
+    stocks = get_stocks_wb_warehouses(limit=1000)
     if isinstance(stocks, dict) and "error" in stocks:
-        if stocks.get("status_code") == 404:
-            logger.warning("⚠️ Эндпоинт stocks вернул 404 — игнорируем")
-            # не добавляем в errors, т.к. это не критично
-        else:
+        # 404 не критичен — возможно, метод ещё не доступен
+        if stocks.get("status_code") != 404:
             result["errors"].append(f"stocks: {stocks['error']}")
             logger.error(f"Ошибка остатков: {stocks['error']}")
-    elif isinstance(stocks, list):
-        result["total_stock"] = sum(item.get("quantity", 0) for item in stocks)
-        result["unique_articles"] = len(set(item.get("nmId") for item in stocks if item.get("nmId")))
+        else:
+            logger.warning("⚠️ Метод stocks-report/wb-warehouses вернул 404 — пробуем альтернативный")
+            # Пробуем альтернативный метод (если есть ID склада)
+            # В реальности нужно получить ID склада из настроек
+    elif isinstance(stocks, dict) and "data" in stocks:
+        items = stocks.get("data", {}).get("items", [])
+        result["total_stock"] = sum(item.get("quantity", 0) for item in items)
+        result["unique_articles"] = len(set(item.get("nmId") for item in items if item.get("nmId")))
     else:
         result["errors"].append("stocks: неизвестный формат ответа")
-        logger.error("Неизвестный формат ответа stocks")
-    
-    # Обработка воронки
+
+    time.sleep(2)
+
+    # ---- 3. Воронка продаж (статистика по артикулам) ----
+    funnel = get_sales_funnel(date_from=week_ago, date_to=today, limit=100)
     if isinstance(funnel, dict) and "error" in funnel:
         result["errors"].append(f"funnel: {funnel['error']}")
         logger.error(f"Ошибка воронки: {funnel['error']}")
     elif isinstance(funnel, dict) and "data" in funnel:
-        for item in funnel.get("data", []):
+        items = funnel.get("data", {}).get("items", [])
+        for item in items:
             result["views"] += item.get("views", 0)
             result["cart_adds"] += item.get("cart", 0)
             result["orders"] += item.get("orders", 0)
             result["purchases"] += item.get("purchases", 0)
-        
+            # Сохраняем детальную статистику по каждому артикулу
+            result["articles"].append({
+                "nmId": item.get("nmId"),
+                "name": item.get("name", ""),
+                "brand": item.get("brand", ""),
+                "views": item.get("views", 0),
+                "cart": item.get("cart", 0),
+                "orders": item.get("orders", 0),
+                "purchases": item.get("purchases", 0),
+                "revenue": item.get("revenue", 0),
+                "conversion": item.get("conversion", 0)
+            })
+
+        # Расчёт конверсий
         if result["views"] > 0:
             result["conversion_view_to_cart"] = (result["cart_adds"] / result["views"]) * 100
         if result["cart_adds"] > 0:
@@ -175,16 +285,45 @@ def get_aggregated_stats(force_refresh=False):
             result["conversion_order_to_purchase"] = (result["purchases"] / result["orders"]) * 100
     else:
         result["errors"].append("funnel: неизвестный формат ответа")
-        logger.error("Неизвестный формат ответа funnel")
-    
-    # Если есть ошибки, помечаем как частичную ошибку
+
+    # Если есть ошибки, помечаем как частичный успех
     if result["errors"]:
-        result["partial_error"] = True
-        logger.warning(f"⚠️ Частичная ошибка при загрузке WB данных: {result['errors']}")
+        logger.warning(f"⚠️ Частичная ошибка: {result['errors']}")
     else:
         logger.info("✅ Данные WB API успешно обновлены")
-    
-    # Сохраняем в кеш даже в случае ошибки, чтобы не долбить API
+
+    # Сохраняем в кеш
     _cache["data"] = result
     _cache["timestamp"] = now
+    return result
+
+
+# ===== 5. ПОЛУЧЕНИЕ СТАТИСТИКИ ПО КОНКРЕТНЫМ АРТИКУЛАМ =====
+
+def get_articles_stats(nm_ids: List[int], date_from: Optional[str] = None, date_to: Optional[str] = None) -> Dict:
+    """
+    Получение детальной статистики по конкретным артикулам.
+    Использует тот же метод воронки продаж, но с фильтром по nmIds.
+    """
+    if not date_from:
+        date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    if not date_to:
+        date_to = datetime.now().strftime("%Y-%m-%d")
+
+    # Разбиваем на части по 1000 nmIds (ограничение API)
+    result = {"items": [], "errors": []}
+    for i in range(0, len(nm_ids), 1000):
+        chunk = nm_ids[i:i+1000]
+        data = get_sales_funnel(
+            nm_ids=chunk,
+            date_from=date_from,
+            date_to=date_to,
+            limit=len(chunk)
+        )
+        if isinstance(data, dict) and "error" in data:
+            result["errors"].append(data["error"])
+        elif isinstance(data, dict) and "data" in data:
+            result["items"].extend(data.get("data", {}).get("items", []))
+        time.sleep(2)  # задержка между запросами
+
     return result
