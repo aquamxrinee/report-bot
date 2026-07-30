@@ -2,9 +2,11 @@ import os
 import traceback
 import sqlite3
 from flask import Flask, render_template, jsonify, request
+
 from config import logger, DB_PATH
 from models import get_aggregated_metrics
 from wb_api import get_aggregated_stats, get_articles_stats
+from spp_monitor import generate_spp_graph
 
 flask_app = Flask(__name__, template_folder='templates')
 
@@ -79,6 +81,28 @@ def wb_articles():
     except Exception as e:
         logger.error(f"❌ Ошибка /api/wb_articles: {e}\n{traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
+
+
+@flask_app.route('/api/spp_graph/<int:nm_id>')
+def spp_graph_endpoint(nm_id):
+    """Эндпоинт для отображения графика СПП в виде HTML с картинкой"""
+    try:
+        img_base64 = generate_spp_graph(nm_id)
+        if not img_base64:
+            return "<h3>Недостаточно данных для построения графика</h3>", 404
+        return f"""
+        <html>
+            <head><title>График СПП {nm_id}</title></head>
+            <body>
+                <h2>Динамика СПП для артикула {nm_id}</h2>
+                <img src="data:image/png;base64,{img_base64}" />
+                <br><a href="https://www.wildberries.ru/catalog/{nm_id}/detail.aspx" target="_blank">Открыть на WB</a>
+            </body>
+        </html>
+        """
+    except Exception as e:
+        logger.error(f"❌ Ошибка генерации графика: {e}")
+        return f"Ошибка: {e}", 500
 
 
 @flask_app.route('/api/debug_metrics')
