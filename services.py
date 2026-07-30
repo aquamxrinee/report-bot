@@ -7,6 +7,8 @@ import openpyxl
 from datetime import datetime, timedelta
 from pathlib import Path
 from apscheduler.schedulers.background import BackgroundScheduler
+import asyncio
+import os
 
 from config import TEMP_DIR, NEWS_API_KEY, logger
 from models import get_active_cost
@@ -14,75 +16,38 @@ from models import get_active_cost
 # ===== ПЛАНИРОВЩИК =====
 scheduler = BackgroundScheduler()
 
-# ===== НОВОСТИ =====
-NEWS_CACHE = {}
-CACHE_EXPIRY = timedelta(hours=2)
-
-def fetch_news(query, limit=10):
-    if not NEWS_API_KEY:
+# ===== НОВОСТИ ИЗ TELEGRAM-КАНАЛА =====
+# Импортируем функцию парсинга из tg_news_parser.py
+try:
+    from tg_news_parser import fetch_channel_messages, format_telegram_news
+except ImportError:
+    logger.warning("⚠️ Модуль tg_news_parser не найден, новости из канала недоступны")
+    async def fetch_channel_messages(limit=10):
         return []
-    cache_key = query
-    now = datetime.now()
-    if cache_key in NEWS_CACHE and now - NEWS_CACHE[cache_key]['timestamp'] < CACHE_EXPIRY:
-        return NEWS_CACHE[cache_key]['articles'][:limit]
+    def format_telegram_news(messages, prefix="📰 Новости"):
+        return "Новости временно недоступны."
 
-    url = 'https://newsapi.org/v2/everything'
-    params = {
-        'q': query,
-        'apiKey': NEWS_API_KEY,
-        'pageSize': limit,
-        'language': 'ru',
-        'sortBy': 'publishedAt'
-    }
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        data = resp.json()
-        if data.get('status') == 'ok':
-            articles = data.get('articles', [])
-            articles = [a for a in articles if a.get('title')]
-            NEWS_CACHE[cache_key] = {'articles': articles, 'timestamp': now}
-            return articles[:limit]
-        else:
-            logger.error(f"NewsAPI error: {data.get('message')}")
-            return []
-    except Exception as e:
-        logger.error(f"Ошибка запроса к NewsAPI: {e}")
-        return []
-
-def format_news_digest(articles, prefix="📰 **Новости**"):
-    if not articles:
-        return "Нет свежих новостей по вашей теме."
-    digest = f"{prefix}\n\n"
-    for i, article in enumerate(articles, 1):
-        title = article.get('title', '')
-        source = article.get('source', {}).get('name', '')
-        url = article.get('url', '')
-        published = article.get('publishedAt', '')
-        if published:
-            try:
-                dt = datetime.fromisoformat(published.replace('Z', '+00:00'))
-                published = dt.strftime('%H:%M')
-            except:
-                published = ''
-        digest += f"{i}. [{title}]({url}) — *{source}*"
-        if published:
-            digest += f" ({published})"
-        digest += "\n"
-    return digest
-
+# ===== ОТПРАВКА НОВОСТЕЙ =====
 async def send_news_digest(context, user_id, time_of_day):
     from models import get_news_settings
     settings = get_news_settings(user_id)
     if not settings['enabled']:
         return
-    articles = fetch_news(settings['query'], limit=10)
+    
+    messages = await fetch_channel_messages(limit=10)
     prefix = "🌅 **Утренняя сводка**" if time_of_day == 'morning' else "🌇 **Вечерняя сводка**"
-    text = format_news_digest(articles, prefix)
+    text = format_telegram_news(messages, prefix)
+    
     try:
-        await context.bot.send_message(chat_id=user_id, text=text, parse_mode='Markdown')
-        logger.info(f"Новостная сводка ({time_of_day}) отправлена пользователю {user_id}")
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=text,
+            parse_mode='Markdown',
+            disable_web_page_preview=True
+        )
+        logger.info(f"✅ Новостная сводка ({time_of_day}) отправлена пользователю {user_id}")
     except Exception as e:
-        logger.error(f"Ошибка отправки новостей пользователю {user_id}: {e}")
+        logger.error(f"❌ Ошибка отправки новостей пользователю {user_id}: {e}")
 
 async def scheduled_morning_digest(context):
     from models import get_news_settings
