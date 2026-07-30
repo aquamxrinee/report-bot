@@ -1,117 +1,160 @@
-import os
-import asyncio
+import requests
+from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
-from telethon import TelegramClient, events
-from telethon.tl.functions.messages import GetHistoryRequest
+import time
 from config import logger
 
-# Настройки для Telegram API (нужно получить на my.telegram.org)
-API_ID = os.getenv("TELEGRAM_API_ID")  # int
-API_HASH = os.getenv("TELEGRAM_API_HASH")
-PHONE_NUMBER = os.getenv("TELEGRAM_PHONE_NUMBER")  # для авторизации
-
-# Канал для парсинга
-CHANNEL_USERNAME = "news4sellers"
-
-# Кеш новостей
+# Кеш для новостей
 _news_cache = {
     "messages": [],
     "timestamp": None
 }
-CACHE_TTL = timedelta(minutes=30)
+CACHE_TTL = timedelta(minutes=30)  # обновляем раз в 30 минут
 
 
-async def get_telegram_client():
-    """Создаёт и возвращает клиент Telethon"""
-    if not API_ID or not API_HASH:
-        logger.error("❌ TELEGRAM_API_ID или TELEGRAM_API_HASH не заданы")
-        return None
-    
-    client = TelegramClient(
-        f"session_{PHONE_NUMBER}" if PHONE_NUMBER else "session",
-        int(API_ID),
-        API_HASH
-    )
-    return client
-
-
-async def fetch_channel_messages(limit: int = 10) -> List[Dict]:
+def fetch_channel_messages(channel: str = "news4sellers", limit: int = 10) -> List[Dict]:
     """
-    Получает последние сообщения из канала @news4sellers
+    Парсит последние сообщения из публичного Telegram-канала через веб-версию.
+    Не требует API-ключей, авторизации и телефона.
+    
+    Args:
+        channel: имя канала (без @)
+        limit: количество сообщений
+    
+    Returns:
+        Список словарей с полями: text, date, views
     """
     global _news_cache
     
     # Проверяем кеш
     if _news_cache["timestamp"] and (datetime.now() - _news_cache["timestamp"]) < CACHE_TTL:
+        logger.info("📦 Используем кешированные новости")
         return _news_cache["messages"][:limit]
     
-    client = await get_telegram_client()
-    if not client:
-        return []
+    url = f"https://t.me/s/{channel}"
+    
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache"
+    }
     
     try:
-        await client.start(phone=PHONE_NUMBER)
+        logger.info(f"🔄 Парсим новости из канала @{channel}")
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
         
-        # Получаем канал
-        channel = await client.get_entity(CHANNEL_USERNAME)
-        
-        # Получаем историю сообщений
-        history = await client(GetHistoryRequest(
-            peer=channel,
-            limit=limit,
-            offset_date=None,
-            offset_id=0,
-            max_id=0,
-            min_id=0,
-            add_offset=0,
-            hash=0
-        ))
+        soup = BeautifulSoup(response.text, 'html.parser')
         
         messages = []
-        for msg in history.messages:
-            if msg.message:
+        posts = soup.select('.tgme_widget_message')[:limit]
+        
+        if not posts:
+            logger.warning("⚠️ Не найдено сообщений. Возможно, канал приватный или изменилась структура страницы.")
+            return []
+        
+        for post in posts:
+            try:
+                # Текст сообщения
+                text_elem = post.select_one('.tgme_widget_message_text')
+                if not text_elem:
+                    continue
+                
+                text = text_elem.text.strip()
+                # Обрезаем слишком длинные
+                if len(text) > 800:
+                    text = text[:800] + "..."
+                
+                # Дата/время
+                date_elem = post.select_one('.tgme_widget_message_date')
+                date_str = None
+                if date_elem and date_elem.get('datetime'):
+                    try:
+                        dt = datetime.fromisoformat(date_elem['datetime'])
+                        date_str = dt.strftime("%d.%m.%Y %H:%M")
+                    except:
+                        date_str = date_elem.text.strip()
+                else:
+                    date_str = datetime.now().strftime("%d.%m.%Y %H:%M")
+                
+                # Просмотры (если есть)
+                views_elem = post.select_one('.tgme_widget_message_views')
+                views = views_elem.text.strip() if views_elem else "0"
+                
                 messages.append({
-                    "id": msg.id,
-                    "text": msg.message,
-                    "date": msg.date.strftime("%Y-%m-%d %H:%M"),
-                    "views": getattr(msg, "views", 0)
+                    'text': text,
+                    'date': date_str,
+                    'views': views,
+                    'url': f"https://t.me/{channel}/{post.get('data-post', '')}"
                 })
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка парсинга отдельного сообщения: {e}")
+                continue
         
         # Сохраняем в кеш
         _news_cache["messages"] = messages
         _news_cache["timestamp"] = datetime.now()
         
-        logger.info(f"✅ Загружено {len(messages)} сообщений из @{CHANNEL_USERNAME}")
-        return messages[:limit]
+        logger.info(f"✅ Загружено {len(messages)} сообщений из @{channel}")
+        return messages
         
-    except Exception as e:
-        logger.error(f"❌ Ошибка парсинга Telegram: {e}")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Ошибка запроса к t.me: {e}")
         return []
-    finally:
-        await client.disconnect()
+    except Exception as e:
+        logger.error(f"❌ Ошибка парсинга новостей: {e}")
+        return []
 
 
-def format_telegram_news(messages: List[Dict], prefix: str = "📰 *Новости маркетплейсов*") -> str:
+def format_news_digest(messages: List[Dict], prefix: str = "📰 *Новости маркетплейсов*") -> str:
     """
     Форматирует новости для отправки в Telegram
+    
+    Args:
+        messages: список сообщений от fetch_channel_messages
+        prefix: заголовок дайджеста
+    
+    Returns:
+        Отформатированный текст для отправки
     """
     if not messages:
-        return "Нет свежих новостей."
+        return "📭 Новостей пока нет. Попробуйте позже."
     
     digest = f"{prefix}\n\n"
     for i, msg in enumerate(messages, 1):
         text = msg['text']
-        # Обрезаем слишком длинные сообщения
-        if len(text) > 500:
-            text = text[:500] + "..."
+        # Убираем эмодзи и ссылки для краткости, но оставляем суть
+        text = text.replace('\n', ' ').strip()
+        if len(text) > 400:
+            text = text[:400] + "..."
+        
         digest += f"{i}. {text}\n"
-        digest += f"   🕐 {msg['date']}\n\n"
+        digest += f"   🕐 {msg['date']}"
+        if msg.get('views') and msg['views'] != '0':
+            digest += f"  👁 {msg['views']}"
+        digest += "\n\n"
     
     return digest
 
 
-async def get_news_digest(limit: int = 10) -> str:
-    """Утилита для получения дайджеста новостей"""
-    messages = await fetch_channel_messages(limit)
-    return format_telegram_news(messages)
+def get_news_digest(limit: int = 10) -> str:
+    """Утилита для быстрого получения дайджеста новостей"""
+    messages = fetch_channel_messages(limit=limit)
+    return format_news_digest(messages)
+
+
+# Для тестирования (запустите этот файл отдельно, чтобы проверить работу)
+if __name__ == "__main__":
+    print("🔄 Тестируем парсинг новостей...")
+    messages = fetch_channel_messages(limit=5)
+    print(f"Загружено сообщений: {len(messages)}")
+    for i, msg in enumerate(messages, 1):
+        print(f"\n--- Сообщение {i} ---")
+        print(f"Дата: {msg['date']}")
+        print(f"Текст: {msg['text'][:200]}...")
