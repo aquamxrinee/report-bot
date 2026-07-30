@@ -1,15 +1,27 @@
 import threading
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 from config import TELEGRAM_BOT_TOKEN, logger
 from flask_app import run_flask
 from handlers import *
 from services import scheduler, scheduled_morning_digest, scheduled_evening_digest
+from wb_api import get_aggregated_stats  # для фонового обновления кеша
+
+
+def refresh_wb_cache():
+    """Фоновая задача: обновляет кеш WB API каждый час"""
+    logger.info("🔄 Фоновое обновление кеша WB API")
+    try:
+        get_aggregated_stats(force_refresh=True)
+    except Exception as e:
+        logger.error(f"❌ Ошибка фонового обновления: {e}")
+
 
 def main():
     print("🤖 Запуск бота...")
-    
+
     # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
@@ -17,7 +29,7 @@ def main():
     # Создаём приложение бота
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # === КОМАНДЫ (только те, что есть в вашем handlers.py) ===
+    # === КОМАНДЫ ===
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("news_now", news_now_cmd))
@@ -68,13 +80,19 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # === ПЛАНИРОВЩИК НОВОСТЕЙ ===
+    # === ПЛАНИРОВЩИКИ ===
+    # Новости: утро и вечер
     scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[app])
     scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])
+
+    # Фоновое обновление WB API каждый час
+    scheduler.add_job(refresh_wb_cache, IntervalTrigger(hours=1))
+
     scheduler.start()
 
     print("✅ Бот готов, запускаем polling...")
     app.run_polling(allowed_updates=[])
+
 
 if __name__ == "__main__":
     main()
