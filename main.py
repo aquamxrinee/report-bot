@@ -9,9 +9,10 @@ from config import TELEGRAM_BOT_TOKEN, logger
 from flask_app import run_flask
 from handlers import *
 from services import scheduler, scheduled_morning_digest, scheduled_evening_digest
-from models import init_spp_tables
+from models import init_spp_tables, init_spp_global_settings
 from spp_monitor import monitor_spp
 from wb_api import get_aggregated_stats
+
 
 def refresh_wb_cache():
     """Фоновая задача: обновляет кеш WB API каждый час"""
@@ -21,11 +22,13 @@ def refresh_wb_cache():
     except Exception as e:
         logger.error(f"❌ Ошибка фонового обновления WB: {e}")
 
+
 def main():
     print("🤖 Запуск бота...")
 
-    # Инициализация таблиц БД (включая СПП)
+    # Инициализация таблиц БД (включая СПП и глобальные настройки)
     init_spp_tables()
+    init_spp_global_settings()
 
     # Запускаем Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask, daemon=True)
@@ -43,9 +46,7 @@ def main():
     app.add_handler(CommandHandler("spp_subscribe", spp_subscribe_cmd))
     app.add_handler(CommandHandler("spp_unsubscribe", spp_unsubscribe_cmd))
     app.add_handler(CommandHandler("spp_list", spp_list_cmd))
-    # Команда /osn и /vyk можно добавить, если они есть в вашем оригинальном коде,
-    # но они не определены в текущем handlers.py (мы их не добавляли). 
-    # Если нужны, раскомментируйте и добавьте соответствующие функции.
+    app.add_handler(CommandHandler("spp_check", spp_check_cmd))
 
     # === CALLBACK'и для меню ===
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
@@ -91,6 +92,12 @@ def main():
     app.add_handler(CallbackQueryHandler(menu_spp_callback, pattern="^menu_spp$"))
     app.add_handler(CallbackQueryHandler(spp_mute_callback, pattern="^spp_mute_"))
     app.add_handler(CallbackQueryHandler(spp_graph_callback, pattern="^spp_graph_"))
+    # Колбэки для глобальных настроек
+    app.add_handler(CallbackQueryHandler(spp_toggle_global_callback, pattern="^spp_toggle_global$"))
+    app.add_handler(CallbackQueryHandler(spp_interval_callback, pattern="^spp_interval$"))
+    app.add_handler(CallbackQueryHandler(spp_set_interval_callback, pattern="^spp_set_interval_"))
+    app.add_handler(CallbackQueryHandler(spp_threshold_callback, pattern="^spp_threshold$"))
+    app.add_handler(CallbackQueryHandler(spp_set_threshold_callback, pattern="^spp_set_threshold_"))
 
     # === ОБРАБОТЧИКИ ФАЙЛОВ И ТЕКСТА ===
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
@@ -102,7 +109,8 @@ def main():
     scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])
     # Обновление WB API каждый час
     scheduler.add_job(refresh_wb_cache, IntervalTrigger(hours=1))
-    # Мониторинг СПП — запускаем сразу и затем каждый час
+    # Мониторинг СПП — запускаем сразу и затем с интервалом из глобальных настроек
+    # Пока используем фиксированный интервал 1 час, позже можно динамически считывать настройки
     scheduler.add_job(
         lambda: asyncio.run(monitor_spp(app)),
         IntervalTrigger(hours=1),
@@ -113,6 +121,7 @@ def main():
 
     print("✅ Бот готов, запускаем polling...")
     app.run_polling(allowed_updates=[])
+
 
 if __name__ == "__main__":
     main()
