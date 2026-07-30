@@ -43,7 +43,7 @@ def main():
     app.add_handler(CommandHandler("news_now", news_now_cmd))
     app.add_handler(CommandHandler("set_news", set_news_cmd))
     app.add_handler(CommandHandler("set_news_query", set_news_query_cmd))
-    # Команды СПП (оставляем для совместимости)
+    # Команды СПП
     app.add_handler(CommandHandler("spp_check", spp_check_cmd))
     app.add_handler(CommandHandler("spp_list", spp_list_cmd))
 
@@ -87,7 +87,7 @@ def main():
     app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
     app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
 
-    # === СПП (упрощённое управление через кнопки) ===
+    # === СПП ===
     app.add_handler(CallbackQueryHandler(menu_spp_callback, pattern="^menu_spp$"))
     app.add_handler(CallbackQueryHandler(spp_show_articles_callback, pattern="^spp_show_articles$"))
     app.add_handler(CallbackQueryHandler(spp_subscribe_article_callback, pattern="^spp_subscribe_article_"))
@@ -104,12 +104,9 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     # === ПЛАНИРОВЩИКИ ===
-    # Новости
     scheduler.add_job(scheduled_morning_digest, CronTrigger(hour=8, minute=30), args=[app])
     scheduler.add_job(scheduled_evening_digest, CronTrigger(hour=20, minute=40), args=[app])
-    # Обновление WB API каждый час
     scheduler.add_job(refresh_wb_cache, IntervalTrigger(hours=1))
-    # Мониторинг СПП — запускаем сразу и затем с интервалом 1 час
     scheduler.add_job(
         lambda: asyncio.run(monitor_spp(app)),
         IntervalTrigger(hours=1),
@@ -117,7 +114,6 @@ def main():
     )
 
     scheduler.start()
-
     print("✅ Бот готов, запускаем polling...")
     app.run_polling(allowed_updates=[])
 
