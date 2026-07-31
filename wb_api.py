@@ -70,6 +70,24 @@ def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = 
         payload["nmIds"] = nm_ids
     return _safe_request("POST", url, json_data=payload)
 
+# ===== НОВЫЙ МЕТОД: получение списка всех товаров продавца =====
+def get_supplier_items(limit: int = 1000, offset: int = 0):
+    """Получить список всех товаров продавца (артикулы, nm_id, бренды)"""
+    if not WB_API_TOKEN:
+        return {"error": "WB_API_TOKEN не задан"}
+    url = f"{STATISTICS_API}/supplier/items"
+    params = {"limit": limit, "offset": offset}
+    return _safe_request("GET", url, params=params)
+
+# ===== НОВЫЙ МЕТОД: получение текущих цен на все товары =====
+def get_supplier_prices(limit: int = 1000, offset: int = 0):
+    """Получить текущие цены на товары (включая скидки)"""
+    if not WB_API_TOKEN:
+        return {"error": "WB_API_TOKEN не задан"}
+    url = f"{STATISTICS_API}/supplier/prices"
+    params = {"limit": limit, "offset": offset}
+    return _safe_request("GET", url, params=params)
+
 def get_aggregated_stats(force_refresh=False):
     global _cache
     now = datetime.now()
@@ -167,8 +185,3 @@ def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = 
                 })
         time.sleep(2)
     return result
-def get_supplier_items(limit=1000, offset=0):
-    """Получить список всех товаров продавца (артикулы, nm_id, бренды)"""
-    url = f"{STATISTICS_API}/supplier/items"
-    params = {"limit": limit, "offset": offset}
-    return _safe_request("GET", url, params=params)
