@@ -1,177 +1,65 @@
 import asyncio
 import aiohttp
-import json
-import re
 import random
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-from bs4 import BeautifulSoup
-from fake_useragent import UserAgent
-from config import logger, PROXY_URL, WB_API_TOKEN
-
-try:
-    from aiohttp_socks import ProxyConnector
-except ImportError:
-    logger.warning("⚠️ aiohttp-socks не установлен, SOCKS5 прокси не будет работать")
-    ProxyConnector = None
+from config import logger, WB_API_TOKEN
+from wb_api import get_supplier_prices, get_sales
 
 STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1"
 
-ua = UserAgent()
 _failed_cache = {}
 
 
 async def get_price_from_api(nm_id: int) -> Optional[float]:
+    """Получает цену без скидки продавца через WB API (sales)"""
     if not WB_API_TOKEN:
         logger.error("❌ WB_API_TOKEN не задан")
         return None
 
-    url = f"{STATISTICS_API}/supplier/sales"
-    headers = {"Authorization": f"Bearer {WB_API_TOKEN}"}
-    params = {"dateFrom": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")}
+    # Используем синхронную функцию из wb_api, но вызываем в отдельном потоке, чтобы не блокировать asyncio
+    loop = asyncio.get_event_loop()
+    sales = await loop.run_in_executor(None, get_sales, (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"))
     
-    await asyncio.sleep(random.uniform(0.5, 1.5))
+    if isinstance(sales, dict) and "error" in sales:
+        logger.warning(f"⚠️ Ошибка получения sales: {sales['error']}")
+        return None
     
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, params=params, timeout=15) as response:
-                if response.status == 429:
-                    logger.warning("⚠️ Превышен лимит запросов к WB API (429)")
-                    return None
-                if response.status != 200:
-                    logger.warning(f"⚠️ API вернул статус {response.status}")
-                    return None
-                
-                data = await response.json()
-                if not data or not isinstance(data, list):
-                    logger.warning("⚠️ API вернул пустой ответ")
-                    return None
-                
-                for item in data:
-                    if item.get('nmId') == nm_id:
-                        return float(item.get('totalPrice', 0))
-                
-                logger.warning(f"⚠️ Артикул {nm_id} не найден в API за последние 7 дней")
-                return None
-                
-    except asyncio.TimeoutError:
-        logger.error(f"❌ Таймаут API для {nm_id}")
+    if not isinstance(sales, list):
+        logger.warning("⚠️ Ответ sales не является списком")
         return None
-    except Exception as e:
-        logger.error(f"❌ Ошибка API: {e}")
-        return None
+    
+    for item in sales:
+        if item.get('nmId') == nm_id:
+            return float(item.get('totalPrice', 0))
+    
+    logger.warning(f"⚠️ Артикул {nm_id} не найден в sales за последние 7 дней")
+    return None
 
 
-async def get_price_from_mobile_site(nm_id: int, proxy_url: Optional[str] = None) -> Optional[Dict]:
-    url = f"https://m.wildberries.ru/catalog/{nm_id}/detail.aspx"
-    fallback_url = f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx?x=1"
+async def get_discounted_price_from_api(nm_id: int) -> Optional[float]:
+    """Получает текущую цену со скидкой через метод prices"""
+    if not WB_API_TOKEN:
+        logger.error("❌ WB_API_TOKEN не задан")
+        return None
     
-    for attempt in range(1, 4):
-        try:
-            await asyncio.sleep(random.uniform(2, 5) * attempt)
-            
-            headers = {
-                "User-Agent": ua.random,
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Cache-Control": "no-cache",
-                "Pragma": "no-cache",
-                "Referer": "https://m.wildberries.ru/"
-            }
-            
-            # Пробуем с прокси, если он задан
-            connector = None
-            if proxy_url and ProxyConnector:
-                try:
-                    connector = ProxyConnector.from_url(proxy_url)
-                except Exception as e:
-                    logger.warning(f"⚠️ Ошибка создания прокси-коннектора: {e}, пробуем без прокси")
-                    connector = None
-            
-            async with aiohttp.ClientSession(connector=connector) as session:
-                # Пробуем мобильную версию
-                response = await session.get(url, headers=headers, timeout=20)
-                
-                if response.status in (498, 429, 403):
-                    logger.warning(f"⚠️ Мобильная версия {response.status} для {nm_id}, пробуем fallback")
-                    response = await session.get(fallback_url, headers=headers, timeout=20)
-                
-                if response.status == 498:
-                    logger.warning(f"⚠️ 498 Rate limit для {nm_id}, попытка {attempt}/3")
-                    await asyncio.sleep(20 * attempt)
-                    continue
-                
-                if response.status != 200:
-                    logger.error(f"❌ Статус {response.status} для {nm_id}")
-                    continue
-                
-                html = await response.text()
-                soup = BeautifulSoup(html, 'html.parser')
-                
-                # Поиск цены
-                price_el = soup.find('span', class_='price-block__final-price')
-                if not price_el:
-                    price_el = soup.find('span', {'data-wba': 'price-final'})
-                if not price_el:
-                    price_el = soup.find('span', class_='final-price')
-                if not price_el:
-                    price_el = soup.find('div', class_='product-price__current')
-                if not price_el:
-                    price_el = soup.find('span', {'itemprop': 'price'})
-                
-                if price_el:
-                    price_text = price_el.text.replace('\u2009', '').replace('\xa0', '').replace('₽', '').strip()
-                    price_text = re.sub(r'[^\d.,]', '', price_text).replace(',', '.')
-                    site_price = float(price_text)
-                else:
-                    # JSON-LD
-                    scripts = soup.find_all('script', type='application/ld+json')
-                    for script in scripts:
-                        try:
-                            data = json.loads(script.string)
-                            if data.get('@type') == 'Product' and data.get('offers'):
-                                offers = data.get('offers', {})
-                                if isinstance(offers, list):
-                                    offers = offers[0] if offers else {}
-                                site_price = float(offers.get('price', 0))
-                                break
-                        except:
-                            continue
-                    else:
-                        # regex
-                        match = re.search(r'"price":\s*([\d.]+)', html)
-                        if match:
-                            site_price = float(match.group(1))
-                        else:
-                            logger.warning(f"⚠️ Цена не найдена для {nm_id}")
-                            return None
-                
-                # Название
-                title_el = soup.find('h1', {'data-wba': 'product-name'})
-                if not title_el:
-                    title_el = soup.find('h1', class_='product-page__title')
-                if not title_el:
-                    title_el = soup.find('h1', {'itemprop': 'name'})
-                title = title_el.text.strip() if title_el else f"Товар {nm_id}"
-                
-                return {
-                    'site_price': site_price,
-                    'title': title,
-                    'url': url
-                }
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка парсинга {nm_id}: {e}")
-            # Если ошибка связана с прокси, пробуем без него на следующей попытке
-            if 'proxy' in str(e).lower() or 'socks' in str(e).lower():
-                logger.warning(f"⚠️ Ошибка прокси для {nm_id}, следующая попытка без прокси")
-                # Устанавливаем proxy_url = None для следующей итерации
-                proxy_url = None
-                # Дадим время на восстановление
-                await asyncio.sleep(5)
-            else:
-                await asyncio.sleep(10 * attempt)
+    loop = asyncio.get_event_loop()
+    prices = await loop.run_in_executor(None, get_supplier_prices, 1000, 0)
     
+    if isinstance(prices, dict) and "error" in prices:
+        logger.warning(f"⚠️ Ошибка получения prices: {prices['error']}")
+        return None
+    
+    if not isinstance(prices, list):
+        logger.warning("⚠️ Ответ prices не является списком")
+        return None
+    
+    for item in prices:
+        if item.get('nmId') == nm_id:
+            # Цена со скидкой (возможно, уже учтена)
+            return float(item.get('price', 0))
+    
+    logger.warning(f"⚠️ Артикул {nm_id} не найден в ценах")
     return None
 
 
@@ -180,23 +68,20 @@ async def get_spp_for_article_async(nm_id: int) -> Optional[Dict[str, Any]]:
         logger.warning(f"⏳ Артикул {nm_id} заблокирован (ждём 15 мин)")
         return None
     
-    api_price = await get_price_from_api(nm_id)
-    if not api_price:
-        logger.warning(f"⚠️ Не удалось получить цену из API для {nm_id}")
+    # Получаем полную цену (без скидки продавца)
+    full_price = await get_price_from_api(nm_id)
+    if not full_price:
+        logger.warning(f"⚠️ Не удалось получить полную цену для {nm_id}")
         return None
     
-    # Передаём PROXY_URL в функцию как аргумент
-    site_data = await get_price_from_mobile_site(nm_id, proxy_url=PROXY_URL)
-    if not site_data:
-        logger.warning(f"⚠️ Не удалось получить цену на сайте для {nm_id}")
+    # Получаем цену со скидкой (текущую)
+    discounted_price = await get_discounted_price_from_api(nm_id)
+    if not discounted_price:
+        logger.warning(f"⚠️ Не удалось получить цену со скидкой для {nm_id}")
         return None
     
-    site_price = site_data['site_price']
-    title = site_data['title']
-    url = site_data['url']
-    
-    if api_price > 0 and site_price > 0 and api_price != site_price:
-        spp_percent = round((1 - site_price / api_price) * 100, 2)
+    if full_price > 0 and discounted_price > 0 and full_price != discounted_price:
+        spp_percent = round((1 - discounted_price / full_price) * 100, 2)
     else:
         spp_percent = 0.0
     
@@ -204,10 +89,10 @@ async def get_spp_for_article_async(nm_id: int) -> Optional[Dict[str, Any]]:
     
     return {
         'nm_id': nm_id,
-        'api_price': api_price,
-        'site_price': site_price,
+        'api_price': full_price,
+        'site_price': discounted_price,
         'spp_percent': spp_percent,
-        'title': title,
-        'url': url,
+        'title': f"Товар {nm_id}",
+        'url': f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx",
         'checked_at': datetime.now().isoformat()
     }
