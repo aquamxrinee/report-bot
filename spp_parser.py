@@ -62,7 +62,7 @@ async def get_price_from_api(nm_id: int) -> Optional[float]:
         return None
 
 
-async def get_price_from_mobile_site(nm_id: int) -> Optional[Dict]:
+async def get_price_from_mobile_site(nm_id: int, proxy_url: Optional[str] = None) -> Optional[Dict]:
     url = f"https://m.wildberries.ru/catalog/{nm_id}/detail.aspx"
     fallback_url = f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx?x=1"
     
@@ -81,9 +81,9 @@ async def get_price_from_mobile_site(nm_id: int) -> Optional[Dict]:
             
             # Пробуем с прокси, если он задан
             connector = None
-            if PROXY_URL and ProxyConnector:
+            if proxy_url and ProxyConnector:
                 try:
-                    connector = ProxyConnector.from_url(PROXY_URL)
+                    connector = ProxyConnector.from_url(proxy_url)
                 except Exception as e:
                     logger.warning(f"⚠️ Ошибка создания прокси-коннектора: {e}, пробуем без прокси")
                     connector = None
@@ -165,15 +165,12 @@ async def get_price_from_mobile_site(nm_id: int) -> Optional[Dict]:
             # Если ошибка связана с прокси, пробуем без него на следующей попытке
             if 'proxy' in str(e).lower() or 'socks' in str(e).lower():
                 logger.warning(f"⚠️ Ошибка прокси для {nm_id}, следующая попытка без прокси")
-                # Убираем прокси на следующую попытку
-                global PROXY_URL
-                original_proxy = PROXY_URL
-                PROXY_URL = None
+                # Устанавливаем proxy_url = None для следующей итерации
+                proxy_url = None
                 # Дадим время на восстановление
                 await asyncio.sleep(5)
-                # Возвращаем прокси обратно для следующих артикулов
-                PROXY_URL = original_proxy
-            await asyncio.sleep(10 * attempt)
+            else:
+                await asyncio.sleep(10 * attempt)
     
     return None
 
@@ -188,7 +185,8 @@ async def get_spp_for_article_async(nm_id: int) -> Optional[Dict[str, Any]]:
         logger.warning(f"⚠️ Не удалось получить цену из API для {nm_id}")
         return None
     
-    site_data = await get_price_from_mobile_site(nm_id)
+    # Передаём PROXY_URL в функцию как аргумент
+    site_data = await get_price_from_mobile_site(nm_id, proxy_url=PROXY_URL)
     if not site_data:
         logger.warning(f"⚠️ Не удалось получить цену на сайте для {nm_id}")
         return None
