@@ -998,7 +998,7 @@ async def spp_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"• {article_name} (порог: {sub['threshold']} п.п.)\n"
     await update.message.reply_text(text)
 
-# ===== БЛОК МОНИТОРИНГА СПП (исправленный) =====
+# ===== БЛОК МОНИТОРИНГА СПП =====
 async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1029,7 +1029,6 @@ async def spp_show_articles_callback(update: Update, context: ContextTypes.DEFAU
     query = update.callback_query
     await query.answer()
     
-    # Получаем список артикулов с nm_id
     articles = get_all_articles_with_costs()
     if not articles:
         await query.edit_message_text(
@@ -1044,16 +1043,15 @@ async def spp_show_articles_callback(update: Update, context: ContextTypes.DEFAU
     count = 0
     for item in articles:
         article = item['article']
-        # Нам нужен nm_id для подписки. Пытаемся получить его из БД
         nm_id = get_nm_id_by_article(article)
         if not nm_id:
-            continue  # пропускаем артикулы без nm_id
+            continue
         
         label = article[:35]
         keyboard.append([InlineKeyboardButton(label, callback_data=f"spp_subscribe_{nm_id}")])
         count += 1
         if count >= 20:
-            break  # ограничиваем 20 кнопками
+            break
     
     if not keyboard:
         await query.edit_message_text(
