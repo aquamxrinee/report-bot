@@ -167,3 +167,8 @@ def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = 
                 })
         time.sleep(2)
     return result
+def get_supplier_items(limit=1000, offset=0):
+    """Получить список всех товаров продавца (артикулы, nm_id, бренды)"""
+    url = f"{STATISTICS_API}/supplier/items"
+    params = {"limit": limit, "offset": offset}
+    return _safe_request("GET", url, params=params)
