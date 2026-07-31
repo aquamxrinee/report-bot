@@ -2,7 +2,6 @@ import os
 import logging
 from pathlib import Path
 
-# ===== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ =====
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("❌ Токен не найден!")
@@ -21,7 +20,6 @@ USER_NAMES = {
     5167366543: "Евгений"
 }
 
-# ===== ПУТИ =====
 DATA_DIR = Path("/data")
 TEMP_DIR = DATA_DIR / "temp"
 DB_PATH = DATA_DIR / "reports.db"
@@ -34,7 +32,9 @@ if not DATA_DIR.exists():
 DATA_DIR.mkdir(exist_ok=True)
 TEMP_DIR.mkdir(exist_ok=True)
 
-# ===== ЛОГГЕР =====
+# ===== ПРОКСИ ДЛЯ ПАРСИНГА =====
+PROXY_URL = os.getenv("PROXY_URL", "http://roman711054e2317-c-ru-st-1796:bUhGkHSc29orvafa@gate.cyberyozh.net:10000")
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
@@ -48,4 +48,4 @@ if ALLOWED_USERS:
     print(f"🔒 Бот доступен только для ID: {ALLOWED_USERS}")
 else:
     print("⚠️ ALLOWED_USER_IDS не задан. Бот доступен всем.")
-PROXY_URL = os.getenv("PROXY_URL", "http://roman711054e2317-c-ru:bUhGkHSc29orvafa@gate.cyberyozh.net:10000")
+print(f"🔑 Прокси: {PROXY_URL[:50]}...")
