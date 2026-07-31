@@ -680,28 +680,35 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"✅ Файл «{file_name}» загружен. Жду второй файл (для {'вык' if report_type == 'osn' else 'осн'}).")
 
+# ===== ОБНОВЛЁННАЯ process_and_send (с удалением временных файлов) =====
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     files = context.user_data.get('files', {})
     osn_path = files.get('osn')
     vyk_path = files.get('vyk')
+    
     if not osn_path or not vyk_path:
         await update.message.reply_text("❌ Не хватает файлов. Нужны оба: осн и вык.")
         return
+    
     await update.message.reply_text("🔄 Обрабатываю отчёты...")
+    
     try:
         processor = ReportProcessor()
         template_path = Path("шаблон.xlsx")
         if not template_path.exists():
             await update.message.reply_text("❌ Файл шаблона 'шаблон.xlsx' не найден.")
             return
+        
         values, articles, date_period = processor.process_files(osn_path, vyk_path, template_path)
         start_date, end_date = parse_date_from_period(date_period)
+        
         file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
         metrics = extract_metrics(values, articles, start_date, end_date)
         total_profit, margin = calculate_profit_and_margin(articles, start_date, end_date)
         metrics['total_profit'] = total_profit
         metrics['margin'] = margin
+        
         success, report_id = save_report_to_db(
             file_name=Path(osn_path).name,
             file_hash=file_hash,
@@ -712,15 +719,18 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             metrics=metrics,
             articles=articles
         )
+        
         if not success:
             await update.message.reply_text("❌ Ошибка сохранения отчёта в БД.")
             return
+        
         with open(template_path, 'rb') as f:
             await update.message.reply_document(
                 document=f,
                 filename=f"отчёт_{date_period}.xlsx",
                 caption=f"✅ Отчёт за {date_period} обработан и сохранён!"
             )
+        
         summary = (
             f"📊 Сводка за {date_period}\n"
             f"💰 Оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
@@ -731,12 +741,17 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📊 Маржинальность: {margin:.2f}%\n"
         )
         await update.message.reply_text(summary, parse_mode='Markdown')
-        for p in [osn_path, vyk_path]:
-            Path(p).unlink(missing_ok=True)
+        
         context.user_data['files'] = {}
+        
     except Exception as e:
         logger.error(f"Ошибка: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка: {e}")
+    finally:
+        # Удаляем временные файлы в любом случае
+        for p in [osn_path, vyk_path]:
+            if p and Path(p).exists():
+                Path(p).unlink(missing_ok=True)
 
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 def parse_date_from_period(date_period):
@@ -992,7 +1007,7 @@ async def set_article_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ''', (article, nm_id))
         conn.commit()
         conn.close()
-        await update.message.reply_text(f"✅ Артикул для {nm_id} установлен: {article}")
+        await update.message.reply_text(f"✅ Артикул para {nm_id} установлен: {article}")
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
