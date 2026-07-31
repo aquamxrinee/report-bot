@@ -48,7 +48,8 @@ def main():
     app.add_handler(CommandHandler("spp_stats", spp_stats_cmd))
     app.add_handler(CommandHandler("test_parser", test_parser_cmd))
     app.add_handler(CommandHandler("test_proxy", test_proxy_cmd))
-    app.add_handler(CommandHandler("sync_articles", sync_articles_cmd))   # <-- ДОБАВЛЕНО
+    app.add_handler(CommandHandler("sync_articles", sync_articles_cmd))
+    app.add_handler(CommandHandler("set_article", set_article_cmd))   # <-- ДОБАВЛЕНО
 
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
