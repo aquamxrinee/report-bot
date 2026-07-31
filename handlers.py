@@ -85,6 +85,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/test_parser <nm_id> — проверить парсер\n"
         "/test_proxy — проверить прокси\n"
         "/sync_articles — синхронизировать артикулы из статистики\n"
+        "/set_article <nm_id> <артикул> — установить артикул продавца\n"
         "/articles — детали по артикулам\n\n"
         "Для получения помощи используйте /help.",
         parse_mode='Markdown',
@@ -157,6 +158,7 @@ async def dev_commands_callback(update: Update, context: ContextTypes.DEFAULT_TY
         "`/test_parser <nm_id>` — проверить парсер\n"
         "`/test_proxy` — проверить прокси\n"
         "`/sync_articles` — синхронизация артикулов из статистики\n"
+        "`/set_article <nm_id> <артикул>` — установить артикул продавца\n"
         "`/osn` / `/vyk` — ручное указание типа файла (устарело)\n"
         "`/articles` — детали по артикулам\n\n"
         "Для получения помощи используйте `/help`."
@@ -917,7 +919,7 @@ async def test_parser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = await get_spp_for_article_async(nm_id)
     if data:
         text = (
-            f"✅ *Данные для {nm_id}*\n\n"
+            f"✅ *Данные para {nm_id}*\n\n"
             f"Цена по API (до скидки): {data['api_price']} ₽\n"
             f"Цена со скидкой (текущая): {data['site_price']} ₽\n"
             f"СПП: {data['spp_percent']:.1f}%\n"
@@ -926,7 +928,7 @@ async def test_parser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(text, parse_mode='Markdown', disable_web_page_preview=True)
     else:
-        await update.message.reply_text(f"❌ Не удалось получить данные для {nm_id}. Возможно, страница заблокирована или артикул не существует.")
+        await update.message.reply_text(f"❌ Не удалось получить данные para {nm_id}. Возможно, страница заблокирована или артикул не существует.")
 
 # === ТЕСТ ПРОКСИ ===
 async def test_proxy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -964,6 +966,35 @@ async def sync_articles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Синхронизировано {count} артикулов из статистики.")
     except Exception as e:
         logger.error(f"Ошибка синхронизации: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# === УСТАНОВКА АРТИКУЛА ПРОДАВЦА ВРУЧНУЮ ===
+async def set_article_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Установить артикул продавца для nm_id: /set_article <nm_id> <артикул>"""
+    if not await check_access(update):
+        return
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("❌ Укажите nm_id и артикул. Пример: /set_article 100975057 ПБпесоч5")
+        return
+    try:
+        nm_id = int(args[0])
+        article = " ".join(args[1:])
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute('''
+            UPDATE article_stats SET article = ? WHERE nm_id = ? AND report_id = 0
+        ''', (article, nm_id))
+        if cursor.rowcount == 0:
+            cursor.execute('''
+                INSERT INTO article_stats (report_id, brand, article, quantity, revenue, nm_id)
+                VALUES (0, 'Unknown', ?, 0, 0, ?)
+            ''', (article, nm_id))
+        conn.commit()
+        conn.close()
+        await update.message.reply_text(f"✅ Артикул для {nm_id} установлен: {article}")
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
 # === СТАТИСТИКА СПП ===
@@ -1149,7 +1180,7 @@ async def spp_subscribe_brand_callback(update: Update, context: ContextTypes.DEF
     brand = query.data.replace("spp_subscribe_brand_", "")
     context.user_data['spp_awaiting_brand'] = brand
     await query.edit_message_text(
-        f"✏️ Введите порог изменения для бренда {brand} (в п.п.):\n"
+        f"✏️ Введите порог изменения para бренда {brand} (в п.п.):\n"
         "Например: 5",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("◀️ Отмена", callback_data="menu_spp")]
@@ -1326,7 +1357,7 @@ async def send_spp_notification(bot_app, user_id, nm_id, old_spp, new_spp, data,
             reply_markup=reply_markup,
             disable_web_page_preview=True
         )
-        logger.info(f"✅ Уведомление о СПП отправлено пользователю {user_id} для {nm_id}")
+        logger.info(f"✅ Уведомление о СПП отправлено пользователю {user_id} para {nm_id}")
     except Exception as e:
         logger.error(f"❌ Ошибка отправки уведомления: {e}")
 
@@ -1338,9 +1369,9 @@ async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     nm_id = int(query.data.split("_")[2])
     img_base64 = generate_spp_graph(nm_id)
     if not img_base64:
-        await query.edit_message_text("❌ Недостаточно данных для графика.")
+        await query.edit_message_text("❌ Недостаточно данных para графика.")
         return
-    await query.message.reply_photo(photo=img_base64, caption=f"📈 График СПП для {nm_id}")
+    await query.message.reply_photo(photo=img_base64, caption=f"📈 График СПП para {nm_id}")
     await query.edit_message_reply_markup(
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 Обновить", callback_data=f"spp_graph_{nm_id}")],
