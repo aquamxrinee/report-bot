@@ -58,7 +58,7 @@ def main():
     app.add_handler(CallbackQueryHandler(news_settings_callback, pattern="^news_settings$"))
     app.add_handler(CallbackQueryHandler(news_now_callback, pattern="^news_now$"))
     app.add_handler(CallbackQueryHandler(news_toggle_callback, pattern="^news_toggle$"))
-    app.add_handler(CallbackQueryHandler(news_query_callback, pattern="^news_query$"))
+    # Удаляем news_query_callback — он не нужен
     app.add_handler(CallbackQueryHandler(news_time_callback, pattern="^news_time$"))
     app.add_handler(CallbackQueryHandler(news_time_set_callback, pattern="^news_time_"))
 
@@ -114,6 +114,7 @@ def main():
     )
 
     scheduler.start()
+
     print("✅ Бот готов, запускаем polling...")
     app.run_polling(allowed_updates=[])
 
