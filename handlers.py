@@ -767,23 +767,19 @@ def calculate_profit_and_margin(articles, start_date, end_date):
     margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
     return total_profit, margin
 
-# ===== ОБРАБОТЧИК ТЕКСТА (исправлен) =====
+# ===== ОБРАБОТЧИК ТЕКСТА =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
-    # Себестоимость
     if context.user_data.get('waiting_for_cost'):
         await handle_cost_input(update, context)
         return
-    # Подписка на артикул (ввод порога)
     if context.user_data.get('spp_awaiting_subscribe_nm'):
         await spp_handle_subscribe_input(update, context)
         return
-    # Подписка на бренд (ввод порога)
     if context.user_data.get('spp_awaiting_brand'):
         await spp_handle_brand_threshold_input(update, context)
         return
-    # Глобальный порог (ввод своего значения)
     if context.user_data.get('spp_waiting_threshold'):
         await spp_handle_threshold_input(update, context)
         return
@@ -877,7 +873,6 @@ async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🏷️ Подписаться на бренд", callback_data="spp_show_brands")],
         [InlineKeyboardButton("📋 Мои подписки", callback_data="spp_my_subscriptions")],
         [InlineKeyboardButton("🔃 Вкл/Выкл", callback_data="spp_toggle_global")],
-        [InlineKeyboardButton("🎯 Изменить порог", callback_data="spp_threshold")],
         [InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")]
     ]
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
@@ -916,7 +911,8 @@ async def spp_subscribe_article_callback(update: Update, context: ContextTypes.D
     query = update.callback_query
     await query.answer()
     try:
-        nm_id = int(query.data.split("_")[2])
+        # Берём последний элемент после подчёркивания — это nm_id
+        nm_id = int(query.data.split("_")[-1])
     except:
         await query.edit_message_text("❌ Ошибка: неверный артикул.")
         return
@@ -1048,6 +1044,7 @@ async def spp_toggle_global_callback(update: Update, context: ContextTypes.DEFAU
     await query.answer()
     settings = get_spp_global_settings()
     set_spp_global_settings(enabled=not settings['enabled'])
+    # Обновляем меню
     await menu_spp_callback(update, context)
 
 async def spp_threshold_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
