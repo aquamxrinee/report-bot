@@ -9,11 +9,10 @@ from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
 from config import logger, PROXY_URL, WB_API_TOKEN
 
-# Импортируем aiohttp_socks для поддержки SOCKS5
 try:
     from aiohttp_socks import ProxyConnector
 except ImportError:
-    logger.warning("⚠️ aiohttp-socks не установлен, SOCKS5 прокси не будет работать. Установите: pip install aiohttp-socks")
+    logger.warning("⚠️ aiohttp-socks не установлен, SOCKS5 прокси не будет работать")
     ProxyConnector = None
 
 STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1"
@@ -80,10 +79,14 @@ async def get_price_from_mobile_site(nm_id: int) -> Optional[Dict]:
                 "Referer": "https://m.wildberries.ru/"
             }
             
-            # Создаём коннектор с прокси, если он задан
+            # Пробуем с прокси, если он задан
             connector = None
             if PROXY_URL and ProxyConnector:
-                connector = ProxyConnector.from_url(PROXY_URL)
+                try:
+                    connector = ProxyConnector.from_url(PROXY_URL)
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка создания прокси-коннектора: {e}, пробуем без прокси")
+                    connector = None
             
             async with aiohttp.ClientSession(connector=connector) as session:
                 # Пробуем мобильную версию
@@ -159,6 +162,17 @@ async def get_price_from_mobile_site(nm_id: int) -> Optional[Dict]:
                 
         except Exception as e:
             logger.error(f"❌ Ошибка парсинга {nm_id}: {e}")
+            # Если ошибка связана с прокси, пробуем без него на следующей попытке
+            if 'proxy' in str(e).lower() or 'socks' in str(e).lower():
+                logger.warning(f"⚠️ Ошибка прокси для {nm_id}, следующая попытка без прокси")
+                # Убираем прокси на следующую попытку
+                global PROXY_URL
+                original_proxy = PROXY_URL
+                PROXY_URL = None
+                # Дадим время на восстановление
+                await asyncio.sleep(5)
+                # Возвращаем прокси обратно для следующих артикулов
+                PROXY_URL = original_proxy
             await asyncio.sleep(10 * attempt)
     
     return None
