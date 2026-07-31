@@ -121,24 +121,37 @@ class ReportProcessor:
 
         qty_variants = ['количество', 'кол-во', 'количество товара', 'кол-во (шт.)', 'кол-во шт', 'quantity', 'количество,шт']
         art_variants = ['артикул поставщика', 'артикул', 'артикул товара', 'номенклатура', 'sku', 'артикул(поставщика)']
-        nm_id_variants = ['артикул товара', 'номенклатура', 'nmId', 'nm_id', 'артикул']
+        # Добавляем точное название колонки "Код номенклатуры" для nm_id
+        nm_id_variants = ['код номенклатуры', 'nmId', 'nm_id', 'артикул товара', 'номенклатура', 'артикул']
 
         qty_col = None
         art_col = None
         nm_id_col = None
 
+        # Поиск колонки количества
         for v in qty_variants:
             if v in all_cols:
                 qty_col = all_cols[v]
                 break
+        # Поиск колонки артикула поставщика
         for v in art_variants:
             if v in all_cols:
                 art_col = all_cols[v]
                 break
+        # Поиск колонки nm_id
         for v in nm_id_variants:
             if v in all_cols:
                 nm_id_col = all_cols[v]
                 break
+
+        # Если не нашли через нормализацию, пробуем точное совпадение с "Код номенклатуры" (без приведения к нижнему регистру)
+        if nm_id_col is None:
+            original_cols = df_osn.columns.tolist()
+            for col in original_cols:
+                if 'Код номенклатуры' in col or col.strip().lower() == 'код номенклатуры':
+                    nm_id_col = col
+                    logger.info(f"🔍 Нашли колонку nm_id по точному совпадению: '{col}'")
+                    break
 
         if qty_col is None:
             logger.warning(f"❌ Колонка количества не найдена. Доступные: {list(all_cols.keys())}")
@@ -177,7 +190,7 @@ class ReportProcessor:
                         nm_id_val = vals.get('nm_id') if nm_id_col else None
                         if nm_id_val is not None:
                             try:
-                                nm_id_val = int(nm_id_val)
+                                nm_id_val = int(float(nm_id_val))
                             except:
                                 nm_id_val = None
                         articles[art] = {
