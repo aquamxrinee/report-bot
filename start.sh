@@ -1,3 +1,5 @@
 #!/bin/bash
-echo "🚀 Запуск бота..."
+echo "Установка зависимостей..."
+pip install -r requirements.txt
+echo "Запуск бота..."
 python main.py
