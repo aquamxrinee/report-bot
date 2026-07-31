@@ -25,7 +25,8 @@ from models import (
     init_spp_tables, init_spp_global_settings,
     get_spp_global_settings, set_spp_global_settings,
     get_all_tracked_articles, get_all_brand_subscribers,
-    get_articles_by_brand
+    get_articles_by_brand,
+    add_or_update_article
 )
 from services import (
     detect_report_type, parse_date_from_period,
@@ -33,6 +34,7 @@ from services import (
 )
 from spp_parser import get_spp_for_article_async
 from spp_monitor import generate_spp_graph, monitor_spp
+from wb_api import get_supplier_items
 
 async def check_access(update: Update) -> bool:
     if not ALLOWED_USERS:
@@ -81,7 +83,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/spp_status — статус мониторинга\n"
         "/spp_stats — статистика СПП\n"
         "/test_parser <nm_id> — проверить парсер\n"
-        "/test_proxy — проверить прокси",
+        "/test_proxy — проверить прокси\n"
+        "/sync_articles — синхронизировать артикулы\n"
+        "/articles — детали по артикулам\n\n"
+        "Для получения помощи используйте /help.",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
     )
@@ -151,7 +156,7 @@ async def dev_commands_callback(update: Update, context: ContextTypes.DEFAULT_TY
         "`/spp_unsubscribe <nm_id>` — отписаться\n"
         "`/test_parser <nm_id>` — проверить парсер\n"
         "`/test_proxy` — проверить прокси\n"
-        "`/sync_articles` — синхронизация артикулов (в разработке)\n"
+        "`/sync_articles` — синхронизация артикулов\n"
         "`/osn` / `/vyk` — ручное указание типа файла (устарело)\n"
         "`/articles` — детали по артикулам\n\n"
         "Для получения помощи используйте `/help`."
@@ -914,7 +919,7 @@ async def test_parser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"✅ *Данные для {nm_id}*\n\n"
             f"Цена по API (до скидки): {data['api_price']} ₽\n"
-            f"Цена на сайте (для покупателя): {data['site_price']} ₽\n"
+            f"Цена со скидкой (текущая): {data['site_price']} ₽\n"
             f"СПП: {data['spp_percent']:.1f}%\n"
             f"Название: {data['title']}\n"
             f"Ссылка: {data['url']}"
@@ -931,7 +936,7 @@ async def test_proxy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         import requests
         test_url = "https://api.ipify.org?format=json"
-        proxies = {"http": PROXY_URL, "https": PROXY_URL}
+        proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
         response = requests.get(test_url, proxies=proxies, timeout=15, verify=False)
         if response.status_code == 200:
             ip = response.json().get('ip')
@@ -940,6 +945,33 @@ async def test_proxy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"❌ Прокси вернул статус {response.status_code}")
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка проверки прокси: {e}")
+
+# === СИНХРОНИЗАЦИЯ АРТИКУЛОВ ===
+async def sync_articles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    await update.message.reply_text("🔄 Загружаю список всех товаров из WB API...")
+    try:
+        from models import add_or_update_article
+        data = get_supplier_items(limit=1000)
+        if isinstance(data, dict) and "error" in data:
+            await update.message.reply_text(f"❌ Ошибка WB API: {data['error']}")
+            return
+        if not isinstance(data, list):
+            await update.message.reply_text("⚠️ Неожиданный формат ответа от API")
+            return
+        count = 0
+        for item in data:
+            nm_id = item.get('nmId')
+            article = item.get('article', '')
+            brand = item.get('brand', '')
+            if nm_id:
+                add_or_update_article(nm_id, article or f"Товар {nm_id}", brand)
+                count += 1
+        await update.message.reply_text(f"✅ Синхронизировано {count} артикулов.")
+    except Exception as e:
+        logger.error(f"Ошибка синхронизации: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 # === СТАТИСТИКА СПП ===
 async def spp_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1318,28 +1350,3 @@ async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_{nm_id}")]
         ])
     )
-async def sync_articles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Синхронизация всех артикулов кабинета через WB API"""
-    if not await check_access(update):
-        return
-    await update.message.reply_text("🔄 Загружаю список всех товаров из WB API...")
-    try:
-        data = get_supplier_items(limit=1000)
-        if isinstance(data, dict) and "error" in data:
-            await update.message.reply_text(f"❌ Ошибка WB API: {data['error']}")
-            return
-        if not isinstance(data, list):
-            await update.message.reply_text("⚠️ Неожиданный формат ответа от API")
-            return
-        count = 0
-        for item in data:
-            nm_id = item.get('nmId')
-            article = item.get('article', '')
-            brand = item.get('brand', '')
-            if nm_id:
-                add_or_update_article(nm_id, article or f"Товар {nm_id}", brand)
-                count += 1
-        await update.message.reply_text(f"✅ Синхронизировано {count} артикулов.")
-    except Exception as e:
-        logger.error(f"Ошибка синхронизации: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {e}")
