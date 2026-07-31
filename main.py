@@ -9,13 +9,12 @@ from config import TELEGRAM_BOT_TOKEN, logger
 from flask_app import run_flask
 from handlers import *
 from services import scheduler, scheduled_morning_digest, scheduled_evening_digest
-from models import init_spp_tables, init_spp_global_settings
+from models import init_db, init_spp_tables, init_spp_global_settings
 from spp_monitor import monitor_spp
 from wb_api import get_aggregated_stats
 
 
 def refresh_wb_cache():
-    """Фоновая задача: обновляет кеш WB API каждый час"""
     logger.info("🔄 Фоновое обновление кеша WB API")
     try:
         get_aggregated_stats(force_refresh=True)
@@ -26,7 +25,8 @@ def refresh_wb_cache():
 def main():
     print("🤖 Запуск бота...")
 
-    # Инициализация таблиц БД (включая СПП и глобальные настройки)
+    # Инициализация БД (создание таблиц и добавление столбцов)
+    init_db()
     init_spp_tables()
     init_spp_global_settings()
 
@@ -34,7 +34,6 @@ def main():
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    # Создаём приложение бота
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
     # === КОМАНДЫ ===
@@ -43,7 +42,6 @@ def main():
     app.add_handler(CommandHandler("news_now", news_now_cmd))
     app.add_handler(CommandHandler("set_news", set_news_cmd))
     app.add_handler(CommandHandler("set_news_query", set_news_query_cmd))
-    # Команды СПП
     app.add_handler(CommandHandler("spp_check", spp_check_cmd))
     app.add_handler(CommandHandler("spp_list", spp_list_cmd))
 
@@ -58,7 +56,6 @@ def main():
     app.add_handler(CallbackQueryHandler(news_settings_callback, pattern="^news_settings$"))
     app.add_handler(CallbackQueryHandler(news_now_callback, pattern="^news_now$"))
     app.add_handler(CallbackQueryHandler(news_toggle_callback, pattern="^news_toggle$"))
-    # Удаляем news_query_callback — он не нужен
     app.add_handler(CallbackQueryHandler(news_time_callback, pattern="^news_time$"))
     app.add_handler(CallbackQueryHandler(news_time_set_callback, pattern="^news_time_"))
 
@@ -90,7 +87,7 @@ def main():
     # === СПП ===
     app.add_handler(CallbackQueryHandler(menu_spp_callback, pattern="^menu_spp$"))
     app.add_handler(CallbackQueryHandler(spp_show_articles_callback, pattern="^spp_show_articles$"))
-    app.add_handler(CallbackQueryHandler(spp_subscribe_article_callback, pattern="^spp_subscribe_article_"))
+    app.add_handler(CallbackQueryHandler(spp_subscribe_article_callback, pattern="^spp_subscribe_"))
     app.add_handler(CallbackQueryHandler(spp_my_subscriptions_callback, pattern="^spp_my_subscriptions$"))
     app.add_handler(CallbackQueryHandler(spp_unsubscribe_button_callback, pattern="^spp_unsubscribe_"))
     app.add_handler(CallbackQueryHandler(spp_toggle_global_callback, pattern="^spp_toggle_global$"))
@@ -99,7 +96,7 @@ def main():
     app.add_handler(CallbackQueryHandler(spp_mute_callback, pattern="^spp_mute_"))
     app.add_handler(CallbackQueryHandler(spp_graph_callback, pattern="^spp_graph_"))
 
-    # === ОБРАБОТЧИКИ ФАЙЛОВ И ТЕКСТА ===
+    # === ФАЙЛЫ И ТЕКСТ ===
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
@@ -112,7 +109,6 @@ def main():
         IntervalTrigger(hours=1),
         next_run_time=datetime.now() + timedelta(minutes=1)
     )
-
     scheduler.start()
 
     print("✅ Бот готов, запускаем polling...")
