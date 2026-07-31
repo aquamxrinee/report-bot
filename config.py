@@ -32,10 +32,11 @@ if not DATA_DIR.exists():
 DATA_DIR.mkdir(exist_ok=True)
 TEMP_DIR.mkdir(exist_ok=True)
 
-# ===== ПРОКСИ ДЛЯ ПАРСИНГА =====
-# Получаем прокси из переменной окружения, если нет — используем значение по умолчанию
+# ===== ТОКЕН WB API (добавлен) =====
+WB_API_TOKEN = os.getenv("WB_API_TOKEN")
+
+# ===== ПРОКСИ =====
 proxy_raw = os.getenv("PROXY_URL", "dd3e124eaquamxrinee-c-ru:svsvs12e2d@gate.cyberyozh.net:11000")
-# Если протокол не указан, добавляем http://
 if not proxy_raw.startswith(("http://", "https://", "socks5://")):
     proxy_raw = "http://" + proxy_raw
 PROXY_URL = proxy_raw
@@ -54,3 +55,7 @@ if ALLOWED_USERS:
 else:
     print("⚠️ ALLOWED_USER_IDS не задан. Бот доступен всем.")
 print(f"🔑 Прокси: {PROXY_URL[:50]}...")
+if WB_API_TOKEN:
+    print("🔑 WB API токен задан")
+else:
+    print("⚠️ WB_API_TOKEN не задан")
