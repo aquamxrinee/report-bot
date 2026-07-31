@@ -45,7 +45,6 @@ async def send_brand_notification(bot_app, user_id: int, brand: str, old_avg: fl
 async def monitor_spp(bot_app):
     logger.info("🔄 Запуск мониторинга СПП...")
     nm_ids = get_all_tracked_articles()
-    # Увеличиваем задержки между артикулами
     for nm_id in nm_ids:
         try:
             data = get_spp_for_article(nm_id)
