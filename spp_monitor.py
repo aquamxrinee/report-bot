@@ -49,7 +49,7 @@ async def monitor_spp(bot_app):
         try:
             data = await get_spp_for_article_async(nm_id)
             if not data:
-                logger.warning(f"⚠️ Не удалось получить данные для {nm_id}")
+                logger.warning(f"⚠️ Не удалось получить данные para {nm_id}")
                 await asyncio.sleep(10)
                 continue
             article_name = data.get('title', f"Товар {nm_id}")
@@ -74,7 +74,7 @@ async def monitor_spp(bot_app):
             users = get_subscribed_users(nm_id)
             for user_id in users:
                 if is_muted(user_id, nm_id):
-                    logger.info(f"🔇 Уведомление для {nm_id} заглушено para пользователя {user_id}")
+                    logger.info(f"🔇 Уведомление para {nm_id} заглушено para пользователя {user_id}")
                     continue
                 conn = sqlite3.connect(str(DB_PATH))
                 cursor = conn.cursor()
