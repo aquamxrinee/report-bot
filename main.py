@@ -110,3 +110,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+app.add_handler(CommandHandler("sync_articles", sync_articles_cmd))
