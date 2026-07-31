@@ -79,7 +79,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/spp_list — список подписок\n"
         "/spp_check — запустить проверку\n"
         "/spp_status — статус мониторинга\n"
-        "/spp_stats — статистика СПП",
+        "/spp_stats — статистика СПП\n"
+        "/test_parser <nm_id> — проверить парсер",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
     )
@@ -147,6 +148,7 @@ async def dev_commands_callback(update: Update, context: ContextTypes.DEFAULT_TY
         "`/spp_list` — список ваших подписок\n"
         "`/spp_subscribe <nm_id> [порог]` — подписаться вручную\n"
         "`/spp_unsubscribe <nm_id>` — отписаться\n"
+        "`/test_parser <nm_id>` — проверить парсер\n"
         "`/sync_articles` — синхронизация артикулов (в разработке)\n"
         "`/osn` / `/vyk` — ручное указание типа файла (устарело)\n"
         "`/articles` — детали по артикулам\n\n"
@@ -891,12 +893,41 @@ async def spp_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "✅ Включён" if settings['enabled'] else "❌ Отключён"
     await update.message.reply_text(f"Текущий статус мониторинга СПП: {status}")
 
+# === ТЕСТ ПАРСЕРА ===
+async def test_parser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Укажите nm_id для проверки. Пример: /test_parser 123456789")
+        return
+    try:
+        nm_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Некорректный nm_id.")
+        return
+    await update.message.reply_text(f"⏳ Парсинг артикула {nm_id}...")
+    data = get_spp_for_article(nm_id)
+    if data:
+        text = (
+            f"✅ *Данные для {nm_id}*\n\n"
+            f"Цена: {data['current_price']} ₽\n"
+            f"Старая цена: {data['old_price']} ₽\n"
+            f"СПП: {data['spp_percent']}%\n"
+            f"Название: {data['title']}\n"
+            f"Ссылка: {data['url']}"
+        )
+        await update.message.reply_text(text, parse_mode='Markdown', disable_web_page_preview=True)
+    else:
+        await update.message.reply_text(f"❌ Не удалось получить данные для {nm_id}. Возможно, страница заблокирована или артикул не существует.")
+
 # === СТАТИСТИКА СПП ===
 async def spp_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
     user_id = update.effective_user.id
-    await update.message.reply_text(await get_spp_stats_text(user_id))
+    text = await get_spp_stats_text(user_id)
+    await update.message.reply_text(text, parse_mode='Markdown', disable_web_page_preview=True)
 
 async def spp_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
@@ -905,10 +936,17 @@ async def spp_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     user_id = update.effective_user.id
     text = await get_spp_stats_text(user_id)
-    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Обновить", callback_data="spp_stats")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")]
-    ]))
+    try:
+        await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Обновить", callback_data="spp_stats")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")]
+        ]), disable_web_page_preview=True)
+    except Exception as e:
+        logger.warning(f"Не удалось отредактировать сообщение статистики: {e}")
+        await query.message.reply_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔄 Обновить", callback_data="spp_stats")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")]
+        ]), disable_web_page_preview=True)
 
 async def get_spp_stats_text(user_id: int) -> str:
     subs = get_user_subscriptions(user_id)
