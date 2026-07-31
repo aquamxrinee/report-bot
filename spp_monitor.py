@@ -13,65 +13,10 @@ from models import (
     get_last_spp, save_spp_history, is_muted,
     get_article_by_nm_id, get_nm_id_by_article,
     get_all_tracked_articles,
-    get_user_brand_subscriptions, get_all_brand_subscribers
+    get_user_brand_subscriptions, get_all_brand_subscribers,
+    get_articles_by_brand, save_brand_history, get_last_brand_spp
 )
 from spp_parser import get_spp_for_article
-
-
-def init_brand_history_table():
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS spp_brand_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            brand TEXT NOT NULL,
-            avg_spp REAL,
-            checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-
-def save_brand_history(brand: str, avg_spp: float):
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO spp_brand_history (brand, avg_spp)
-        VALUES (?, ?)
-    ''', (brand, avg_spp))
-    conn.commit()
-    conn.close()
-
-
-def get_last_brand_spp(brand: str) -> Optional[Dict]:
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT avg_spp, checked_at
-        FROM spp_brand_history
-        WHERE brand = ?
-        ORDER BY checked_at DESC LIMIT 1
-    ''', (brand,))
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        return {'avg_spp': row[0], 'checked_at': row[1]}
-    return None
-
-
-def get_articles_by_brand(brand: str) -> List[int]:
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT DISTINCT nm_id
-        FROM article_stats
-        WHERE brand = ? AND nm_id IS NOT NULL AND nm_id != 0
-    ''', (brand,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [row[0] for row in rows]
-
 
 async def send_brand_notification(bot_app, user_id: int, brand: str, old_avg: float, new_avg: float, diff: float):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -97,11 +42,8 @@ async def send_brand_notification(bot_app, user_id: int, brand: str, old_avg: fl
     except Exception as e:
         logger.error(f"❌ Ошибка отправки уведомления: {e}")
 
-
 async def monitor_spp(bot_app):
     logger.info("🔄 Запуск мониторинга СПП...")
-
-    # 1. Мониторинг артикулов
     nm_ids = get_all_tracked_articles()
     for nm_id in nm_ids:
         try:
@@ -144,7 +86,6 @@ async def monitor_spp(bot_app):
         except Exception as e:
             logger.error(f"❌ Ошибка мониторинга для {nm_id}: {e}")
 
-    # 2. Мониторинг брендов
     brand_subs = {}
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -189,7 +130,6 @@ async def monitor_spp(bot_app):
 
     logger.info("✅ Мониторинг СПП завершён")
 
-
 def generate_spp_graph(nm_id: int, width: int = 800, height: int = 400) -> Optional[str]:
     history = get_spp_history(nm_id, limit=30)
     if not history:
@@ -198,7 +138,6 @@ def generate_spp_graph(nm_id: int, width: int = 800, height: int = 400) -> Optio
     dates = [h['checked_at'][:16] for h in history]
     spp_values = [h['spp_percent'] for h in history]
     prices = [h['current_price'] for h in history]
-
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(width/100, height/100), sharex=True)
     ax1.plot(dates, spp_values, marker='o', color='red', linewidth=2)
     ax1.set_ylabel('СПП, %')
@@ -210,7 +149,6 @@ def generate_spp_graph(nm_id: int, width: int = 800, height: int = 400) -> Optio
     ax2.set_xlabel('Дата')
     plt.xticks(rotation=45, ha='right')
     plt.tight_layout()
-
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=100)
     buf.seek(0)
