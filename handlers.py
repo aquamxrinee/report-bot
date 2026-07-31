@@ -8,9 +8,7 @@ import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, filters
 
-from config import (
-    MINI_APP_URL, TEMP_DIR, DB_PATH, USER_NAMES, logger, ALLOWED_USERS
-)
+from config import MINI_APP_URL, TEMP_DIR, DB_PATH, USER_NAMES, logger, ALLOWED_USERS
 from models import (
     get_all_reports, get_all_report_ids, get_report_values, get_report_metrics,
     get_previous_report_id, get_previous_reports, get_article_stats_for_report,
@@ -21,12 +19,11 @@ from models import (
     get_news_settings, set_news_settings,
     calculate_file_hash,
     get_all_articles_with_costs,
-    # Функции для СПП
+    get_nm_id_by_article, get_article_by_nm_id,
     get_last_spp, get_spp_history, is_muted, mute_article,
     get_user_subscriptions, subscribe_user, unsubscribe_user,
-    init_spp_tables,
-    # Глобальные настройки
-    init_spp_global_settings, get_spp_global_settings, set_spp_global_settings
+    init_spp_tables, init_spp_global_settings,
+    get_spp_global_settings, set_spp_global_settings
 )
 from services import (
     detect_report_type, parse_date_from_period,
@@ -35,7 +32,6 @@ from services import (
 from spp_parser import get_spp_for_article
 from spp_monitor import generate_spp_graph, monitor_spp
 
-# ===== ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ =====
 async def check_access(update: Update) -> bool:
     if not ALLOWED_USERS:
         return True
@@ -48,7 +44,6 @@ async def check_access(update: Update) -> bool:
         return False
     return True
 
-# ===== ГЛАВНОЕ МЕНЮ =====
 def get_main_menu():
     keyboard = [
         [InlineKeyboardButton("📱 Открыть приложение", web_app={"url": MINI_APP_URL})],
@@ -58,7 +53,6 @@ def get_main_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ===== КОМАНДЫ БОТА =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -80,16 +74,15 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/articles — детали по артикулам (текущий отчет)\n"
         "/news_now — получить новости прямо сейчас\n"
         "/set_news — настроить новостные сводки\n"
-        "/set_news_query — изменить поисковый запрос (не используется)\n\n"
+        "/set_news_query — не используется\n\n"
         "**Мониторинг СПП:**\n"
-        "Все настройки доступны через кнопки в меню «Настройки → Мониторинг СПП»\n"
+        "Все настройки через кнопки меню «Настройки → Мониторинг СПП»\n"
         "/spp_check — запустить проверку сейчас\n\n"
         "Также можно использовать кнопки меню.",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
     )
 
-# ===== ПОДМЕНЮ "АНАЛИТИКА" =====
 async def menu_analytics_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -105,7 +98,6 @@ async def menu_analytics_main_callback(update: Update, context: ContextTypes.DEF
         parse_mode='Markdown'
     )
 
-# ===== ОБРАБОТЧИКИ МЕНЮ =====
 async def menu_history_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -125,7 +117,6 @@ async def menu_analytics_callback(update: Update, context: ContextTypes.DEFAULT_
     context.user_data['analytics_page'] = 0
     await show_analytics_selection(query, context, page=0)
 
-# ===== НАСТРОЙКИ =====
 async def menu_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -149,7 +140,6 @@ async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup=get_main_menu()
     )
 
-# ===== НОВОСТНОЙ РАЗДЕЛ =====
 async def news_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -160,9 +150,9 @@ async def news_settings_callback(update: Update, context: ContextTypes.DEFAULT_T
     status = "✅ Включены" if settings['enabled'] else "❌ Отключены"
     text = f"⚙️ **Настройки новостей**\n\n"
     text += f"Статус: {status}\n"
-    text += f"Поисковый запрос: `{settings['query']}` (не используется — новости из канала @news4sellers)\n"
-    text += f"Утреннее время: {settings['morning_time']}\n"
-    text += f"Вечернее время: {settings['evening_time']}\n\n"
+    text += f"Поисковый запрос: `{settings['query']}` (не используется)\n"
+    text += f"Утро: {settings['morning_time']}\n"
+    text += f"Вечер: {settings['evening_time']}\n\n"
     text += "Выберите действие:"
     keyboard = [
         [InlineKeyboardButton("📰 Получить новости сейчас", callback_data="news_now")],
@@ -177,14 +167,9 @@ async def news_now_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     query = update.callback_query
     await query.answer()
-    user_id = update.effective_user.id
-    settings = get_news_settings(user_id)
-    
-    # Парсим новости через веб-версию
     from tg_news_parser import fetch_channel_messages, format_news_digest
     messages = fetch_channel_messages("news4sellers", limit=10)
     text = format_news_digest(messages, "📰 **Свежие новости маркетплейсов**")
-    
     await query.edit_message_text(
         text,
         parse_mode='Markdown',
@@ -239,17 +224,11 @@ async def news_time_set_callback(update: Update, context: ContextTypes.DEFAULT_T
     await news_settings_callback(update, context)
 
 async def news_now_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /news_now — получить новости прямо сейчас"""
     if not await check_access(update):
         return
-    user_id = update.effective_user.id
-    settings = get_news_settings(user_id)
-    
-    # Парсим новости через веб-версию
     from tg_news_parser import fetch_channel_messages, format_news_digest
     messages = fetch_channel_messages("news4sellers", limit=10)
     text = format_news_digest(messages, "📰 **Свежие новости маркетплейсов**")
-    
     await update.message.reply_text(
         text,
         parse_mode='Markdown',
@@ -269,28 +248,21 @@ async def set_news_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += f"Рассылка: {status}\n"
     text += f"Утро: {settings['morning_time']}\n"
     text += f"Вечер: {settings['evening_time']}\n\n"
-    text += "Новости берутся из канала @news4sellers\n"
-    text += "Используйте меню для настройки (кнопка '⚙️ Настройки' в главном меню)."
+    text += "Новости из канала @news4sellers"
     await update.message.reply_text(text, parse_mode='Markdown')
 
 async def set_news_query_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
-    await update.message.reply_text(
-        "ℹ️ Поисковый запрос больше не используется.\n"
-        "Новости теперь берутся из канала @news4sellers."
-    )
+    await update.message.reply_text("ℹ️ Поисковый запрос больше не используется. Новости из @news4sellers.")
 
-# ===== НАСТРОЙКИ СЕБЕСТОИМОСТИ =====
 async def menu_costs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not await check_access(update):
             return
         query = update.callback_query
         await query.answer()
-        logger.info("📂 Открываем меню себестоимости")
         articles = get_all_articles_with_costs()
-        logger.info(f"✅ Получено {len(articles)} артикулов")
         keyboard = []
         for item in articles:
             article = item['article']
@@ -307,8 +279,7 @@ async def menu_costs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
         keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")])
         await query.edit_message_text(
             "💰 **Управление себестоимостью**\n\n"
-            "Выберите артикул для редактирования. Текущая себестоимость указана на кнопке.\n"
-            "Первая установленная себестоимость будет действовать с даты первого отчёта.",
+            "Выберите артикул для редактирования.",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
@@ -325,8 +296,8 @@ async def cost_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         article = query.data.split("_")[2]
         current = get_current_cost(article)
         keyboard = [
-            [InlineKeyboardButton("➕ Установить новую себестоимость", callback_data=f"cost_set_{article}")],
-            [InlineKeyboardButton("📜 История изменений", callback_data=f"cost_history_{article}")],
+            [InlineKeyboardButton("➕ Установить новую", callback_data=f"cost_set_{article}")],
+            [InlineKeyboardButton("📜 История", callback_data=f"cost_history_{article}")],
             [InlineKeyboardButton("◀️ Назад к списку", callback_data="menu_costs")]
         ]
         text = f"💰 **Артикул:** `{article}`\n\n"
@@ -348,9 +319,8 @@ async def cost_set_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     article = query.data.split("_")[2]
     context.user_data['waiting_for_cost'] = article
     await query.edit_message_text(
-        f"💵 Введите новую себестоимость для артикула `{article}` в рублях (только число):\n\n"
-        "Например: `450.50`\n\n"
-        "Если это первая установка, она будет действовать с даты первого отчёта.",
+        f"💵 Введите новую себестоимость для артикула `{article}` (только число):\n"
+        "Например: 450.50",
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("◀️ Назад к списку", callback_data="menu_costs")]
@@ -365,7 +335,7 @@ async def cost_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
     article = query.data.split("_")[2]
     history = get_cost_history(article)
     if not history:
-        await query.edit_message_text(f"📭 Для артикула `{article}` нет истории изменений.", parse_mode='Markdown')
+        await query.edit_message_text(f"📭 Для артикула `{article}` нет истории.", parse_mode='Markdown')
         return
     text = f"📜 **История себестоимости:** `{article}`\n\n"
     keyboard = []
@@ -392,10 +362,10 @@ async def cost_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     record_id = int(query.data.split("_")[2])
     success = delete_cost_history(record_id)
     if success:
-        await query.edit_message_text("✅ Запись удалена из истории.")
+        await query.edit_message_text("✅ Запись удалена.")
         await menu_costs_callback(update, context)
     else:
-        await query.edit_message_text("❌ Не удалось удалить запись (возможно, она активна или уже удалена).")
+        await query.edit_message_text("❌ Не удалось удалить запись (возможно, она активна).")
 
 async def cost_delete_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
@@ -408,10 +378,9 @@ async def cost_delete_all_callback(update: Update, context: ContextTypes.DEFAULT
         [InlineKeyboardButton("❌ Отмена", callback_data=f"cost_history_{article}")]
     ]
     await query.edit_message_text(
-        f"⚠️ Вы уверены, что хотите удалить **все** записи себестоимости для артикула `{article}`?\n"
-        "Это действие необратимо.",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        f"⚠️ Удалить все записи для `{article}`? Действие необратимо.",
+        parse_mode='Markdown',
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def cost_confirm_delete_all_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -422,9 +391,9 @@ async def cost_confirm_delete_all_callback(update: Update, context: ContextTypes
     article = query.data.split("_")[4]
     deleted = delete_all_costs_for_article(article)
     if deleted > 0:
-        await query.edit_message_text(f"✅ Удалено {deleted} записей для артикула `{article}`.", parse_mode='Markdown')
+        await query.edit_message_text(f"✅ Удалено {deleted} записей для `{article}`.", parse_mode='Markdown')
     else:
-        await query.edit_message_text(f"❌ Не найдено записей для артикула `{article}`.", parse_mode='Markdown')
+        await query.edit_message_text(f"❌ Не найдено записей для `{article}`.", parse_mode='Markdown')
     await menu_costs_callback(update, context)
 
 async def handle_cost_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -448,18 +417,17 @@ async def handle_cost_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['waiting_for_cost'] = None
         keyboard = [[InlineKeyboardButton("◀️ К артикулам", callback_data="menu_costs")]]
         await update.message.reply_text(
-            f"✅ Себестоимость для артикула `{article}` установлена: **{cost:.2f} ₽**",
+            f"✅ Себестоимость для `{article}` установлена: **{cost:.2f} ₽**",
             reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='Markdown'
         )
     except ValueError:
-        await update.message.reply_text("❌ Введите корректное число (например, 450.50).")
+        await update.message.reply_text("❌ Введите число.")
 
-# ===== АНАЛИТИКА ПО АРТИКУЛАМ =====
 async def show_analytics_selection(query, context, page):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
-        await query.edit_message_text("📭 Нет отчётов для анализа.", reply_markup=InlineKeyboardMarkup([
+        await query.edit_message_text("📭 Нет отчётов.", reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
         ]))
         return
@@ -468,7 +436,7 @@ async def show_analytics_selection(query, context, page):
     total_pages = (total + 9) // 10 if total > 0 else 1
     current_page = page
 
-    msg = f"📊 **Выберите отчёты для анализа**\n"
+    msg = f"📊 **Выберите отчёты**\n"
     msg += f"Выбрано: {len(selected)} из {total}\n"
     msg += f"\n*Страница {current_page+1} из {total_pages}*\n\n"
 
@@ -600,7 +568,7 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
     conn.close()
 
     if len(reports_data) < 1:
-        await query.edit_message_text("❌ Не удалось загрузить выбранные отчёты.", reply_markup=InlineKeyboardMarkup([
+        await query.edit_message_text("❌ Не удалось загрузить отчёты.", reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")]
         ]))
         return
@@ -682,7 +650,6 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# ===== ИСТОРИЯ (АРХИВ) С ВОЗМОЖНОСТЬЮ УДАЛЕНИЯ =====
 async def show_history_page(query, context, page):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
@@ -700,7 +667,7 @@ async def show_history_page(query, context, page):
     min_date, max_date = get_report_date_range()
     msg = f"📊 **Всего отчетов: {total}**\n"
     if min_date and max_date:
-        msg += f"📅 Данные доступны с **{min_date}** по **{max_date}**\n"
+        msg += f"📅 Данные с **{min_date}** по **{max_date}**\n"
     msg += f"\n*Страница {current_page+1} из {total_pages}*\n"
 
     keyboard = []
@@ -716,7 +683,6 @@ async def show_history_page(query, context, page):
             callback_data = f"history_report_{report_id}"
         keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
-    # Навигация
     nav = []
     if current_page > 0:
         nav.append(InlineKeyboardButton("◀️", callback_data=f"history_page_{current_page-1}"))
@@ -734,7 +700,6 @@ async def show_history_page(query, context, page):
     keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="back_to_menu")])
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# ===== ПРОДОЛЖЕНИЕ ИСТОРИИ =====
 async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -825,20 +790,16 @@ async def history_confirm_delete_callback(update: Update, context: ContextTypes.
                 [InlineKeyboardButton("◀️ Назад к списку", callback_data="menu_history")]
             ]))
 
-# ============================================================
-# ===== ОБРАБОТЧИК ФАЙЛОВ (оригинальная логика) =====
-# ============================================================
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
-    user_id = update.effective_user.id
     document = update.message.document
     if not document:
         await update.message.reply_text("❌ Это не файл.")
         return
     file_name = document.file_name or "unknown.xlsx"
     if not (file_name.endswith('.xlsx') or file_name.endswith('.xls')):
-        await update.message.reply_text("❌ Поддерживаются только Excel-файлы (.xlsx, .xls).")
+        await update.message.reply_text("❌ Поддерживаются только Excel-файлы.")
         return
 
     temp_path = Path(TEMP_DIR) / f"{datetime.now().timestamp()}_{file_name}"
@@ -877,7 +838,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         processor = ReportProcessor()
         template_path = Path("шаблон.xlsx")
         if not template_path.exists():
-            await update.message.reply_text("❌ Файл шаблона 'шаблон.xlsx' не найден на сервере.")
+            await update.message.reply_text("❌ Файл шаблона 'шаблон.xlsx' не найден.")
             return
         
         values, articles, date_period = processor.process_files(osn_path, vyk_path, template_path)
@@ -909,7 +870,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_document(
                 document=f,
                 filename=f"отчёт_{date_period}.xlsx",
-                caption=f"✅ Отчёт за период {date_period} обработан и сохранён!"
+                caption=f"✅ Отчёт за {date_period} обработан и сохранён!"
             )
         
         summary = (
@@ -931,7 +892,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка обработки: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =====
 def parse_date_from_period(date_period):
     try:
         parts = date_period.split('-')
@@ -1002,7 +962,6 @@ def calculate_profit_and_margin(articles, start_date, end_date):
     margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
     return total_profit, margin
 
-# ===== ОБРАБОТЧИК ТЕКСТА =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1014,11 +973,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("Используйте кнопки меню или команды из /help")
 
-# ============================================================
-# ===== БЛОК МОНИТОРИНГА СПП (упрощённое управление) =====
-# ============================================================
-
-# ---- Команды ----
 async def spp_check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1040,10 +994,10 @@ async def spp_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     text = "📋 Ваши подписки:\n\n"
     for sub in subs:
-        text += f"• {sub['nm_id']} (порог: {sub['threshold']} п.п.)\n"
+        article_name = get_article_by_nm_id(sub['nm_id'])
+        text += f"• {article_name} (порог: {sub['threshold']} п.п.)\n"
     await update.message.reply_text(text)
 
-# ---- Колбэки для меню СПП ----
 async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1053,17 +1007,16 @@ async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "✅ Включён" if settings['enabled'] else "❌ Отключён"
     text = (
         "📊 *Мониторинг СПП*\n\n"
-        "СПП — это скидка постоянного покупателя, которую Wildberries "
-        "добавляет покупателю. Она меняется динамически.\n\n"
-        f"Глобальный статус: {status}\n"
-        f"Интервал проверки: {settings['interval_minutes']} мин.\n"
+        "СПП — скидка постоянного покупателя. Меняется динамически.\n\n"
+        f"Статус: {status}\n"
+        f"Интервал: {settings['interval_minutes']} мин.\n"
         f"Порог по умолчанию: {settings['default_threshold']} п.п.\n\n"
         "Выберите действие:"
     )
     keyboard = [
         [InlineKeyboardButton("➕ Подписаться на артикул", callback_data="spp_show_articles")],
         [InlineKeyboardButton("📋 Мои подписки", callback_data="spp_my_subscriptions")],
-        [InlineKeyboardButton("🔃 Вкл/Выкл мониторинг", callback_data="spp_toggle_global")],
+        [InlineKeyboardButton("🔃 Вкл/Выкл", callback_data="spp_toggle_global")],
         [InlineKeyboardButton("🎯 Изменить порог", callback_data="spp_threshold")],
         [InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")]
     ]
@@ -1091,7 +1044,7 @@ async def spp_show_articles_callback(update: Update, context: ContextTypes.DEFAU
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")])
     await query.edit_message_text(
         "📋 **Выберите артикул для подписки:**\n\n"
-        "После подписки бот будет отслеживать изменения СПП по этому товару.",
+        "Бот будет отслеживать изменения СПП по этому товару.",
         parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -1103,11 +1056,11 @@ async def spp_subscribe_article_callback(update: Update, context: ContextTypes.D
     await query.answer()
     article = query.data.replace("spp_subscribe_article_", "")
     user_id = update.effective_user.id
-    nm_id = get_nm_id_by_article(article)  # нужно реализовать
+    nm_id = get_nm_id_by_article(article)
     if not nm_id:
         await query.edit_message_text(
             f"❌ Не удалось найти nm_id для артикула {article}.\n"
-            "Пожалуйста, убедитесь, что артикул загружен в систему.",
+            "Возможно, артикул не загружен в систему.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("◀️ Назад", callback_data="spp_show_articles")]
             ])
@@ -1116,8 +1069,8 @@ async def spp_subscribe_article_callback(update: Update, context: ContextTypes.D
     threshold = get_spp_global_settings()['default_threshold']
     subscribe_user(user_id, nm_id, threshold)
     await query.edit_message_text(
-        f"✅ Вы подписались на отслеживание СПП для артикула {article}.\n"
-        f"Порог изменения: {threshold} п.п.",
+        f"✅ Вы подписались на отслеживание СПП для {article}.\n"
+        f"Порог: {threshold} п.п.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("◀️ Назад к настройкам", callback_data="menu_spp")]
         ])
@@ -1132,7 +1085,7 @@ async def spp_my_subscriptions_callback(update: Update, context: ContextTypes.DE
     subs = get_user_subscriptions(user_id)
     if not subs:
         await query.edit_message_text(
-            "📭 У вас нет активных подписок на артикулы.",
+            "📭 У вас нет активных подписок.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("➕ Выбрать артикулы", callback_data="spp_show_articles")],
                 [InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")]
@@ -1142,7 +1095,7 @@ async def spp_my_subscriptions_callback(update: Update, context: ContextTypes.DE
     text = "📋 *Ваши подписки:*\n\n"
     keyboard = []
     for sub in subs:
-        article_name = get_article_by_nm_id(sub['nm_id'])  # нужно реализовать
+        article_name = get_article_by_nm_id(sub['nm_id'])
         text += f"• {article_name} — порог {sub['threshold']} п.п.\n"
         keyboard.append([
             InlineKeyboardButton(
@@ -1164,7 +1117,6 @@ async def spp_unsubscribe_button_callback(update: Update, context: ContextTypes.
     unsubscribe_user(user_id, nm_id)
     await spp_my_subscriptions_callback(update, context)
 
-# ---- Глобальные настройки ----
 async def spp_toggle_global_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1198,7 +1150,6 @@ async def spp_set_threshold_callback(update: Update, context: ContextTypes.DEFAU
     set_spp_global_settings(default_threshold=threshold)
     await menu_spp_callback(update, context)
 
-# ---- Колбэки для уведомлений ----
 async def spp_mute_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1234,17 +1185,6 @@ async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ])
     )
 
-# ---- Вспомогательные функции для работы с артикулами (заглушки) ----
-def get_nm_id_by_article(article_name: str) -> int:
-    # TODO: реализовать поиск nm_id по артикулу из БД
-    # Пока возвращаем 0
-    return 0
-
-def get_article_by_nm_id(nm_id: int) -> str:
-    # TODO: реализовать поиск названия по nm_id
-    return f"Товар {nm_id}"
-
-# ---- Обработка ввода для подписки через текст ----
 async def spp_handle_subscribe_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1258,7 +1198,7 @@ async def spp_handle_subscribe_input(update: Update, context: ContextTypes.DEFAU
     try:
         nm_id = int(parts[0])
     except ValueError:
-        await update.message.reply_text("❌ Некорректный nmId. Введите число.")
+        await update.message.reply_text("❌ Некорректный nmId.")
         return
     threshold = 5.0
     if len(parts) > 1:
