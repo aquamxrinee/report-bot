@@ -953,14 +953,13 @@ async def sync_articles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔄 Синхронизация артикулов из статистики продаж и остатков...")
     try:
         from models import add_or_update_article
-        nm_ids = get_all_nm_ids_from_api(days_back=90)  # последние 90 дней
+        nm_ids = get_all_nm_ids_from_api(days_back=90)
         if not nm_ids:
             await update.message.reply_text("⚠️ Не удалось найти артикулы в статистике. Попробуйте загрузить отчёты.")
             return
         count = 0
         for nm_id in nm_ids:
-            # Сохраняем артикул с report_id = 0 (синхронизированный через API)
-            add_or_update_article(nm_id, f"Товар {nm_id}", "Unknown")
+            add_or_update_article(nm_id, str(nm_id), "Unknown")
             count += 1
         await update.message.reply_text(f"✅ Синхронизировано {count} артикулов из статистики.")
     except Exception as e:
@@ -1080,7 +1079,11 @@ async def spp_show_articles_callback(update: Update, context: ContextTypes.DEFAU
         return
     keyboard = []
     for article, nm_id in rows[:20]:
-        keyboard.append([InlineKeyboardButton(article[:35], callback_data=f"spp_subscribe_art_{nm_id}")])
+        if article == str(nm_id) or article.startswith("Товар"):
+            label = str(nm_id)
+        else:
+            label = f"{article} ({nm_id})"
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"spp_subscribe_art_{nm_id}")])
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")])
     await query.edit_message_text(
         "📋 Выберите артикул для подписки:",
