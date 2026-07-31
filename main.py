@@ -47,6 +47,7 @@ def main():
     app.add_handler(CommandHandler("spp_status", spp_status_cmd))
     app.add_handler(CommandHandler("spp_stats", spp_stats_cmd))
     app.add_handler(CommandHandler("test_parser", test_parser_cmd))
+    app.add_handler(CommandHandler("test_proxy", test_proxy_cmd))
 
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
@@ -109,4 +110,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-app.add_handler(CommandHandler("test_proxy", test_proxy_cmd))
