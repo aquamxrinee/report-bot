@@ -32,9 +32,8 @@ if not DATA_DIR.exists():
 DATA_DIR.mkdir(exist_ok=True)
 TEMP_DIR.mkdir(exist_ok=True)
 
-# ===== ПРОКСИ ДЛЯ ПАРСИНГА =====
-PROXY_URL = os.getenv("PROXY_URL", "http://roman711054e2317-c-ru:bUhGkHSc29orvafa@gate.cyberyozh.net:10000")
-# Если нужно SOCKS5, замените http на socks5 и установите requests[socks]
+# ===== ПРОКСИ ДЛЯ ПАРСИНГА (обновлённый) =====
+PROXY_URL = os.getenv("PROXY_URL", "http://roman711054e2317-c-ru-st-1796:bUhGkHSc29orvafa@gate.cyberyozh.net:10000")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
