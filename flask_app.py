@@ -10,21 +10,17 @@ from spp_monitor import generate_spp_graph
 
 flask_app = Flask(__name__, template_folder='templates')
 
-
 @flask_app.before_request
 def log_request():
     logger.info(f"📥 {request.method} {request.path}")
-
 
 @flask_app.route("/")
 def health():
     return "OK", 200
 
-
 @flask_app.route("/ping")
 def ping():
     return "pong", 200
-
 
 @flask_app.route('/mini')
 def mini():
@@ -35,10 +31,8 @@ def mini():
         logger.error(f"❌ Ошибка /mini: {e}\n{traceback.format_exc()}")
         return f"Ошибка: {e}", 500
 
-
 @flask_app.route('/api/stats')
 def stats():
-    """Агрегированные метрики из БД"""
     logger.info("➡️ /api/stats вызван")
     try:
         data = get_aggregated_metrics()
@@ -47,10 +41,8 @@ def stats():
         logger.error(f"❌ Ошибка /api/stats: {e}\n{traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
-
 @flask_app.route('/api/wb_stats')
 def wb_stats():
-    """Живая статистика из WB API (с кешем 1 час)"""
     logger.info("➡️ /api/wb_stats вызван")
     try:
         force = request.args.get('force', 'false').lower() == 'true'
@@ -60,10 +52,8 @@ def wb_stats():
         logger.error(f"❌ Ошибка /api/wb_stats: {e}\n{traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
-
 @flask_app.route('/api/wb_articles')
 def wb_articles():
-    """Статистика по конкретным артикулам"""
     logger.info("➡️ /api/wb_articles вызван")
     try:
         nm_ids = request.args.get('nm_ids', '')
@@ -72,20 +62,16 @@ def wb_articles():
         ids = [int(x.strip()) for x in nm_ids.split(',') if x.strip()]
         if not ids:
             return jsonify({'error': 'Некорректные nmIds'}), 400
-
         date_from = request.args.get('date_from')
         date_to = request.args.get('date_to')
-
         data = get_articles_stats(ids, date_from, date_to)
         return jsonify(data)
     except Exception as e:
         logger.error(f"❌ Ошибка /api/wb_articles: {e}\n{traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
-
 @flask_app.route('/api/spp_graph/<int:nm_id>')
 def spp_graph_endpoint(nm_id):
-    """Эндпоинт для отображения графика СПП в виде HTML с картинкой"""
     try:
         img_base64 = generate_spp_graph(nm_id)
         if not img_base64:
@@ -104,10 +90,8 @@ def spp_graph_endpoint(nm_id):
         logger.error(f"❌ Ошибка генерации графика: {e}")
         return f"Ошибка: {e}", 500
 
-
 @flask_app.route('/api/debug_metrics')
 def debug_metrics():
-    """Отладочный эндпоинт для проверки метрик в БД"""
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
@@ -122,7 +106,6 @@ def debug_metrics():
         return jsonify({'report_id': report_id, 'metrics': metrics})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
 
 def run_flask():
     port = int(os.getenv("PORT", 8080))
