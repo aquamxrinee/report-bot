@@ -3,7 +3,7 @@ import aiohttp
 import json
 import re
 import random
-from datetime import datetime, timedelta  # <-- ИСПРАВЛЕНО: добавлен timedelta
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
@@ -21,9 +21,14 @@ async def get_price_from_api(nm_id: int) -> Optional[float]:
     url = f"{STATISTICS_API}/supplier/sales"
     headers = {"Authorization": f"Bearer {WB_API_TOKEN}"}
     params = {"dateFrom": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")}
+    # Небольшая задержка перед запросом, чтобы не перегружать API
+    await asyncio.sleep(random.uniform(0.5, 1.5))
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, params=params, timeout=15) as response:
+                if response.status == 429:
+                    logger.warning("⚠️ Превышен лимит запросов к WB API (429)")
+                    return None
                 if response.status == 200:
                     data = await response.json()
                     if data and isinstance(data, list):
@@ -39,7 +44,6 @@ async def get_price_from_api(nm_id: int) -> Optional[float]:
 
 async def get_price_from_site(nm_id: int) -> Optional[Dict]:
     url = f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx"
-    proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
     
     for attempt in range(1, 4):
         try:
@@ -52,8 +56,11 @@ async def get_price_from_site(nm_id: int) -> Optional[Dict]:
                 "Pragma": "no-cache",
                 "Referer": "https://www.wildberries.ru/"
             }
+            kwargs = {"headers": headers, "timeout": 30}
+            if PROXY_URL:
+                kwargs["proxy"] = PROXY_URL
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, proxy=PROXY_URL, timeout=30) as response:
+                async with session.get(url, **kwargs) as response:
                     if response.status == 498:
                         logger.warning(f"⚠️ 498 Rate limit для {nm_id}, попытка {attempt}/3")
                         await asyncio.sleep(20 * attempt)
