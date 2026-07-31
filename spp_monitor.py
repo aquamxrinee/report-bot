@@ -11,264 +11,80 @@ from config import logger, DB_PATH
 from models import (
     get_user_subscriptions, get_subscribed_users,
     get_last_spp, save_spp_history, is_muted,
-    get_article_by_nm_id, get_nm_id_by_article
+    get_article_by_nm_id, get_nm_id_by_article,
+    get_all_tracked_articles,
+    get_user_brand_subscriptions, get_all_brand_subscribers
 )
 from spp_parser import get_spp_for_article
 
 
-def init_spp_tables():
-    """Создаёт таблицы для СПП (если ещё не созданы)"""
+def init_brand_history_table():
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS spp_history (
+        CREATE TABLE IF NOT EXISTS spp_brand_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nm_id INTEGER NOT NULL,
-            article TEXT,
-            current_price REAL,
-            old_price REAL,
-            spp_percent REAL,
+            brand TEXT NOT NULL,
+            avg_spp REAL,
             checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS spp_mutes (
-            user_id INTEGER NOT NULL,
-            nm_id INTEGER NOT NULL,
-            mute_until TIMESTAMP,
-            PRIMARY KEY (user_id, nm_id)
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS spp_subscriptions (
-            user_id INTEGER NOT NULL,
-            nm_id INTEGER NOT NULL,
-            threshold REAL DEFAULT 5.0,
-            PRIMARY KEY (user_id, nm_id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
-    logger.info("✅ Таблицы для СПП инициализированы")
-
-
-def save_spp_history(nm_id: int, article: str, current_price: float, old_price: float, spp_percent: float):
-    """Сохраняет запись в историю СПП"""
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO spp_history (nm_id, article, current_price, old_price, spp_percent)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (nm_id, article, current_price, old_price, spp_percent))
     conn.commit()
     conn.close()
 
 
-def get_last_spp(nm_id: int) -> Optional[Dict[str, Any]]:
-    """Возвращает последнюю запись СПП для артикула"""
+def save_brand_history(brand: str, avg_spp: float):
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT current_price, old_price, spp_percent, checked_at
-        FROM spp_history
-        WHERE nm_id = ?
+        INSERT INTO spp_brand_history (brand, avg_spp)
+        VALUES (?, ?)
+    ''', (brand, avg_spp))
+    conn.commit()
+    conn.close()
+
+
+def get_last_brand_spp(brand: str) -> Optional[Dict]:
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT avg_spp, checked_at
+        FROM spp_brand_history
+        WHERE brand = ?
         ORDER BY checked_at DESC LIMIT 1
-    ''', (nm_id,))
+    ''', (brand,))
     row = cursor.fetchone()
     conn.close()
     if row:
-        return {
-            'current_price': row[0],
-            'old_price': row[1],
-            'spp_percent': row[2],
-            'checked_at': row[3]
-        }
+        return {'avg_spp': row[0], 'checked_at': row[1]}
     return None
 
 
-def get_spp_history(nm_id: int, limit: int = 30) -> List[Dict[str, Any]]:
-    """Возвращает историю СПП для построения графика"""
+def get_articles_by_brand(brand: str) -> List[int]:
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('''
-        SELECT checked_at, spp_percent, current_price, old_price
-        FROM spp_history
-        WHERE nm_id = ?
-        ORDER BY checked_at DESC LIMIT ?
-    ''', (nm_id, limit))
-    rows = cursor.fetchall()
-    conn.close()
-    return [{'checked_at': row[0], 'spp_percent': row[1], 'current_price': row[2], 'old_price': row[3]} for row in rows]
-
-
-def is_muted(user_id: int, nm_id: int) -> bool:
-    """Проверяет, заглушены ли уведомления для пользователя по артикулу"""
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT mute_until FROM spp_mutes
-        WHERE user_id = ? AND nm_id = ? AND mute_until > datetime('now')
-    ''', (user_id, nm_id))
-    row = cursor.fetchone()
-    conn.close()
-    return row is not None
-
-
-def mute_article(user_id: int, nm_id: int, hours: int = 2):
-    """Заглушает уведомления на указанное количество часов"""
-    mute_until = (datetime.now() + timedelta(hours=hours)).isoformat()
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT OR REPLACE INTO spp_mutes (user_id, nm_id, mute_until)
-        VALUES (?, ?, ?)
-    ''', (user_id, nm_id, mute_until))
-    conn.commit()
-    conn.close()
-
-
-def get_subscribed_users(nm_id: int) -> List[int]:
-    """Возвращает список пользователей, подписанных на артикул"""
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id FROM spp_subscriptions WHERE nm_id = ?', (nm_id,))
+        SELECT DISTINCT nm_id
+        FROM article_stats
+        WHERE brand = ? AND nm_id IS NOT NULL AND nm_id != 0
+    ''', (brand,))
     rows = cursor.fetchall()
     conn.close()
     return [row[0] for row in rows]
 
 
-def get_all_tracked_articles() -> List[int]:
-    """Возвращает все nm_id, на которые есть хотя бы одна подписка"""
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('SELECT DISTINCT nm_id FROM spp_subscriptions')
-    rows = cursor.fetchall()
-    conn.close()
-    return [row[0] for row in rows]
-
-
-def generate_spp_graph(nm_id: int, width: int = 800, height: int = 400) -> Optional[str]:
-    """Генерирует график изменения СПП и возвращает base64-строку"""
-    history = get_spp_history(nm_id, limit=30)
-    if not history:
-        return None
-
-    history = history[::-1]
-    dates = [h['checked_at'][:16] for h in history]
-    spp_values = [h['spp_percent'] for h in history]
-    prices = [h['current_price'] for h in history]
-
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(width/100, height/100), sharex=True)
-
-    ax1.plot(dates, spp_values, marker='o', color='red', linewidth=2)
-    ax1.set_ylabel('СПП, %')
-    ax1.grid(True, alpha=0.3)
-    ax1.set_title(f'Динамика СПП для артикула {nm_id}')
-
-    ax2.plot(dates, prices, marker='s', color='blue', linewidth=2)
-    ax2.set_ylabel('Цена, ₽')
-    ax2.grid(True, alpha=0.3)
-    ax2.set_xlabel('Дата')
-
-    plt.xticks(rotation=45, ha='right')
-    plt.tight_layout()
-
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png', dpi=100)
-    buf.seek(0)
-    plt.close()
-
-    img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
-    return img_base64
-
-
-async def monitor_spp(bot_app):
-    """
-    Фоновая задача: проверяет все отслеживаемые артикулы и отправляет уведомления
-    """
-    logger.info("🔄 Запуск мониторинга СПП...")
-    nm_ids = get_all_tracked_articles()
-    if not nm_ids:
-        logger.info("📭 Нет артикулов для отслеживания СПП")
-        return
-
-    for nm_id in nm_ids:
-        try:
-            data = await get_spp_for_article(nm_id)
-            if not data:
-                logger.warning(f"⚠️ Не удалось получить данные для {nm_id}")
-                continue
-
-            article_name = data.get('title', f"Товар {nm_id}")
-            save_spp_history(
-                nm_id=nm_id,
-                article=article_name,
-                current_price=data['current_price'],
-                old_price=data['old_price'],
-                spp_percent=data['spp_percent']
-            )
-
-            last = get_last_spp(nm_id)
-            if not last:
-                logger.info(f"📝 Первая проверка для {nm_id}, уведомление не отправляем")
-                continue
-
-            old_spp = last['spp_percent']
-            new_spp = data['spp_percent']
-            diff = abs(new_spp - old_spp)
-
-            if diff < 0.01:
-                continue
-
-            users = get_subscribed_users(nm_id)
-            for user_id in users:
-                if is_muted(user_id, nm_id):
-                    logger.info(f"🔇 Уведомление для {nm_id} заглушено для пользователя {user_id}")
-                    continue
-
-                conn = sqlite3.connect(str(DB_PATH))
-                cursor = conn.cursor()
-                cursor.execute('SELECT threshold FROM spp_subscriptions WHERE user_id = ? AND nm_id = ?', (user_id, nm_id))
-                row = cursor.fetchone()
-                conn.close()
-                threshold = row[0] if row else 5.0
-
-                if diff >= threshold:
-                    await send_spp_notification(bot_app, user_id, nm_id, old_spp, new_spp, data, diff)
-
-            await asyncio.sleep(1)
-
-        except Exception as e:
-            logger.error(f"❌ Ошибка мониторинга для {nm_id}: {e}")
-
-    logger.info("✅ Мониторинг СПП завершён")
-
-
-async def send_spp_notification(bot_app, user_id: int, nm_id: int, old_spp: float, new_spp: float, data: dict, diff: float):
-    """Отправляет уведомление об изменении СПП"""
+async def send_brand_notification(bot_app, user_id: int, brand: str, old_avg: float, new_avg: float, diff: float):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
-    title = data.get('title', f"Товар {nm_id}")
-    direction = "упала" if new_spp < old_spp else "выросла"
-
+    direction = "упала" if new_avg < old_avg else "выросла"
     text = (
-        f"📊 *Изменение СПП!*\n\n"
-        f"Артикул: {nm_id}\n"
-        f"Название: {title}\n"
-        f"СПП: {old_spp}% → {new_spp}% ({direction} на {diff:.1f} п.п.)\n"
-        f"Цена: {data['current_price']} ₽ (было {data['old_price']} ₽)\n"
-        f"[Открыть карточку]({data['url']})"
+        f"📊 *Изменение средней СПП по бренду {brand}!*\n\n"
+        f"Средняя СПП: {old_avg:.1f}% → {new_avg:.1f}% ({direction} на {diff:.1f} п.п.)"
     )
-
     keyboard = [
-        [
-            InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_{nm_id}"),
-            InlineKeyboardButton("📈 График", callback_data=f"spp_graph_{nm_id}"),
-        ],
-        [InlineKeyboardButton("🔗 Открыть", url=data['url'])]
+        [InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_brand_{brand}")],
+        [InlineKeyboardButton("📈 График", callback_data=f"spp_graph_brand_{brand}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
     try:
         await bot_app.bot.send_message(
             chat_id=user_id,
@@ -277,6 +93,127 @@ async def send_spp_notification(bot_app, user_id: int, nm_id: int, old_spp: floa
             reply_markup=reply_markup,
             disable_web_page_preview=True
         )
-        logger.info(f"✅ Уведомление о СПП отправлено пользователю {user_id} для {nm_id}")
+        logger.info(f"✅ Уведомление о средней СПП по бренду {brand} отправлено пользователю {user_id}")
     except Exception as e:
         logger.error(f"❌ Ошибка отправки уведомления: {e}")
+
+
+async def monitor_spp(bot_app):
+    logger.info("🔄 Запуск мониторинга СПП...")
+
+    # 1. Мониторинг артикулов
+    nm_ids = get_all_tracked_articles()
+    for nm_id in nm_ids:
+        try:
+            data = await get_spp_for_article(nm_id)
+            if not data:
+                logger.warning(f"⚠️ Не удалось получить данные для {nm_id}")
+                continue
+            article_name = data.get('title', f"Товар {nm_id}")
+            save_spp_history(
+                nm_id=nm_id,
+                article=article_name,
+                current_price=data['current_price'],
+                old_price=data['old_price'],
+                spp_percent=data['spp_percent']
+            )
+            last = get_last_spp(nm_id)
+            if not last:
+                logger.info(f"📝 Первая проверка для {nm_id}")
+                continue
+            old_spp = last['spp_percent']
+            new_spp = data['spp_percent']
+            diff = abs(new_spp - old_spp)
+            if diff < 0.01:
+                continue
+            users = get_subscribed_users(nm_id)
+            for user_id in users:
+                if is_muted(user_id, nm_id):
+                    logger.info(f"🔇 Уведомление для {nm_id} заглушено для пользователя {user_id}")
+                    continue
+                conn = sqlite3.connect(str(DB_PATH))
+                cursor = conn.cursor()
+                cursor.execute('SELECT threshold FROM spp_subscriptions WHERE user_id = ? AND nm_id = ?', (user_id, nm_id))
+                row = cursor.fetchone()
+                conn.close()
+                threshold = row[0] if row else 5.0
+                if diff >= threshold:
+                    from handlers import send_spp_notification
+                    await send_spp_notification(bot_app, user_id, nm_id, old_spp, new_spp, data, diff)
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"❌ Ошибка мониторинга для {nm_id}: {e}")
+
+    # 2. Мониторинг брендов
+    brand_subs = {}
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('SELECT DISTINCT brand FROM spp_brand_subscriptions')
+    brands = [row[0] for row in cursor.fetchall()]
+    conn.close()
+
+    for brand in brands:
+        try:
+            nm_ids_brand = get_articles_by_brand(brand)
+            if not nm_ids_brand:
+                logger.warning(f"⚠️ Нет артикулов с nm_id для бренда {brand}")
+                continue
+            spp_values = []
+            for nm_id in nm_ids_brand:
+                data = await get_spp_for_article(nm_id)
+                if data and data.get('spp_percent') is not None:
+                    spp_values.append(data['spp_percent'])
+                await asyncio.sleep(0.3)
+            if not spp_values:
+                logger.warning(f"⚠️ Не удалось получить СПП для артикулов бренда {brand}")
+                continue
+            avg_spp = sum(spp_values) / len(spp_values)
+            save_brand_history(brand, avg_spp)
+            last = get_last_brand_spp(brand)
+            if not last:
+                logger.info(f"📝 Первая проверка средней СПП для бренда {brand}")
+                continue
+            old_avg = last['avg_spp']
+            diff = abs(avg_spp - old_avg)
+            if diff < 0.01:
+                continue
+            subscribers = get_all_brand_subscribers(brand)
+            for sub in subscribers:
+                user_id = sub['user_id']
+                threshold = sub['threshold']
+                if diff >= threshold:
+                    await send_brand_notification(bot_app, user_id, brand, old_avg, avg_spp, diff)
+            await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"❌ Ошибка мониторинга бренда {brand}: {e}")
+
+    logger.info("✅ Мониторинг СПП завершён")
+
+
+def generate_spp_graph(nm_id: int, width: int = 800, height: int = 400) -> Optional[str]:
+    history = get_spp_history(nm_id, limit=30)
+    if not history:
+        return None
+    history = history[::-1]
+    dates = [h['checked_at'][:16] for h in history]
+    spp_values = [h['spp_percent'] for h in history]
+    prices = [h['current_price'] for h in history]
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(width/100, height/100), sharex=True)
+    ax1.plot(dates, spp_values, marker='o', color='red', linewidth=2)
+    ax1.set_ylabel('СПП, %')
+    ax1.grid(True, alpha=0.3)
+    ax1.set_title(f'Динамика СПП для артикула {nm_id}')
+    ax2.plot(dates, prices, marker='s', color='blue', linewidth=2)
+    ax2.set_ylabel('Цена, ₽')
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xlabel('Дата')
+    plt.xticks(rotation=45, ha='right')
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=100)
+    buf.seek(0)
+    plt.close()
+    img_base64 = base64.b64encode(buf.getvalue()).decode('utf-8')
+    return img_base64
