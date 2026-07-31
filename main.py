@@ -99,15 +99,16 @@ def main():
     app.add_handler(CallbackQueryHandler(spp_mute_callback, pattern="^spp_mute_"))
     app.add_handler(CallbackQueryHandler(spp_graph_callback, pattern="^spp_graph_"))
 
-    # === ОБРАБОТЧИКИ ФАЙЛОВ И ТЕКСТА ===
+    # === ФАЙЛЫ И ТЕКСТ ===
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     # === ПЛАНИРОВЩИКИ ===
     scheduler.add_job(refresh_wb_cache, IntervalTrigger(hours=1))
+    # Мониторинг СПП — раз в 3 часа (снижаем нагрузку)
     scheduler.add_job(
         lambda: asyncio.run(monitor_spp(app)),
-        IntervalTrigger(hours=1),
+        IntervalTrigger(hours=3),
         next_run_time=datetime.now() + timedelta(minutes=1)
     )
     scheduler.start()
