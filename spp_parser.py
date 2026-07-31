@@ -21,7 +21,6 @@ async def get_price_from_api(nm_id: int) -> Optional[float]:
     url = f"{STATISTICS_API}/supplier/sales"
     headers = {"Authorization": f"Bearer {WB_API_TOKEN}"}
     params = {"dateFrom": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")}
-    # Небольшая задержка перед запросом, чтобы не перегружать API
     await asyncio.sleep(random.uniform(0.5, 1.5))
     try:
         async with aiohttp.ClientSession() as session:
