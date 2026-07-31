@@ -120,31 +120,42 @@ class ReportProcessor:
         all_cols = {**cols_vyk, **cols_osn}
 
         qty_variants = ['количество', 'кол-во', 'количество товара', 'кол-во (шт.)', 'кол-во шт', 'quantity', 'количество,шт']
-        art_variants = ['артикул поставщика', 'артикул', 'артикул товара', 'номенклатура', 'sku', 'артикул(поставщика)']
-        # Добавляем точное название колонки "Код номенклатуры" для nm_id
+        # Расширенный список для артикула поставщика
+        art_variants = [
+            'артикул поставщика', 'артикул', 'артикул товара', 'номенклатура',
+            'sku', 'артикул(поставщика)', 'артикул поставщика (поставщика)',
+            'код товара', 'id товара', 'vendor code', 'article'
+        ]
         nm_id_variants = ['код номенклатуры', 'nmId', 'nm_id', 'артикул товара', 'номенклатура', 'артикул']
 
         qty_col = None
         art_col = None
         nm_id_col = None
 
-        # Поиск колонки количества
         for v in qty_variants:
             if v in all_cols:
                 qty_col = all_cols[v]
                 break
-        # Поиск колонки артикула поставщика
         for v in art_variants:
             if v in all_cols:
                 art_col = all_cols[v]
                 break
-        # Поиск колонки nm_id
         for v in nm_id_variants:
             if v in all_cols:
                 nm_id_col = all_cols[v]
                 break
 
-        # Если не нашли через нормализацию, пробуем точное совпадение с "Код номенклатуры" (без приведения к нижнему регистру)
+        # Если не нашли через нормализацию, пробуем точное совпадение без приведения к нижнему регистру
+        if art_col is None:
+            original_cols = df_osn.columns.tolist()
+            for col in original_cols:
+                col_lower = col.strip().lower()
+                if any(keyword in col_lower for keyword in ['артикул поставщика', 'vendor', 'article', 'артикул']):
+                    if 'номенклатура' not in col_lower and 'код' not in col_lower:
+                        art_col = col
+                        logger.info(f"🔍 Нашли колонку артикула по точному совпадению: '{col}'")
+                        break
+
         if nm_id_col is None:
             original_cols = df_osn.columns.tolist()
             for col in original_cols:
@@ -158,7 +169,10 @@ class ReportProcessor:
             return result
         if art_col is None:
             logger.warning(f"❌ Колонка артикула не найдена. Доступные: {list(all_cols.keys())}")
-            return result
+            possible = [col for col in all_cols.keys() if 'артикул' in col or 'article' in col]
+            if possible:
+                art_col = all_cols[possible[0]]
+                logger.info(f"✅ Нашли возможную колонку артикула: '{art_col}'")
 
         logger.info(f"✅ Найдены колонки: количество='{qty_col}', артикул='{art_col}', nm_id='{nm_id_col}'")
 
@@ -175,16 +189,13 @@ class ReportProcessor:
                 if sales.empty:
                     articles = {}
                 else:
-                    # Строим словарь для agg
                     agg_dict = {
                         'quantity': (qty_col, 'sum'),
                         'revenue': ('Цена розничная', 'sum')
                     }
                     if nm_id_col:
                         agg_dict['nm_id'] = (nm_id_col, 'first')
-                    
                     agg_sales = sales.groupby(art_col).agg(**agg_dict).to_dict('index')
-                    
                     articles = {}
                     for art, vals in agg_sales.items():
                         nm_id_val = vals.get('nm_id') if nm_id_col else None
