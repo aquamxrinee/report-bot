@@ -34,11 +34,12 @@ TEMP_DIR.mkdir(exist_ok=True)
 
 WB_API_TOKEN = os.getenv("WB_API_TOKEN")
 
-# ===== ПРОКСИ (корректная обработка) =====
+# ===== ПРОКСИ (поддержка HTTP/HTTPS/SOCKS5) =====
 proxy_raw = os.getenv("PROXY_URL")
 if proxy_raw and proxy_raw.strip() and proxy_raw.lower() != "none":
+    # Если протокол не указан, добавляем socks5:// (так как вы сказали, что это SOCKS5)
     if not proxy_raw.startswith(("http://", "https://", "socks5://")):
-        proxy_raw = "http://" + proxy_raw
+        proxy_raw = "socks5://" + proxy_raw
     PROXY_URL = proxy_raw
 else:
     PROXY_URL = None
