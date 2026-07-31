@@ -46,6 +46,7 @@ def main():
     app.add_handler(CommandHandler("spp_check", spp_check_cmd))
     app.add_handler(CommandHandler("spp_status", spp_status_cmd))
     app.add_handler(CommandHandler("spp_stats", spp_stats_cmd))
+    app.add_handler(CommandHandler("test_parser", test_parser_cmd))
 
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
