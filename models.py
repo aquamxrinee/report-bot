@@ -6,32 +6,19 @@ from typing import List, Dict, Optional, Any
 
 from config import DB_PATH, logger
 
-# ===== ПРОВЕРКА И ОБНОВЛЕНИЕ СХЕМЫ БД =====
 def upgrade_db_schema():
-    """Добавляет новые столбцы в существующие таблицы, если их нет."""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-    
-    # Проверяем nm_id в article_stats
     cursor.execute("PRAGMA table_info(article_stats)")
     columns = [col[1] for col in cursor.fetchall()]
     if 'nm_id' not in columns:
-        logger.info("🔄 Добавляем столбец nm_id в таблицу article_stats")
         cursor.execute("ALTER TABLE article_stats ADD COLUMN nm_id INTEGER")
         conn.commit()
-    
-    # Проверяем, что cell_value имеет тип TEXT (если нет, меняем)
-    # Для SQLite нельзя изменить тип существующего столбца, поэтому создаём новую таблицу
-    # Но мы можем просто не вставлять текстовые значения.
-    
     conn.close()
-    logger.info("✅ Схема БД обновлена")
 
-# ===== ИНИЦИАЛИЗАЦИЯ БД =====
 def init_db():
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-    
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,15 +58,6 @@ def init_db():
             revenue REAL,
             nm_id INTEGER,
             FOREIGN KEY(report_id) REFERENCES reports(id) ON DELETE CASCADE
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS news_settings (
-            user_id INTEGER PRIMARY KEY,
-            enabled INTEGER DEFAULT 1,
-            query TEXT DEFAULT 'Wildberries OR ВБ OR Вайлдбериз OR Wildberries.ru',
-            morning_time TEXT DEFAULT '08:30',
-            evening_time TEXT DEFAULT '20:40'
         )
     ''')
     cursor.execute('''
@@ -138,18 +116,28 @@ def init_db():
         ''')
     conn.commit()
     conn.close()
-    logger.info("✅ БД инициализирована")
-    
     upgrade_db_schema()
 
-# ===== ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ ДЛЯ СПП (заглушки) =====
 def init_spp_tables():
     pass
 
 def init_spp_global_settings():
     pass
 
-# ===== ФУНКЦИИ ДЛЯ РАБОТЫ С СЕБЕСТОИМОСТЬЮ =====
+def init_spp_brand_tables():
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS spp_brand_subscriptions (
+            user_id INTEGER NOT NULL,
+            brand TEXT NOT NULL,
+            threshold REAL DEFAULT 5.0,
+            PRIMARY KEY (user_id, brand)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
 def get_earliest_report_date():
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -272,7 +260,6 @@ def delete_all_costs_for_article(article):
     conn.close()
     return deleted
 
-# ===== ФУНКЦИИ ДЛЯ РАБОТЫ С ОТЧЁТАМИ =====
 def calculate_file_hash(file_path):
     md5 = hashlib.md5()
     with open(file_path, "rb") as f:
@@ -302,18 +289,17 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
         report_id = cursor.lastrowid
         logger.info(f"✅ Отчет вставлен, ID: {report_id}")
 
-        # Сохраняем числовые значения ячеек, пропускаем текстовые
         if values:
             for cell, val in values.items():
                 if cell in ['B1', 'F1']:
-                    continue  # пропускаем текстовые периоды
+                    continue
                 try:
                     cursor.execute('''
                         INSERT INTO report_values (report_id, cell_name, cell_value)
                         VALUES (?, ?, ?)
                     ''', (report_id, cell, float(val)))
                 except Exception as e:
-                    logger.error(f"❌ Ошибка вставки значения ячейки {cell}: {e}")
+                    logger.error(f"Ошибка вставки {cell}: {e}")
 
         if metrics:
             for mname, mval in metrics.items():
@@ -323,7 +309,7 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                         VALUES (?, ?, ?)
                     ''', (report_id, mname, float(mval)))
                 except Exception as e:
-                    logger.error(f"❌ Ошибка вставки метрики {mname}: {e}")
+                    logger.error(f"Ошибка вставки метрики {mname}: {e}")
 
         if articles:
             for brand, data in articles.items():
@@ -352,20 +338,19 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                             VALUES (?, ?, ?, ?, ?, ?)
                         ''', (report_id, brand, art, stats['quantity'], stats['revenue'], nm_id_val))
                     except Exception as e:
-                        logger.error(f"❌ Ошибка вставки артикула {art}: {e}")
+                        logger.error(f"Ошибка вставки артикула {art}: {e}")
                         try:
                             cursor.execute('''
                                 INSERT INTO article_stats (report_id, brand, article, quantity, revenue)
                                 VALUES (?, ?, ?, ?, ?)
                             ''', (report_id, brand, art, stats['quantity'], stats['revenue']))
-                        except Exception as e2:
-                            logger.error(f"❌ Ошибка вставки артикула {art} без nm_id: {e2}")
-
+                        except:
+                            pass
         conn.commit()
         conn.close()
         return True, report_id
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка сохранения: {e}")
+        logger.error(f"Критическая ошибка сохранения: {e}")
         return False, None
 
 def delete_report(report_id):
@@ -558,7 +543,7 @@ def get_aggregated_metrics():
                 'avg_margin': 0
             }
     except Exception as e:
-        logger.error(f"Ошибка агрегации метрик: {e}")
+        logger.error(f"Ошибка агрегации: {e}")
         return {
             'total_reports': 0,
             'wb_total': 0,
@@ -572,59 +557,6 @@ def get_aggregated_metrics():
             'avg_margin': 0
         }
 
-# ===== ФУНКЦИИ ДЛЯ НАСТРОЕК НОВОСТЕЙ =====
-def get_news_settings(user_id):
-    try:
-        conn = sqlite3.connect(str(DB_PATH))
-        cursor = conn.cursor()
-        cursor.execute('SELECT enabled, query, morning_time, evening_time FROM news_settings WHERE user_id = ?', (user_id,))
-        row = cursor.fetchone()
-        conn.close()
-        if row:
-            return {'enabled': bool(row[0]), 'query': row[1], 'morning_time': row[2], 'evening_time': row[3]}
-        else:
-            return {'enabled': True, 'query': 'Wildberries OR ВБ OR Вайлдбериз OR Wildberries.ru', 'morning_time': '08:30', 'evening_time': '20:40'}
-    except:
-        return {'enabled': True, 'query': 'Wildberries OR ВБ OR Вайлдбериз OR Wildberries.ru', 'morning_time': '08:30', 'evening_time': '20:40'}
-
-def set_news_settings(user_id, enabled=None, query=None, morning_time=None, evening_time=None):
-    try:
-        conn = sqlite3.connect(str(DB_PATH))
-        cursor = conn.cursor()
-        cursor.execute('SELECT user_id FROM news_settings WHERE user_id = ?', (user_id,))
-        if cursor.fetchone():
-            updates = []
-            params = []
-            if enabled is not None:
-                updates.append("enabled = ?")
-                params.append(1 if enabled else 0)
-            if query is not None:
-                updates.append("query = ?")
-                params.append(query)
-            if morning_time is not None:
-                updates.append("morning_time = ?")
-                params.append(morning_time)
-            if evening_time is not None:
-                updates.append("evening_time = ?")
-                params.append(evening_time)
-            if updates:
-                params.append(user_id)
-                cursor.execute(f"UPDATE news_settings SET {', '.join(updates)} WHERE user_id = ?", params)
-        else:
-            cursor.execute('''
-                INSERT INTO news_settings (user_id, enabled, query, morning_time, evening_time)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (user_id, 1 if enabled is None else (1 if enabled else 0),
-                  query or 'Wildberries OR ВБ OR Вайлдбериз OR Wildberries.ru',
-                  morning_time or '08:30', evening_time or '20:40'))
-        conn.commit()
-        conn.close()
-        return True
-    except Exception as e:
-        logger.error(f"Ошибка сохранения настроек новостей: {e}")
-        return False
-
-# ===== ФУНКЦИИ ДЛЯ СПП =====
 def get_spp_global_settings():
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -761,7 +693,6 @@ def save_spp_history(nm_id, article, current_price, old_price, spp_percent):
     conn.commit()
     conn.close()
 
-# ===== ФУНКЦИИ ДЛЯ ПОИСКА NM_ID =====
 def get_nm_id_by_article(article_name: str) -> int:
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -777,3 +708,36 @@ def get_article_by_nm_id(nm_id: int) -> str:
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else f"Товар {nm_id}"
+
+def get_user_brand_subscriptions(user_id):
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('SELECT brand, threshold FROM spp_brand_subscriptions WHERE user_id = ?', (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [{'brand': row[0], 'threshold': row[1]} for row in rows]
+
+def subscribe_brand(user_id, brand, threshold=5.0):
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO spp_brand_subscriptions (user_id, brand, threshold)
+        VALUES (?, ?, ?)
+    ''', (user_id, brand, threshold))
+    conn.commit()
+    conn.close()
+
+def unsubscribe_brand(user_id, brand):
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM spp_brand_subscriptions WHERE user_id = ? AND brand = ?', (user_id, brand))
+    conn.commit()
+    conn.close()
+
+def get_all_brand_subscribers(brand):
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id, threshold FROM spp_brand_subscriptions WHERE brand = ?', (brand,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [{'user_id': row[0], 'threshold': row[1]} for row in rows]
