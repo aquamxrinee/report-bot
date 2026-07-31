@@ -34,11 +34,14 @@ TEMP_DIR.mkdir(exist_ok=True)
 
 WB_API_TOKEN = os.getenv("WB_API_TOKEN")
 
-# ===== ПРОКСИ (может быть None) =====
+# ===== ПРОКСИ (корректная обработка) =====
 proxy_raw = os.getenv("PROXY_URL")
-if proxy_raw and not proxy_raw.startswith(("http://", "https://", "socks5://")):
-    proxy_raw = "http://" + proxy_raw
-PROXY_URL = proxy_raw if proxy_raw else None
+if proxy_raw and proxy_raw.strip() and proxy_raw != "none":
+    if not proxy_raw.startswith(("http://", "https://", "socks5://")):
+        proxy_raw = "http://" + proxy_raw
+    PROXY_URL = proxy_raw
+else:
+    PROXY_URL = None
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
