@@ -51,6 +51,7 @@ def main():
     app.add_handler(CallbackQueryHandler(menu_analytics_main_callback, pattern="^menu_analytics_main$"))
     app.add_handler(CallbackQueryHandler(menu_settings_callback, pattern="^menu_settings$"))
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
+    app.add_handler(CallbackQueryHandler(dev_commands_callback, pattern="^dev_commands$"))
 
     app.add_handler(CallbackQueryHandler(menu_costs_callback, pattern="^menu_costs$"))
     app.add_handler(CallbackQueryHandler(cost_edit_callback, pattern="^cost_edit_"))
