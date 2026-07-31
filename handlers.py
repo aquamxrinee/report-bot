@@ -767,20 +767,25 @@ def calculate_profit_and_margin(articles, start_date, end_date):
     margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
     return total_profit, margin
 
+# ===== ОБРАБОТЧИК ТЕКСТА (исправлен) =====
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
+    # Себестоимость
     if context.user_data.get('waiting_for_cost'):
         await handle_cost_input(update, context)
         return
+    # Подписка на артикул (ввод порога)
     if context.user_data.get('spp_awaiting_subscribe_nm'):
         await spp_handle_subscribe_input(update, context)
         return
+    # Подписка на бренд (ввод порога)
+    if context.user_data.get('spp_awaiting_brand'):
+        await spp_handle_brand_threshold_input(update, context)
+        return
+    # Глобальный порог (ввод своего значения)
     if context.user_data.get('spp_waiting_threshold'):
         await spp_handle_threshold_input(update, context)
-        return
-    if context.user_data.get('spp_awaiting_brand_threshold'):
-        await spp_handle_brand_threshold_input(update, context)
         return
     await update.message.reply_text("Используйте кнопки меню или команды из /help")
 
@@ -917,12 +922,32 @@ async def spp_subscribe_article_callback(update: Update, context: ContextTypes.D
         return
     context.user_data['spp_awaiting_subscribe_nm'] = nm_id
     await query.edit_message_text(
-        "✏️ Введите порог изменения (в процентных пунктах):\n"
+        "✏️ Введите порог изменения (в п.п.) для этого артикула:\n"
         "Например: 5",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("◀️ Отмена", callback_data="menu_spp")]
         ])
     )
+
+async def spp_handle_subscribe_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    nm_id = context.user_data.get('spp_awaiting_subscribe_nm')
+    if not nm_id:
+        return
+    try:
+        threshold = float(update.message.text.replace(',', '.'))
+        if threshold < 0:
+            await update.message.reply_text("❌ Порог не может быть отрицательным.")
+            return
+    except ValueError:
+        await update.message.reply_text("❌ Введите число.")
+        return
+    user_id = update.effective_user.id
+    subscribe_user(user_id, nm_id, threshold)
+    context.user_data['spp_awaiting_subscribe_nm'] = None
+    article_name = get_article_by_nm_id(nm_id)
+    await update.message.reply_text(f"✅ Подписка на {article_name} оформлена. Порог: {threshold} п.п.")
 
 async def spp_show_brands_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
@@ -1006,11 +1031,11 @@ async def spp_unsubscribe_button_callback(update: Update, context: ContextTypes.
     query = update.callback_query
     await query.answer()
     parts = query.data.split("_")
-    if parts[1] == "unsubscribe" and parts[2] == "art":
+    if len(parts) >= 4 and parts[1] == "unsubscribe" and parts[2] == "art":
         nm_id = int(parts[3])
         user_id = update.effective_user.id
         unsubscribe_user(user_id, nm_id)
-    elif parts[1] == "unsubscribe" and parts[2] == "brand":
+    elif len(parts) >= 4 and parts[1] == "unsubscribe" and parts[2] == "brand":
         brand = "_".join(parts[3:])
         user_id = update.effective_user.id
         unsubscribe_brand(user_id, brand)
@@ -1078,26 +1103,6 @@ async def spp_handle_threshold_input(update: Update, context: ContextTypes.DEFAU
     except ValueError:
         await update.message.reply_text("❌ Введите число.")
 
-async def spp_handle_subscribe_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    nm_id = context.user_data.get('spp_awaiting_subscribe_nm')
-    if not nm_id:
-        return
-    try:
-        threshold = float(update.message.text.replace(',', '.'))
-        if threshold < 0:
-            await update.message.reply_text("❌ Порог не может быть отрицательным.")
-            return
-    except ValueError:
-        await update.message.reply_text("❌ Введите число.")
-        return
-    user_id = update.effective_user.id
-    subscribe_user(user_id, nm_id, threshold)
-    context.user_data['spp_awaiting_subscribe_nm'] = None
-    article_name = get_article_by_nm_id(nm_id)
-    await update.message.reply_text(f"✅ Подписка на {article_name} оформлена. Порог: {threshold} п.п.")
-
 async def spp_mute_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1111,6 +1116,38 @@ async def spp_mute_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔇 Заглушено на 2ч", callback_data="spp_muted")]
         ])
     )
+
+async def send_spp_notification(bot_app, user_id, nm_id, old_spp, new_spp, data, diff):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    title = data.get('title', f"Товар {nm_id}")
+    direction = "упала" if new_spp < old_spp else "выросла"
+    text = (
+        f"📊 *Изменение СПП!*\n\n"
+        f"Артикул: {nm_id}\n"
+        f"Название: {title}\n"
+        f"СПП: {old_spp}% → {new_spp}% ({direction} на {diff:.1f} п.п.)\n"
+        f"Цена: {data['current_price']} ₽ (было {data['old_price']} ₽)\n"
+        f"[Открыть карточку]({data['url']})"
+    )
+    keyboard = [
+        [
+            InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_{nm_id}"),
+            InlineKeyboardButton("📈 График", callback_data=f"spp_graph_{nm_id}"),
+        ],
+        [InlineKeyboardButton("🔗 Открыть", url=data['url'])]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    try:
+        await bot_app.bot.send_message(
+            chat_id=user_id,
+            text=text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup,
+            disable_web_page_preview=True
+        )
+        logger.info(f"✅ Уведомление о СПП отправлено пользователю {user_id} для {nm_id}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка отправки уведомления: {e}")
 
 async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
