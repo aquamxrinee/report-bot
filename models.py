@@ -135,6 +135,14 @@ def init_spp_brand_tables():
             PRIMARY KEY (user_id, brand)
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS spp_brand_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            brand TEXT NOT NULL,
+            avg_spp REAL,
+            checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -743,3 +751,40 @@ def get_all_brand_subscribers(brand):
     rows = cursor.fetchall()
     conn.close()
     return [{'user_id': row[0], 'threshold': row[1]} for row in rows]
+
+def save_brand_history(brand: str, avg_spp: float):
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO spp_brand_history (brand, avg_spp)
+        VALUES (?, ?)
+    ''', (brand, avg_spp))
+    conn.commit()
+    conn.close()
+
+def get_last_brand_spp(brand: str) -> Optional[Dict]:
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT avg_spp, checked_at
+        FROM spp_brand_history
+        WHERE brand = ?
+        ORDER BY checked_at DESC LIMIT 1
+    ''', (brand,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {'avg_spp': row[0], 'checked_at': row[1]}
+    return None
+
+def get_articles_by_brand(brand: str) -> List[int]:
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT DISTINCT nm_id
+        FROM article_stats
+        WHERE brand = ? AND nm_id IS NOT NULL AND nm_id != 0
+    ''', (brand,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
