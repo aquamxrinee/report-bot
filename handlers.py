@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta
 import asyncio
+from urllib.parse import quote, unquote
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, filters
@@ -1040,7 +1041,9 @@ async def spp_show_articles_callback(update: Update, context: ContextTypes.DEFAU
     for item in articles[:30]:
         article = item['article']
         label = article[:40]
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"spp_subscribe_article_{article}")])
+        # Кодируем артикул для передачи в callback_data
+        encoded_article = quote(article, safe='')
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"spp_subscribe_article_{encoded_article}")])
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")])
     await query.edit_message_text(
         "📋 **Выберите артикул для подписки:**\n\n"
@@ -1054,9 +1057,30 @@ async def spp_subscribe_article_callback(update: Update, context: ContextTypes.D
         return
     query = update.callback_query
     await query.answer()
-    article = query.data.replace("spp_subscribe_article_", "")
+    try:
+        encoded_article = query.data.replace("spp_subscribe_article_", "")
+        article = unquote(encoded_article)
+    except Exception as e:
+        logger.error(f"Ошибка декодирования артикула: {e}")
+        await query.edit_message_text("❌ Ошибка: некорректный артикул.")
+        return
+
     user_id = update.effective_user.id
-    nm_id = get_nm_id_by_article(article)
+    try:
+        nm_id = get_nm_id_by_article(article)
+    except sqlite3.OperationalError as e:
+        if 'no such column: nm_id' in str(e):
+            logger.error("❌ Ошибка: столбец nm_id отсутствует в БД")
+            await query.edit_message_text(
+                "⚠️ Ошибка базы данных: отсутствует столбец nm_id.\n\n"
+                "Пожалуйста, обновите базу данных. Свяжитесь с администратором.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀️ Назад", callback_data="spp_show_articles")]
+                ])
+            )
+            return
+        raise
+
     if not nm_id:
         await query.edit_message_text(
             f"❌ Не удалось найти nm_id для артикула {article}.\n"
@@ -1066,8 +1090,10 @@ async def spp_subscribe_article_callback(update: Update, context: ContextTypes.D
             ])
         )
         return
+
     threshold = get_spp_global_settings()['default_threshold']
     subscribe_user(user_id, nm_id, threshold)
+    logger.info(f"✅ Пользователь {user_id} подписался на {article} (nm_id={nm_id})")
     await query.edit_message_text(
         f"✅ Вы подписались на отслеживание СПП для {article}.\n"
         f"Порог: {threshold} п.п.",
