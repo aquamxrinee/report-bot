@@ -788,3 +788,27 @@ def get_articles_by_brand(brand: str) -> List[int]:
     rows = cursor.fetchall()
     conn.close()
     return [row[0] for row in rows]
+def add_or_update_article(nm_id: int, article_name: str, brand: str, report_id: int = 0):
+    """
+    Добавляет или обновляет артикул в таблице article_stats.
+    report_id = 0 означает, что артикул синхронизирован через API, а не из отчёта.
+    """
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    # Проверяем, существует ли уже такой nm_id
+    cursor.execute("SELECT id FROM article_stats WHERE nm_id = ? AND report_id = 0", (nm_id,))
+    existing = cursor.fetchone()
+    if existing:
+        # Обновляем название и бренд, если они изменились
+        cursor.execute('''
+            UPDATE article_stats
+            SET article = ?, brand = ?
+            WHERE nm_id = ? AND report_id = 0
+        ''', (article_name, brand, nm_id))
+    else:
+        cursor.execute('''
+            INSERT INTO article_stats (report_id, brand, article, quantity, revenue, nm_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (0, brand, article_name, 0, 0, nm_id))
+    conn.commit()
+    conn.close()
