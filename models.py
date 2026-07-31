@@ -3,8 +3,26 @@ import hashlib
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional, Any
+import pandas as pd
 
 from config import DB_PATH, logger
+
+# ===== ПРОВЕРКА И ОБНОВЛЕНИЕ СХЕМЫ БД =====
+def upgrade_db_schema():
+    """Добавляет новые столбцы в существующие таблицы, если их нет."""
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    
+    # Проверяем наличие столбца nm_id в article_stats
+    cursor.execute("PRAGMA table_info(article_stats)")
+    columns = [col[1] for col in cursor.fetchall()]
+    if 'nm_id' not in columns:
+        logger.info("🔄 Добавляем столбец nm_id в таблицу article_stats")
+        cursor.execute("ALTER TABLE article_stats ADD COLUMN nm_id INTEGER")
+        conn.commit()
+    
+    conn.close()
+    logger.info("✅ Схема БД обновлена")
 
 # ===== ИНИЦИАЛИЗАЦИЯ БД =====
 def init_db():
@@ -118,6 +136,9 @@ def init_db():
     conn.commit()
     conn.close()
     logger.info("✅ БД инициализирована")
+    
+    # Обновляем схему (добавляем nm_id, если его нет)
+    upgrade_db_schema()
 
 # ===== ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ ДЛЯ СПП =====
 def init_spp_tables():
@@ -319,10 +340,24 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                     if stats.get('nm_id') and not all_arts[art]['nm_id']:
                         all_arts[art]['nm_id'] = stats['nm_id']
                 for art, stats in all_arts.items():
-                    cursor.execute('''
-                        INSERT INTO article_stats (report_id, brand, article, quantity, revenue, nm_id)
-                        VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (report_id, brand, art, stats['quantity'], stats['revenue'], stats['nm_id']))
+                    try:
+                        nm_id_val = stats['nm_id']
+                        if nm_id_val is not None:
+                            nm_id_val = int(nm_id_val)
+                        cursor.execute('''
+                            INSERT INTO article_stats (report_id, brand, article, quantity, revenue, nm_id)
+                            VALUES (?, ?, ?, ?, ?, ?)
+                        ''', (report_id, brand, art, stats['quantity'], stats['revenue'], nm_id_val))
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка вставки артикула {art}: {e}")
+                        # Пробуем вставить без nm_id
+                        try:
+                            cursor.execute('''
+                                INSERT INTO article_stats (report_id, brand, article, quantity, revenue)
+                                VALUES (?, ?, ?, ?, ?)
+                            ''', (report_id, brand, art, stats['quantity'], stats['revenue']))
+                        except Exception as e2:
+                            logger.error(f"❌ Ошибка вставки артикула {art} без nm_id: {e2}")
 
         conn.commit()
         conn.close()
@@ -587,7 +622,7 @@ def set_news_settings(user_id, enabled=None, query=None, morning_time=None, even
         logger.error(f"Ошибка сохранения настроек новостей: {e}")
         return False
 
-# ===== ФУНКЦИИ ДЛЯ СПП (подписки, заглушки, история) =====
+# ===== ФУНКЦИИ ДЛЯ СПП =====
 def get_spp_global_settings():
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -706,7 +741,7 @@ def get_spp_history(nm_id, limit=30):
     conn.close()
     return [{'checked_at': row[0], 'spp_percent': row[1], 'current_price': row[2], 'old_price': row[3]} for row in rows]
 
-# ===== ФУНКЦИИ ДЛЯ ПОИСКА NM_ID ПО АРТИКУЛУ =====
+# ===== ФУНКЦИИ ДЛЯ ПОИСКА NM_ID =====
 def get_nm_id_by_article(article_name: str) -> int:
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
