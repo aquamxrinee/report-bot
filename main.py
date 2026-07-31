@@ -109,3 +109,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+app.add_handler(CommandHandler("test_proxy", test_proxy_cmd))
