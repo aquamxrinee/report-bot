@@ -1,8 +1,3 @@
 #!/bin/bash
-echo "Установка зависимостей..."
-pip install -r requirements.txt
-echo "Установка браузеров Playwright..."
-playwright install chromium
-playwright install-deps
-echo "Запуск бота..."
+echo "🚀 Запуск бота..."
 python main.py
