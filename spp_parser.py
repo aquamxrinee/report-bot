@@ -6,35 +6,43 @@ import random
 from datetime import datetime
 from typing import Optional, Dict, Any
 from bs4 import BeautifulSoup
-from config import logger
+from fake_useragent import UserAgent
+from config import logger, PROXY_URL
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache"
+ua = UserAgent()
+
+PROXIES = {
+    "http": PROXY_URL,
+    "https": PROXY_URL,
 }
 
 _failed_cache = {}
 
 def get_spp_for_article(nm_id: int, retries: int = 3) -> Optional[Dict[str, Any]]:
-    if nm_id in _failed_cache and (datetime.now() - _failed_cache[nm_id]).seconds < 300:
-        logger.warning(f"⏳ Артикул {nm_id} временно заблокирован (ждём 5 мин)")
+    if nm_id in _failed_cache and (datetime.now() - _failed_cache[nm_id]).seconds < 600:
+        logger.warning(f"⏳ Артикул {nm_id} временно заблокирован (ждём 10 мин)")
         return None
 
     url = f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx"
     for attempt in range(1, retries + 1):
         try:
-            time.sleep(random.uniform(0.5, 1.5) * attempt)
+            time.sleep(random.uniform(2.0, 5.0) * attempt)
             session = requests.Session()
-            response = session.get(url, headers=HEADERS, timeout=15)
+            headers = {
+                "User-Agent": ua.random,
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+                "Referer": "https://www.wildberries.ru/"
+            }
+            response = session.get(url, headers=headers, proxies=PROXIES, timeout=20)
             if response.status_code == 498:
                 logger.warning(f"⚠️ 498 Rate limit для {nm_id}, попытка {attempt}/{retries}")
                 _failed_cache[nm_id] = datetime.now()
-                wait = 10 * attempt
+                wait = 15 * attempt
                 time.sleep(wait)
                 continue
             if response.status_code != 200:
@@ -107,10 +115,10 @@ def get_spp_for_article(nm_id: int, retries: int = 3) -> Optional[Dict[str, Any]
             logger.error(f"❌ Ошибка запроса для {nm_id}: {e}")
             if attempt == retries:
                 _failed_cache[nm_id] = datetime.now()
-            time.sleep(5 * attempt)
+            time.sleep(10 * attempt)
         except Exception as e:
             logger.error(f"❌ Ошибка парсинга {nm_id}: {e}")
             if attempt == retries:
                 _failed_cache[nm_id] = datetime.now()
-            time.sleep(3 * attempt)
+            time.sleep(5 * attempt)
     return None
