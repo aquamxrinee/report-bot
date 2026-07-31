@@ -192,16 +192,13 @@ async def monitor_spp(bot_app):
         logger.info("📭 Нет артикулов для отслеживания СПП")
         return
 
-    # Для каждого артикула проверяем всех подписанных пользователей
     for nm_id in nm_ids:
         try:
-            # Получаем текущие данные с парсингом
             data = await get_spp_for_article(nm_id)
             if not data:
                 logger.warning(f"⚠️ Не удалось получить данные для {nm_id}")
                 continue
 
-            # Сохраняем историю
             article_name = data.get('title', f"Товар {nm_id}")
             save_spp_history(
                 nm_id=nm_id,
@@ -211,7 +208,6 @@ async def monitor_spp(bot_app):
                 spp_percent=data['spp_percent']
             )
 
-            # Получаем последнее сохранённое значение
             last = get_last_spp(nm_id)
             if not last:
                 logger.info(f"📝 Первая проверка для {nm_id}, уведомление не отправляем")
@@ -221,18 +217,15 @@ async def monitor_spp(bot_app):
             new_spp = data['spp_percent']
             diff = abs(new_spp - old_spp)
 
-            # Если изменения нет, пропускаем
             if diff < 0.01:
                 continue
 
-            # Отправляем уведомление всем подписанным пользователям
             users = get_subscribed_users(nm_id)
             for user_id in users:
                 if is_muted(user_id, nm_id):
                     logger.info(f"🔇 Уведомление для {nm_id} заглушено для пользователя {user_id}")
                     continue
 
-                # Получаем порог для пользователя
                 conn = sqlite3.connect(str(DB_PATH))
                 cursor = conn.cursor()
                 cursor.execute('SELECT threshold FROM spp_subscriptions WHERE user_id = ? AND nm_id = ?', (user_id, nm_id))
@@ -243,7 +236,6 @@ async def monitor_spp(bot_app):
                 if diff >= threshold:
                     await send_spp_notification(bot_app, user_id, nm_id, old_spp, new_spp, data, diff)
 
-            # Небольшая задержка между артикулами
             await asyncio.sleep(1)
 
         except Exception as e:
