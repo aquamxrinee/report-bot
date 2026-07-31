@@ -34,14 +34,10 @@ TEMP_DIR.mkdir(exist_ok=True)
 
 WB_API_TOKEN = os.getenv("WB_API_TOKEN")
 
-# ===== ПРОКСИ (HTTP, порт 10000) =====
-proxy_raw = os.getenv("PROXY_URL")
-if proxy_raw and proxy_raw.strip() and proxy_raw.lower() != "none":
-    if not proxy_raw.startswith(("http://", "https://", "socks5://")):
-        proxy_raw = "http://" + proxy_raw
-    PROXY_URL = proxy_raw
-else:
-    PROXY_URL = None
+# ===== НОВЫЙ ПРОКСИ (HTTP, порт 10000) =====
+PROXY_URL = os.getenv("PROXY_URL", "http://dd3e124eaquamxrinee-c-ru:svsvs12e2d@gate.cyberyozh.net:10000")
+if PROXY_URL and not PROXY_URL.startswith(("http://", "https://", "socks5://")):
+    PROXY_URL = "http://" + PROXY_URL
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
