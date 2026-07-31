@@ -286,17 +286,38 @@ def get_report_id_by_period(start_date, end_date):
     except:
         return None
 
+# ===== ОБНОВЛЁННАЯ ФУНКЦИЯ С ПРОВЕРКОЙ ДУБЛИКАТОВ =====
 def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, values, metrics, articles):
     try:
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
-        cursor.execute('''
-            INSERT INTO reports (file_name, file_hash, date_period, start_date, end_date)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (file_name, file_hash, date_period, start_date, end_date))
-        report_id = cursor.lastrowid
-        logger.info(f"✅ Отчет вставлен, ID: {report_id}")
 
+        # Проверяем, есть ли уже отчёт с таким периодом
+        cursor.execute("SELECT id FROM reports WHERE date_period = ?", (date_period,))
+        existing = cursor.fetchone()
+        if existing:
+            report_id = existing[0]
+            logger.info(f"📌 Отчёт за период {date_period} уже существует (ID: {report_id}). Обновляем...")
+            # Удаляем старые данные
+            cursor.execute("DELETE FROM report_values WHERE report_id = ?", (report_id,))
+            cursor.execute("DELETE FROM report_metrics WHERE report_id = ?", (report_id,))
+            cursor.execute("DELETE FROM article_stats WHERE report_id = ?", (report_id,))
+            # Обновляем запись в reports
+            cursor.execute('''
+                UPDATE reports
+                SET file_name = ?, file_hash = ?, start_date = ?, end_date = ?, processed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (file_name, file_hash, start_date, end_date, report_id))
+        else:
+            # Вставляем новый отчёт
+            cursor.execute('''
+                INSERT INTO reports (file_name, file_hash, date_period, start_date, end_date)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (file_name, file_hash, date_period, start_date, end_date))
+            report_id = cursor.lastrowid
+            logger.info(f"✅ Новый отчёт вставлен, ID: {report_id}")
+
+        # Сохраняем значения ячеек (пропускаем B1 и F1)
         if values:
             for cell, val in values.items():
                 if cell in ['B1', 'F1']:
@@ -309,6 +330,7 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                 except Exception as e:
                     logger.error(f"Ошибка вставки {cell}: {e}")
 
+        # Сохраняем метрики
         if metrics:
             for mname, mval in metrics.items():
                 try:
@@ -319,6 +341,7 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                 except Exception as e:
                     logger.error(f"Ошибка вставки метрики {mname}: {e}")
 
+        # Сохраняем артикулы
         if articles:
             for brand, data in articles.items():
                 all_arts = {}
@@ -354,6 +377,7 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                             ''', (report_id, brand, art, stats['quantity'], stats['revenue']))
                         except:
                             pass
+
         conn.commit()
         conn.close()
         return True, report_id
@@ -788,38 +812,10 @@ def get_articles_by_brand(brand: str) -> List[int]:
     rows = cursor.fetchall()
     conn.close()
     return [row[0] for row in rows]
+
 def add_or_update_article(nm_id: int, article_name: str, brand: str, report_id: int = 0):
-    """
-    Добавляет или обновляет артикул в таблице article_stats.
-    report_id = 0 означает, что артикул синхронизирован через API, а не из отчёта.
-    """
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-    # Проверяем, существует ли уже такой nm_id
-    cursor.execute("SELECT id FROM article_stats WHERE nm_id = ? AND report_id = 0", (nm_id,))
-    existing = cursor.fetchone()
-    if existing:
-        # Обновляем название и бренд, если они изменились
-        cursor.execute('''
-            UPDATE article_stats
-            SET article = ?, brand = ?
-            WHERE nm_id = ? AND report_id = 0
-        ''', (article_name, brand, nm_id))
-    else:
-        cursor.execute('''
-            INSERT INTO article_stats (report_id, brand, article, quantity, revenue, nm_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-        ''', (0, brand, article_name, 0, 0, nm_id))
-    conn.commit()
-    conn.close()
-def add_or_update_article(nm_id: int, article_name: str, brand: str, report_id: int = 0):
-    """
-    Добавляет или обновляет артикул в таблице article_stats.
-    report_id = 0 означает, что артикул синхронизирован через API, а не из отчёта.
-    """
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    # Проверяем, существует ли уже такой nm_id с report_id = 0 (синхронизированный через API)
     cursor.execute("SELECT id FROM article_stats WHERE nm_id = ? AND report_id = 0", (nm_id,))
     existing = cursor.fetchone()
     if existing:
