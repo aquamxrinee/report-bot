@@ -2,12 +2,10 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# Установка системных зависимостей для Playwright
+# Установка минимальных системных зависимостей для Playwright
 RUN apt-get update && apt-get install -y \
     wget \
     gnupg \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
     libnss3 \
     libx11-6 \
     libxcb1 \
@@ -20,25 +18,25 @@ RUN apt-get update && apt-get install -y \
     libasound2 \
     libatk-bridge2.0-0 \
     libgtk-3-0 \
-    libgdk-pixbuf2.0-0 \
     libgbm1 \
     libxkbcommon0 \
     libpango-1.0-0 \
     libcairo2 \
+    libgdk-pixbuf-2.0-0 \
+    libgl1-mesa-dri \
     && rm -rf /var/lib/apt/lists/*
 
 # Копируем и устанавливаем Python-зависимости
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Устанавливаем браузер Playwright (Chromium)
-RUN playwright install chromium
+# Устанавливаем браузер Playwright (Chromium) и его системные зависимости
+RUN playwright install chromium && playwright install-deps
 
 # Копируем остальной проект
 COPY . .
 
-# Делаем start.sh исполняемым (если используете)
+# Делаем start.sh исполняемым
 RUN chmod +x start.sh
 
-# Команда запуска
 CMD ["bash", "start.sh"]
