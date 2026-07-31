@@ -1318,3 +1318,28 @@ async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_{nm_id}")]
         ])
     )
+async def sync_articles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Синхронизация всех артикулов кабинета через WB API"""
+    if not await check_access(update):
+        return
+    await update.message.reply_text("🔄 Загружаю список всех товаров из WB API...")
+    try:
+        data = get_supplier_items(limit=1000)
+        if isinstance(data, dict) and "error" in data:
+            await update.message.reply_text(f"❌ Ошибка WB API: {data['error']}")
+            return
+        if not isinstance(data, list):
+            await update.message.reply_text("⚠️ Неожиданный формат ответа от API")
+            return
+        count = 0
+        for item in data:
+            nm_id = item.get('nmId')
+            article = item.get('article', '')
+            brand = item.get('brand', '')
+            if nm_id:
+                add_or_update_article(nm_id, article or f"Товар {nm_id}", brand)
+                count += 1
+        await update.message.reply_text(f"✅ Синхронизировано {count} артикулов.")
+    except Exception as e:
+        logger.error(f"Ошибка синхронизации: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
