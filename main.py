@@ -45,6 +45,7 @@ def main():
     app.add_handler(CommandHandler("spp_list", spp_list_cmd))
     app.add_handler(CommandHandler("spp_check", spp_check_cmd))
     app.add_handler(CommandHandler("spp_status", spp_status_cmd))
+    app.add_handler(CommandHandler("spp_stats", spp_stats_cmd))
 
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
@@ -82,6 +83,7 @@ def main():
     app.add_handler(CallbackQueryHandler(spp_subscribe_brand_callback, pattern="^spp_subscribe_brand_"))
     app.add_handler(CallbackQueryHandler(spp_my_subscriptions_callback, pattern="^spp_my_subscriptions$"))
     app.add_handler(CallbackQueryHandler(spp_unsubscribe_button_callback, pattern="^spp_unsubscribe_"))
+    app.add_handler(CallbackQueryHandler(spp_stats_callback, pattern="^spp_stats$"))
     app.add_handler(CallbackQueryHandler(spp_toggle_global_callback, pattern="^spp_toggle_global$"))
     app.add_handler(CallbackQueryHandler(spp_threshold_callback, pattern="^spp_threshold$"))
     app.add_handler(CallbackQueryHandler(spp_set_threshold_callback, pattern="^spp_set_threshold_"))
