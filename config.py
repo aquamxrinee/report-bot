@@ -48,3 +48,4 @@ if ALLOWED_USERS:
     print(f"🔒 Бот доступен только для ID: {ALLOWED_USERS}")
 else:
     print("⚠️ ALLOWED_USER_IDS не задан. Бот доступен всем.")
+PROXY_URL = os.getenv("PROXY_URL", "http://roman711054e2317-c-ru:bUhGkHSc29orvafa@gate.cyberyozh.net:10000")
