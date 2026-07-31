@@ -11,7 +11,6 @@ def init_db():
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     
-    # === ОСНОВНЫЕ ТАБЛИЦЫ ===
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,8 +73,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
-    
-    # === ТАБЛИЦЫ ДЛЯ СПП ===
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS spp_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,10 +100,33 @@ def init_db():
             PRIMARY KEY (user_id, nm_id)
         )
     ''')
-    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS spp_global_settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            enabled INTEGER DEFAULT 1,
+            interval_minutes INTEGER DEFAULT 60,
+            default_threshold REAL DEFAULT 5.0,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute('SELECT COUNT(*) FROM spp_global_settings')
+    if cursor.fetchone()[0] == 0:
+        cursor.execute('''
+            INSERT INTO spp_global_settings (id, enabled, interval_minutes, default_threshold)
+            VALUES (1, 1, 60, 5.0)
+        ''')
     conn.commit()
     conn.close()
     logger.info("✅ БД инициализирована")
+
+# ===== ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ ДЛЯ СПП =====
+def init_spp_tables():
+    # уже созданы выше, оставляем для совместимости
+    pass
+
+def init_spp_global_settings():
+    # уже созданы выше, оставляем для совместимости
+    pass
 
 # ===== ФУНКЦИИ ДЛЯ РАБОТЫ С СЕБЕСТОИМОСТЬЮ =====
 def get_earliest_report_date():
@@ -286,26 +306,29 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                 all_arts = {}
                 for art, stats in data.get('sales', {}).items():
                     if art not in all_arts:
-                        all_arts[art] = {'quantity': 0, 'revenue': 0}
+                        all_arts[art] = {'quantity': 0, 'revenue': 0, 'nm_id': None}
                     all_arts[art]['quantity'] += stats.get('quantity', 0)
                     all_arts[art]['revenue'] += stats.get('revenue', 0)
+                    if stats.get('nm_id') and not all_arts[art]['nm_id']:
+                        all_arts[art]['nm_id'] = stats['nm_id']
                 for art, stats in data.get('vyk', {}).items():
                     if art not in all_arts:
-                        all_arts[art] = {'quantity': 0, 'revenue': 0}
+                        all_arts[art] = {'quantity': 0, 'revenue': 0, 'nm_id': None}
                     all_arts[art]['quantity'] += stats.get('quantity', 0)
                     all_arts[art]['revenue'] += stats.get('revenue', 0)
+                    if stats.get('nm_id') and not all_arts[art]['nm_id']:
+                        all_arts[art]['nm_id'] = stats['nm_id']
                 for art, stats in all_arts.items():
-                    # попытка получить nm_id (пока оставляем NULL)
                     cursor.execute('''
                         INSERT INTO article_stats (report_id, brand, article, quantity, revenue, nm_id)
                         VALUES (?, ?, ?, ?, ?, ?)
-                    ''', (report_id, brand, art, stats['quantity'], stats['revenue'], None))
+                    ''', (report_id, brand, art, stats['quantity'], stats['revenue'], stats['nm_id']))
 
         conn.commit()
         conn.close()
         return True, report_id
     except Exception as e:
-        logger.error(f"❌ Ошибка сохранения: {e}")
+        logger.error(f"❌ Критическая ошибка сохранения: {e}")
         return False, None
 
 def delete_report(report_id):
@@ -422,21 +445,21 @@ def get_article_stats_for_report(report_id, brand=None):
         cursor = conn.cursor()
         if brand:
             cursor.execute('''
-                SELECT article, SUM(quantity) as q, SUM(revenue) as r
+                SELECT article, SUM(quantity) as q, SUM(revenue) as r, MAX(nm_id) as nm_id
                 FROM article_stats
                 WHERE report_id = ? AND brand = ?
                 GROUP BY article
             ''', (report_id, brand))
         else:
             cursor.execute('''
-                SELECT article, SUM(quantity) as q, SUM(revenue) as r
+                SELECT article, SUM(quantity) as q, SUM(revenue) as r, MAX(nm_id) as nm_id
                 FROM article_stats
                 WHERE report_id = ?
                 GROUP BY article
             ''', (report_id,))
         results = cursor.fetchall()
         conn.close()
-        return {row[0]: {'quantity': row[1], 'revenue': row[2]} for row in results}
+        return {row[0]: {'quantity': row[1], 'revenue': row[2], 'nm_id': row[3]} for row in results}
     except:
         return {}
 
@@ -564,181 +587,7 @@ def set_news_settings(user_id, enabled=None, query=None, morning_time=None, even
         logger.error(f"Ошибка сохранения настроек новостей: {e}")
         return False
 
-# ===== ФУНКЦИИ ДЛЯ СПП =====
-def init_spp_tables():
-    """Создаёт таблицы для хранения истории СПП и заглушек (если ещё не созданы)"""
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS spp_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nm_id INTEGER NOT NULL,
-            article TEXT,
-            current_price REAL,
-            old_price REAL,
-            spp_percent REAL,
-            checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS spp_mutes (
-            user_id INTEGER NOT NULL,
-            nm_id INTEGER NOT NULL,
-            mute_until TIMESTAMP,
-            PRIMARY KEY (user_id, nm_id)
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS spp_subscriptions (
-            user_id INTEGER NOT NULL,
-            nm_id INTEGER NOT NULL,
-            threshold REAL DEFAULT 5.0,
-            PRIMARY KEY (user_id, nm_id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
-    logger.info("✅ Таблицы для СПП инициализированы")
-
-def save_spp_history(nm_id: int, article: str, current_price: float, old_price: float, spp_percent: float):
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO spp_history (nm_id, article, current_price, old_price, spp_percent)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (nm_id, article, current_price, old_price, spp_percent))
-    conn.commit()
-    conn.close()
-
-def get_last_spp(nm_id: int) -> Optional[Dict[str, Any]]:
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT current_price, old_price, spp_percent, checked_at
-        FROM spp_history
-        WHERE nm_id = ?
-        ORDER BY checked_at DESC LIMIT 1
-    ''', (nm_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if row:
-        return {
-            'current_price': row[0],
-            'old_price': row[1],
-            'spp_percent': row[2],
-            'checked_at': row[3]
-        }
-    return None
-
-def get_spp_history(nm_id: int, limit: int = 30) -> List[Dict[str, Any]]:
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT checked_at, spp_percent, current_price, old_price
-        FROM spp_history
-        WHERE nm_id = ?
-        ORDER BY checked_at DESC LIMIT ?
-    ''', (nm_id, limit))
-    rows = cursor.fetchall()
-    conn.close()
-    return [{'checked_at': row[0], 'spp_percent': row[1], 'current_price': row[2], 'old_price': row[3]} for row in rows]
-
-def is_muted(user_id: int, nm_id: int) -> bool:
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT mute_until FROM spp_mutes
-        WHERE user_id = ? AND nm_id = ? AND mute_until > datetime('now')
-    ''', (user_id, nm_id))
-    row = cursor.fetchone()
-    conn.close()
-    return row is not None
-
-def mute_article(user_id: int, nm_id: int, hours: int = 2):
-    mute_until = (datetime.now() + timedelta(hours=hours)).isoformat()
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT OR REPLACE INTO spp_mutes (user_id, nm_id, mute_until)
-        VALUES (?, ?, ?)
-    ''', (user_id, nm_id, mute_until))
-    conn.commit()
-    conn.close()
-
-def unmute_article(user_id: int, nm_id: int):
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM spp_mutes WHERE user_id = ? AND nm_id = ?', (user_id, nm_id))
-    conn.commit()
-    conn.close()
-
-def get_subscribed_users(nm_id: int) -> List[int]:
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id FROM spp_subscriptions WHERE nm_id = ?', (nm_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [row[0] for row in rows]
-
-def subscribe_user(user_id: int, nm_id: int, threshold: float = 5.0):
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT OR REPLACE INTO spp_subscriptions (user_id, nm_id, threshold)
-        VALUES (?, ?, ?)
-    ''', (user_id, nm_id, threshold))
-    conn.commit()
-    conn.close()
-
-def unsubscribe_user(user_id: int, nm_id: int):
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM spp_subscriptions WHERE user_id = ? AND nm_id = ?', (user_id, nm_id))
-    conn.commit()
-    conn.close()
-
-def get_user_subscriptions(user_id: int) -> List[Dict[str, Any]]:
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT nm_id, threshold
-        FROM spp_subscriptions
-        WHERE user_id = ?
-    ''', (user_id,))
-    rows = cursor.fetchall()
-    conn.close()
-    return [{'nm_id': row[0], 'threshold': row[1]} for row in rows]
-
-def get_all_tracked_articles() -> List[int]:
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('SELECT DISTINCT nm_id FROM spp_subscriptions')
-    rows = cursor.fetchall()
-    conn.close()
-    return [row[0] for row in rows]
-# ===== ГЛОБАЛЬНЫЕ НАСТРОЙКИ СПП =====
-def init_spp_global_settings():
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS spp_global_settings (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            enabled INTEGER DEFAULT 1,
-            interval_minutes INTEGER DEFAULT 60,
-            default_threshold REAL DEFAULT 5.0,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    cursor.execute('SELECT COUNT(*) FROM spp_global_settings')
-    if cursor.fetchone()[0] == 0:
-        cursor.execute('''
-            INSERT INTO spp_global_settings (id, enabled, interval_minutes, default_threshold)
-            VALUES (1, 1, 60, 5.0)
-        ''')
-    conn.commit()
-    conn.close()
-    logger.info("✅ Глобальные настройки СПП инициализированы")
-
+# ===== ФУНКЦИИ ДЛЯ СПП (подписки, заглушки, история) =====
 def get_spp_global_settings():
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -768,3 +617,108 @@ def set_spp_global_settings(enabled=None, interval_minutes=None, default_thresho
         cursor.execute(f"UPDATE spp_global_settings SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = 1", params)
         conn.commit()
     conn.close()
+
+def get_user_subscriptions(user_id):
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('SELECT nm_id, threshold FROM spp_subscriptions WHERE user_id = ?', (user_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [{'nm_id': row[0], 'threshold': row[1]} for row in rows]
+
+def subscribe_user(user_id, nm_id, threshold=5.0):
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO spp_subscriptions (user_id, nm_id, threshold)
+        VALUES (?, ?, ?)
+    ''', (user_id, nm_id, threshold))
+    conn.commit()
+    conn.close()
+
+def unsubscribe_user(user_id, nm_id):
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('DELETE FROM spp_subscriptions WHERE user_id = ? AND nm_id = ?', (user_id, nm_id))
+    conn.commit()
+    conn.close()
+
+def get_subscribed_users(nm_id):
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id FROM spp_subscriptions WHERE nm_id = ?', (nm_id,))
+    rows = cursor.fetchall()
+    conn.close()
+    return [row[0] for row in rows]
+
+def is_muted(user_id, nm_id):
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT mute_until FROM spp_mutes
+        WHERE user_id = ? AND nm_id = ? AND mute_until > datetime('now')
+    ''', (user_id, nm_id))
+    row = cursor.fetchone()
+    conn.close()
+    return row is not None
+
+def mute_article(user_id, nm_id, hours=2):
+    mute_until = (datetime.now() + timedelta(hours=hours)).isoformat()
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO spp_mutes (user_id, nm_id, mute_until)
+        VALUES (?, ?, ?)
+    ''', (user_id, nm_id, mute_until))
+    conn.commit()
+    conn.close()
+
+def get_last_spp(nm_id):
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT current_price, old_price, spp_percent, checked_at
+        FROM spp_history
+        WHERE nm_id = ?
+        ORDER BY checked_at DESC LIMIT 1
+    ''', (nm_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {
+            'current_price': row[0],
+            'old_price': row[1],
+            'spp_percent': row[2],
+            'checked_at': row[3]
+        }
+    return None
+
+def get_spp_history(nm_id, limit=30):
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT checked_at, spp_percent, current_price, old_price
+        FROM spp_history
+        WHERE nm_id = ?
+        ORDER BY checked_at DESC LIMIT ?
+    ''', (nm_id, limit))
+    rows = cursor.fetchall()
+    conn.close()
+    return [{'checked_at': row[0], 'spp_percent': row[1], 'current_price': row[2], 'old_price': row[3]} for row in rows]
+
+# ===== ФУНКЦИИ ДЛЯ ПОИСКА NM_ID ПО АРТИКУЛУ =====
+def get_nm_id_by_article(article_name: str) -> int:
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('SELECT nm_id FROM article_stats WHERE article = ? LIMIT 1', (article_name,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+def get_article_by_nm_id(nm_id: int) -> str:
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute('SELECT article FROM article_stats WHERE nm_id = ? LIMIT 1', (nm_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else f"Товар {nm_id}"
