@@ -45,11 +45,13 @@ async def send_brand_notification(bot_app, user_id: int, brand: str, old_avg: fl
 async def monitor_spp(bot_app):
     logger.info("🔄 Запуск мониторинга СПП...")
     nm_ids = get_all_tracked_articles()
+    # Увеличиваем задержки между артикулами
     for nm_id in nm_ids:
         try:
             data = get_spp_for_article(nm_id)
             if not data:
                 logger.warning(f"⚠️ Не удалось получить данные для {nm_id}")
+                await asyncio.sleep(5)
                 continue
             article_name = data.get('title', f"Товар {nm_id}")
             save_spp_history(
@@ -62,11 +64,13 @@ async def monitor_spp(bot_app):
             last = get_last_spp(nm_id)
             if not last:
                 logger.info(f"📝 Первая проверка для {nm_id}")
+                await asyncio.sleep(3)
                 continue
             old_spp = last['spp_percent']
             new_spp = data['spp_percent']
             diff = abs(new_spp - old_spp)
             if diff < 0.01:
+                await asyncio.sleep(2)
                 continue
             users = get_subscribed_users(nm_id)
             for user_id in users:
@@ -82,9 +86,10 @@ async def monitor_spp(bot_app):
                 if diff >= threshold:
                     from handlers import send_spp_notification
                     await send_spp_notification(bot_app, user_id, nm_id, old_spp, new_spp, data, diff)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(3)
         except Exception as e:
             logger.error(f"❌ Ошибка мониторинга для {nm_id}: {e}")
+            await asyncio.sleep(5)
 
     brand_subs = {}
     conn = sqlite3.connect(str(DB_PATH))
@@ -104,7 +109,7 @@ async def monitor_spp(bot_app):
                 data = get_spp_for_article(nm_id)
                 if data and data.get('spp_percent') is not None:
                     spp_values.append(data['spp_percent'])
-                await asyncio.sleep(0.3)
+                await asyncio.sleep(2)
             if not spp_values:
                 logger.warning(f"⚠️ Не удалось получить СПП для артикулов бренда {brand}")
                 continue
@@ -124,7 +129,7 @@ async def monitor_spp(bot_app):
                 threshold = sub['threshold']
                 if diff >= threshold:
                     await send_brand_notification(bot_app, user_id, brand, old_avg, avg_spp, diff)
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(3)
         except Exception as e:
             logger.error(f"❌ Ошибка мониторинга бренда {brand}: {e}")
 
