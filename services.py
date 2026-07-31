@@ -10,33 +10,26 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import asyncio
 import os
 
-from config import TEMP_DIR, NEWS_API_KEY, logger
+from config import TEMP_DIR, logger
 from models import get_active_cost
 
 # ===== ПЛАНИРОВЩИК =====
 scheduler = BackgroundScheduler()
 
-# ===== НОВОСТИ ИЗ TELEGRAM-КАНАЛА =====
-# Импортируем функцию парсинга из tg_news_parser.py
-try:
-    from tg_news_parser import fetch_channel_messages, format_telegram_news
-except ImportError:
-    logger.warning("⚠️ Модуль tg_news_parser не найден, новости из канала недоступны")
-    async def fetch_channel_messages(limit=10):
-        return []
-    def format_telegram_news(messages, prefix="📰 Новости"):
-        return "Новости временно недоступны."
+# ===== НОВОСТИ ИЗ TELEGRAM-КАНАЛА (через веб-парсинг) =====
+from tg_news_parser import fetch_channel_messages, format_news_digest
 
 # ===== ОТПРАВКА НОВОСТЕЙ =====
 async def send_news_digest(context, user_id, time_of_day):
+    """Отправляет дайджест новостей из Telegram-канала"""
     from models import get_news_settings
     settings = get_news_settings(user_id)
     if not settings['enabled']:
         return
     
-    messages = await fetch_channel_messages(limit=10)
+    messages = fetch_channel_messages("news4sellers", limit=10)
     prefix = "🌅 **Утренняя сводка**" if time_of_day == 'morning' else "🌇 **Вечерняя сводка**"
-    text = format_telegram_news(messages, prefix)
+    text = format_news_digest(messages, prefix)
     
     try:
         await context.bot.send_message(
@@ -52,6 +45,8 @@ async def send_news_digest(context, user_id, time_of_day):
 async def scheduled_morning_digest(context):
     from models import get_news_settings
     try:
+        import sqlite3
+        from config import DB_PATH
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
         cursor.execute('SELECT user_id FROM news_settings WHERE enabled = 1')
@@ -65,6 +60,8 @@ async def scheduled_morning_digest(context):
 async def scheduled_evening_digest(context):
     from models import get_news_settings
     try:
+        import sqlite3
+        from config import DB_PATH
         conn = sqlite3.connect(str(DB_PATH))
         cursor = conn.cursor()
         cursor.execute('SELECT user_id FROM news_settings WHERE enabled = 1')
@@ -127,9 +124,12 @@ class ReportProcessor:
 
         qty_variants = ['количество', 'кол-во', 'количество товара', 'кол-во (шт.)', 'кол-во шт', 'quantity', 'количество,шт']
         art_variants = ['артикул поставщика', 'артикул', 'артикул товара', 'номенклатура', 'sku', 'артикул(поставщика)']
+        nm_id_variants = ['артикул товара', 'номенклатура', 'nmId', 'nm_id', 'артикул']
 
         qty_col = None
         art_col = None
+        nm_id_col = None
+
         for v in qty_variants:
             if v in all_cols:
                 qty_col = all_cols[v]
@@ -137,6 +137,10 @@ class ReportProcessor:
         for v in art_variants:
             if v in all_cols:
                 art_col = all_cols[v]
+                break
+        for v in nm_id_variants:
+            if v in all_cols:
+                nm_id_col = all_cols[v]
                 break
 
         if qty_col is None:
@@ -146,7 +150,7 @@ class ReportProcessor:
             logger.warning(f"❌ Колонка артикула не найдена. Доступные нормализованные: {list(all_cols.keys())}")
             return result
 
-        logger.info(f"✅ Найдены колонки: количество='{qty_col}', артикул='{art_col}'")
+        logger.info(f"✅ Найдены колонки: количество='{qty_col}', артикул='{art_col}', nm_id='{nm_id_col}'")
 
         for df, key in [(df_osn, 'sales'), (df_vyk, 'vyk')]:
             for bren, mask_func in [
@@ -160,14 +164,22 @@ class ReportProcessor:
                 sales = df_bren[(df_bren['Тип документа'] == 'Продажа') & (df_bren[qty_col] > 0)]
                 agg_sales = sales.groupby(art_col).agg(
                     quantity=(qty_col, 'sum'),
-                    revenue=('Цена розничная', 'sum')
+                    revenue=('Цена розничная', 'sum'),
+                    nm_id=(nm_id_col, 'first') if nm_id_col else None
                 ).to_dict('index') if not sales.empty else {}
 
                 articles = {}
                 for art, vals in agg_sales.items():
+                    nm_id_val = vals.get('nm_id') if nm_id_col else None
+                    if nm_id_val is not None:
+                        try:
+                            nm_id_val = int(nm_id_val)
+                        except:
+                            nm_id_val = None
                     articles[art] = {
                         'quantity': vals['quantity'],
-                        'revenue': vals['revenue']
+                        'revenue': vals['revenue'],
+                        'nm_id': nm_id_val
                     }
                 if bren not in result:
                     result[bren] = {}
