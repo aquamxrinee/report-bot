@@ -105,7 +105,7 @@ async def monitor_spp(bot_app):
     nm_ids = get_all_tracked_articles()
     for nm_id in nm_ids:
         try:
-            data = await get_spp_for_article(nm_id)
+            data = get_spp_for_article(nm_id)
             if not data:
                 logger.warning(f"⚠️ Не удалось получить данные для {nm_id}")
                 continue
@@ -160,7 +160,7 @@ async def monitor_spp(bot_app):
                 continue
             spp_values = []
             for nm_id in nm_ids_brand:
-                data = await get_spp_for_article(nm_id)
+                data = get_spp_for_article(nm_id)
                 if data and data.get('spp_percent') is not None:
                     spp_values.append(data['spp_percent'])
                 await asyncio.sleep(0.3)
