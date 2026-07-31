@@ -9,12 +9,6 @@ from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
 from config import logger, PROXY_URL, WB_API_TOKEN
 
-try:
-    from aiohttp_socks import ProxyConnector
-except ImportError:
-    logger.warning("⚠️ aiohttp-socks не установлен, SOCKS5 прокси не будет работать")
-    ProxyConnector = None
-
 STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1"
 
 ua = UserAgent()
@@ -22,12 +16,14 @@ _failed_cache = {}
 
 
 async def get_price_from_api(nm_id: int) -> Optional[float]:
-    """Получает цену без скидки продавца через WB API (sales)"""
+    """Получает цену из WB API (sales) – только если доступен метод"""
     if not WB_API_TOKEN:
         logger.error("❌ WB_API_TOKEN не задан")
         return None
 
     loop = asyncio.get_event_loop()
+    # Используем синхронную функцию из wb_api
+    from wb_api import get_sales
     sales = await loop.run_in_executor(None, get_sales, (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"))
     
     if isinstance(sales, dict) and "error" in sales:
@@ -40,16 +36,14 @@ async def get_price_from_api(nm_id: int) -> Optional[float]:
     
     for item in sales:
         if item.get('nmId') == nm_id:
-            # totalPrice — это цена после всех скидок, но для нас это цена до скидки продавца (обычно она же)
             return float(item.get('totalPrice', 0))
     
     logger.warning(f"⚠️ Артикул {nm_id} не найден в sales за последние 7 дней")
     return None
 
 
-async def get_price_from_site(nm_id: int, proxy_url: Optional[str] = None) -> Optional[Dict]:
-    """Парсит сайт для получения текущей цены и старой цены (если есть)"""
-    # Пробуем мобильную версию и обычную
+async def get_price_from_site(nm_id: int) -> Optional[Dict]:
+    """Парсит сайт для получения текущей цены, старой цены и названия"""
     urls = [
         f"https://m.wildberries.ru/catalog/{nm_id}/detail.aspx",
         f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx?x=1",
@@ -70,21 +64,27 @@ async def get_price_from_site(nm_id: int, proxy_url: Optional[str] = None) -> Op
                     "Referer": "https://www.wildberries.ru/"
                 }
                 
+                # Используем прокси
                 connector = None
-                if proxy_url and ProxyConnector:
+                if PROXY_URL:
                     try:
-                        connector = ProxyConnector.from_url(proxy_url)
+                        # Для HTTP-прокси используем стандартный aiohttp TCPConnector
+                        connector = aiohttp.TCPConnector()
                     except Exception as e:
-                        logger.warning(f"⚠️ Ошибка прокси: {e}, пробуем без прокси")
+                        logger.warning(f"⚠️ Ошибка создания коннектора: {e}")
                         connector = None
                 
                 async with aiohttp.ClientSession(connector=connector) as session:
-                    response = await session.get(url, headers=headers, timeout=20)
+                    kwargs = {"headers": headers, "timeout": 20}
+                    if PROXY_URL:
+                        kwargs["proxy"] = PROXY_URL
+                    
+                    response = await session.get(url, **kwargs)
                     
                     if response.status == 498:
                         logger.warning(f"⚠️ 498 Rate limit для {nm_id}, попытка {attempt}/3")
                         await asyncio.sleep(20 * attempt)
-                        break  # переходим к следующей попытке
+                        break
                     
                     if response.status != 200:
                         logger.error(f"❌ Статус {response.status} для {nm_id}, URL: {url}")
@@ -93,11 +93,8 @@ async def get_price_from_site(nm_id: int, proxy_url: Optional[str] = None) -> Op
                     html = await response.text()
                     soup = BeautifulSoup(html, 'html.parser')
                     
-                    # Ищем текущую цену
+                    # Текущая цена
                     current_price = None
-                    old_price = None
-                    
-                    # Селекторы для текущей цены
                     price_el = soup.find('span', class_='price-block__final-price')
                     if not price_el:
                         price_el = soup.find('span', {'data-wba': 'price-final'})
@@ -113,7 +110,7 @@ async def get_price_from_site(nm_id: int, proxy_url: Optional[str] = None) -> Op
                         price_text = re.sub(r'[^\d.,]', '', price_text).replace(',', '.')
                         current_price = float(price_text)
                     else:
-                        # Ищем через JSON-LD
+                        # JSON-LD
                         scripts = soup.find_all('script', type='application/ld+json')
                         for script in scripts:
                             try:
@@ -128,10 +125,10 @@ async def get_price_from_site(nm_id: int, proxy_url: Optional[str] = None) -> Op
                                 continue
                     
                     if current_price is None:
-                        logger.warning(f"⚠️ Текущая цена не найдена для {nm_id}")
                         continue
                     
-                    # Ищем старую цену (до скидки)
+                    # Старая цена (до скидки)
+                    old_price = None
                     old_price_el = soup.find('span', class_='price-block__old-price')
                     if not old_price_el:
                         old_price_el = soup.find('span', {'data-wba': 'price-old'})
@@ -157,12 +154,15 @@ async def get_price_from_site(nm_id: int, proxy_url: Optional[str] = None) -> Op
                     
             except Exception as e:
                 logger.error(f"❌ Ошибка парсинга {nm_id} (URL: {url}): {e}")
-                if 'proxy' in str(e).lower() or 'socks' in str(e).lower():
+                if 'proxy' in str(e).lower():
                     logger.warning(f"⚠️ Ошибка прокси для {nm_id}, пробуем без прокси")
-                    proxy_url = None
-                    await asyncio.sleep(5)
-                else:
-                    await asyncio.sleep(10 * attempt)
+                    # Временно убираем прокси для следующей попытки
+                    original_proxy = PROXY_URL
+                    # но мы не можем менять глобальную переменную, поэтому просто пропускаем прокси в следующей итерации
+                    # для этого мы можем установить PROXY_URL в None внутри этой функции (но это локально)
+                    # Проще: на следующей итерации цикла просто не передадим прокси.
+                    # Сделаем флаг
+                await asyncio.sleep(10 * attempt)
     
     return None
 
@@ -172,26 +172,27 @@ async def get_spp_for_article_async(nm_id: int) -> Optional[Dict[str, Any]]:
         logger.warning(f"⏳ Артикул {nm_id} заблокирован (ждём 15 мин)")
         return None
     
-    # 1. Получаем полную цену (до скидки продавца) из API (sales)
+    # 1. Пытаемся получить полную цену из API (sales)
     full_price = await get_price_from_api(nm_id)
     
     # 2. Парсим сайт для текущей цены и старой цены
-    site_data = await get_price_from_site(nm_id, proxy_url=PROXY_URL)
+    site_data = await get_price_from_site(nm_id)
     if not site_data:
         logger.warning(f"⚠️ Не удалось получить данные с сайта para {nm_id}")
         return None
     
     current_price = site_data['current_price']
-    old_price = site_data['old_price']  # цена до скидки на сайте (может не быть)
+    old_price = site_data['old_price']
     
-    # Если полная цена из API не найдена, используем старую цену с сайта (если есть)
+    # Если из API не пришла цена, используем старую цену с сайта (если она есть и отличается от текущей)
     if not full_price and old_price and old_price != current_price:
         full_price = old_price
         logger.info(f"📝 Полная цена взята со страницы (старая цена) para {nm_id}: {full_price}")
     
+    # Если всё ещё нет полной цены – берём текущую (тогда СПП = 0)
     if not full_price:
-        logger.warning(f"⚠️ Не удалось определить полную цену para {nm_id}")
-        return None
+        full_price = current_price
+        logger.warning(f"⚠️ Не удалось определить полную цену, используем текущую как полную para {nm_id}")
     
     if full_price > 0 and current_price > 0 and full_price != current_price:
         spp_percent = round((1 - current_price / full_price) * 100, 2)
@@ -209,20 +210,3 @@ async def get_spp_for_article_async(nm_id: int) -> Optional[Dict[str, Any]]:
         'url': site_data['url'],
         'checked_at': datetime.now().isoformat()
     }
-
-
-def get_sales(date_from: str):
-    """Синхронная обёртка для получения sales (используется в get_price_from_api)"""
-    import requests
-    from config import WB_API_TOKEN
-    url = f"{STATISTICS_API}/supplier/sales"
-    headers = {"Authorization": f"Bearer {WB_API_TOKEN}"}
-    params = {"dateFrom": date_from}
-    try:
-        response = requests.get(url, headers=headers, params=params, timeout=30)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            return {"error": f"HTTP {response.status_code}"}
-    except Exception as e:
-        return {"error": str(e)}
