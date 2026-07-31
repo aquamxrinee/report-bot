@@ -24,7 +24,8 @@ from models import (
     get_user_brand_subscriptions, subscribe_brand, unsubscribe_brand,
     init_spp_tables, init_spp_global_settings,
     get_spp_global_settings, set_spp_global_settings,
-    get_all_tracked_articles, get_all_brand_subscribers
+    get_all_tracked_articles, get_all_brand_subscribers,
+    get_articles_by_brand
 )
 from services import (
     detect_report_type, parse_date_from_period,
@@ -77,7 +78,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/spp_unsubscribe <nm_id> — отписаться\n"
         "/spp_list — список подписок\n"
         "/spp_check — запустить проверку\n"
-        "/spp_status — статус мониторинга",
+        "/spp_status — статус мониторинга\n"
+        "/spp_stats — статистика СПП",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
     )
@@ -132,7 +134,6 @@ async def back_to_menu_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     await query.edit_message_text("👋 Главное меню:", reply_markup=get_main_menu())
 
-# === Команды разработчика ===
 async def dev_commands_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -890,6 +891,64 @@ async def spp_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "✅ Включён" if settings['enabled'] else "❌ Отключён"
     await update.message.reply_text(f"Текущий статус мониторинга СПП: {status}")
 
+# === СТАТИСТИКА СПП ===
+async def spp_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    user_id = update.effective_user.id
+    await update.message.reply_text(await get_spp_stats_text(user_id))
+
+async def spp_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    text = await get_spp_stats_text(user_id)
+    await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔄 Обновить", callback_data="spp_stats")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")]
+    ]))
+
+async def get_spp_stats_text(user_id: int) -> str:
+    subs = get_user_subscriptions(user_id)
+    brand_subs = get_user_brand_subscriptions(user_id)
+    if not subs and not brand_subs:
+        return "📊 У вас нет подписок. Подпишитесь на артикулы или бренды, чтобы видеть статистику СПП."
+
+    text = "📊 *Актуальная статистика СПП*\n\n"
+
+    if subs:
+        text += "🟢 *Артикулы:*\n"
+        for sub in subs:
+            nm_id = sub['nm_id']
+            last = get_last_spp(nm_id)
+            if last:
+                spp = last['spp_percent']
+                price = last['current_price']
+                article_name = get_article_by_nm_id(nm_id)
+                text += f"• {article_name} — СПП: {spp:.1f}%, цена: {price:.0f} ₽\n"
+            else:
+                text += f"• {nm_id} — данных пока нет\n"
+        text += "\n"
+
+    if brand_subs:
+        text += "🔵 *Бренды (средняя СПП):*\n"
+        for bs in brand_subs:
+            brand = bs['brand']
+            nm_ids = get_articles_by_brand(brand)
+            spp_values = []
+            for nm_id in nm_ids:
+                last = get_last_spp(nm_id)
+                if last:
+                    spp_values.append(last['spp_percent'])
+            if spp_values:
+                avg_spp = sum(spp_values) / len(spp_values)
+                text += f"• {brand} — средняя СПП: {avg_spp:.1f}% (по {len(spp_values)} артикулам)\n"
+            else:
+                text += f"• {brand} — данных пока нет\n"
+    return text
+
 # === МЕНЮ МОНИТОРИНГА СПП ===
 async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
@@ -909,11 +968,13 @@ async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("➕ Подписаться на артикул", callback_data="spp_show_articles")],
         [InlineKeyboardButton("🏷️ Подписаться на бренд", callback_data="spp_show_brands")],
         [InlineKeyboardButton("📋 Мои подписки", callback_data="spp_my_subscriptions")],
+        [InlineKeyboardButton("📊 Статистика СПП", callback_data="spp_stats")],
         [InlineKeyboardButton("🔃 Вкл/Выкл", callback_data="spp_toggle_global")],
         [InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")]
     ]
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
+# === ОСТАЛЬНЫЕ КОЛБЭКИ СПП ===
 async def spp_show_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
