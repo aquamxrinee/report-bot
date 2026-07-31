@@ -15,8 +15,10 @@ _cache = {
 }
 CACHE_TTL = timedelta(hours=3)
 
+
 def get_headers() -> Dict:
     return {"Authorization": f"Bearer {WB_API_TOKEN}"}
+
 
 def _safe_request(method, url, params=None, json_data=None, max_retries=3):
     if not WB_API_TOKEN:
@@ -48,18 +50,33 @@ def _safe_request(method, url, params=None, json_data=None, max_retries=3):
             time.sleep(5 * attempt)
     return {"error": "Превышено количество попыток"}
 
-def get_sales(date_from: str, date_to: str = None):
+
+def get_sales(date_from: str, date_to: str = None) -> Dict:
+    """Получение списка продаж за период."""
     if not date_to:
         date_to = datetime.now().strftime("%Y-%m-%d")
     url = f"{STATISTICS_API}/supplier/sales"
     params = {"dateFrom": date_from, "dateTo": date_to}
     return _safe_request("GET", url, params=params)
 
-def get_stocks():
+
+def get_stocks() -> Dict:
+    """Получение остатков на складах."""
     url = f"{STATISTICS_API}/supplier/stocks"
     return _safe_request("GET", url)
 
-def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = None, limit=100):
+
+def get_orders(date_from: str, date_to: str = None) -> Dict:
+    """Получение списка заказов за период (опционально)."""
+    if not date_to:
+        date_to = datetime.now().strftime("%Y-%m-%d")
+    url = f"{STATISTICS_API}/supplier/orders"
+    params = {"dateFrom": date_from, "dateTo": date_to}
+    return _safe_request("GET", url, params=params)
+
+
+def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = None, limit=100) -> Dict:
+    """Воронка продаж (аналитика)."""
     if not date_from:
         date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     if not date_to:
@@ -70,25 +87,56 @@ def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = 
         payload["nmIds"] = nm_ids
     return _safe_request("POST", url, json_data=payload)
 
-# ===== НОВЫЙ МЕТОД: получение списка всех товаров продавца =====
-def get_supplier_items(limit: int = 1000, offset: int = 0):
-    """Получить список всех товаров продавца (артикулы, nm_id, бренды)"""
-    if not WB_API_TOKEN:
-        return {"error": "WB_API_TOKEN не задан"}
-    url = f"{STATISTICS_API}/supplier/items"
-    params = {"limit": limit, "offset": offset}
-    return _safe_request("GET", url, params=params)
 
-# ===== НОВЫЙ МЕТОД: получение текущих цен на все товары =====
-def get_supplier_prices(limit: int = 1000, offset: int = 0):
-    """Получить текущие цены на товары (включая скидки)"""
-    if not WB_API_TOKEN:
-        return {"error": "WB_API_TOKEN не задан"}
-    url = f"{STATISTICS_API}/supplier/prices"
-    params = {"limit": limit, "offset": offset}
-    return _safe_request("GET", url, params=params)
+def get_all_nm_ids_from_api(days_back: int = 90) -> List[int]:
+    """
+    Получает все уникальные nmId из:
+    - продаж за последние days_back дней
+    - остатков
+    - заказов (если доступно)
+    Объединяет и возвращает список уникальных nmId.
+    """
+    nm_ids_set = set()
 
-def get_aggregated_stats(force_refresh=False):
+    # 1. Продажи
+    date_from = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    sales_data = get_sales(date_from)
+    if isinstance(sales_data, list):
+        for item in sales_data:
+            nm_id = item.get('nmId')
+            if nm_id:
+                nm_ids_set.add(nm_id)
+        logger.info(f"✅ Из продаж получено {len(sales_data)} записей, уникальных nmId: {len(nm_ids_set)}")
+    else:
+        logger.warning(f"⚠️ Не удалось получить продажи: {sales_data.get('error', 'неизвестная ошибка')}")
+
+    # 2. Остатки
+    stocks_data = get_stocks()
+    if isinstance(stocks_data, list):
+        for item in stocks_data:
+            nm_id = item.get('nmId')
+            if nm_id:
+                nm_ids_set.add(nm_id)
+        logger.info(f"✅ Из остатков добавлено уникальных nmId: {len(nm_ids_set)}")
+    else:
+        logger.warning(f"⚠️ Не удалось получить остатки: {stocks_data.get('error', 'неизвестная ошибка')}")
+
+    # 3. Заказы (если метод доступен)
+    orders_data = get_orders(date_from)
+    if isinstance(orders_data, list):
+        for item in orders_data:
+            nm_id = item.get('nmId')
+            if nm_id:
+                nm_ids_set.add(nm_id)
+        logger.info(f"✅ Из заказов добавлено уникальных nmId: {len(nm_ids_set)}")
+    else:
+        logger.warning(f"⚠️ Не удалось получить заказы: {orders_data.get('error', 'неизвестная ошибка')}")
+
+    logger.info(f"📊 Всего уникальных nmId получено: {len(nm_ids_set)}")
+    return list(nm_ids_set)
+
+
+def get_aggregated_stats(force_refresh=False) -> Dict:
     global _cache
     now = datetime.now()
     if not force_refresh and _cache["timestamp"] and (now - _cache["timestamp"]) < CACHE_TTL:
@@ -157,7 +205,8 @@ def get_aggregated_stats(force_refresh=False):
     _cache["timestamp"] = now
     return result
 
-def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = None):
+
+def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = None) -> Dict:
     if not date_from:
         date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     if not date_to:
