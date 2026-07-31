@@ -3,13 +3,12 @@ import hashlib
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Dict, Optional, Any
-import pandas as pd
 
 from config import DB_PATH, logger
 
 # ===== ПРОВЕРКА И ОБНОВЛЕНИЕ СХЕМЫ БД =====
 def upgrade_db_schema():
-    """Добавляет новые столбцы в существующие таблицы, если их нет."""
+    """Добавляет недостающие столбцы в существующие таблицы."""
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     
@@ -18,8 +17,12 @@ def upgrade_db_schema():
     columns = [col[1] for col in cursor.fetchall()]
     if 'nm_id' not in columns:
         logger.info("🔄 Добавляем столбец nm_id в таблицу article_stats")
-        cursor.execute("ALTER TABLE article_stats ADD COLUMN nm_id INTEGER")
-        conn.commit()
+        try:
+            cursor.execute("ALTER TABLE article_stats ADD COLUMN nm_id INTEGER")
+            conn.commit()
+            logger.info("✅ Столбец nm_id добавлен")
+        except Exception as e:
+            logger.error(f"❌ Ошибка добавления nm_id: {e}")
     
     conn.close()
     logger.info("✅ Схема БД обновлена")
@@ -29,6 +32,7 @@ def init_db():
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     
+    # Таблицы создаются с учётом nm_id
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS reports (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,7 +48,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS report_values (
             report_id INTEGER,
             cell_name TEXT,
-            cell_value REAL,
+            cell_value TEXT,  -- Исправлено: теперь TEXT, чтобы хранить и строки (период)
             FOREIGN KEY(report_id) REFERENCES reports(id) ON DELETE CASCADE,
             PRIMARY KEY (report_id, cell_name)
         )
@@ -140,16 +144,13 @@ def init_db():
     # Обновляем схему (добавляем nm_id, если его нет)
     upgrade_db_schema()
 
-# ===== ИНИЦИАЛИЗАЦИЯ ТАБЛИЦ ДЛЯ СПП =====
 def init_spp_tables():
-    # уже созданы выше, оставляем для совместимости
     pass
 
 def init_spp_global_settings():
-    # уже созданы выше, оставляем для совместимости
     pass
 
-# ===== ФУНКЦИИ ДЛЯ РАБОТЫ С СЕБЕСТОИМОСТЬЮ =====
+# ===== ФУНКЦИИ ДЛЯ СЕБЕСТОИМОСТИ =====
 def get_earliest_report_date():
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -272,7 +273,7 @@ def delete_all_costs_for_article(article):
     conn.close()
     return deleted
 
-# ===== ФУНКЦИИ ДЛЯ РАБОТЫ С ОТЧЁТАМИ =====
+# ===== ФУНКЦИИ ДЛЯ ОТЧЁТОВ =====
 def calculate_file_hash(file_path):
     md5 = hashlib.md5()
     with open(file_path, "rb") as f:
@@ -302,16 +303,20 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
         report_id = cursor.lastrowid
         logger.info(f"✅ Отчет вставлен, ID: {report_id}")
 
+        # Вставляем значения ячеек (как текст, чтобы избежать ошибок)
         if values:
             for cell, val in values.items():
                 try:
+                    # Преобразуем в строку, чтобы избежать ошибок с типами
+                    str_val = str(val) if val is not None else ''
                     cursor.execute('''
                         INSERT INTO report_values (report_id, cell_name, cell_value)
                         VALUES (?, ?, ?)
-                    ''', (report_id, cell, float(val)))
+                    ''', (report_id, cell, str_val))
                 except Exception as e:
                     logger.error(f"❌ Ошибка вставки значения ячейки {cell}: {e}")
 
+        # Вставляем метрики
         if metrics:
             for mname, mval in metrics.items():
                 try:
@@ -322,6 +327,7 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                 except Exception as e:
                     logger.error(f"❌ Ошибка вставки метрики {mname}: {e}")
 
+        # Вставляем артикулы
         if articles:
             for brand, data in articles.items():
                 all_arts = {}
@@ -350,7 +356,7 @@ def save_report_to_db(file_name, file_hash, date_period, start_date, end_date, v
                         ''', (report_id, brand, art, stats['quantity'], stats['revenue'], nm_id_val))
                     except Exception as e:
                         logger.error(f"❌ Ошибка вставки артикула {art}: {e}")
-                        # Пробуем вставить без nm_id
+                        # Попытка без nm_id
                         try:
                             cursor.execute('''
                                 INSERT INTO article_stats (report_id, brand, article, quantity, revenue)
@@ -570,7 +576,7 @@ def get_aggregated_metrics():
             'avg_margin': 0
         }
 
-# ===== ФУНКЦИИ ДЛЯ НАСТРОЕК НОВОСТЕЙ =====
+# ===== НАСТРОЙКИ НОВОСТЕЙ =====
 def get_news_settings(user_id):
     try:
         conn = sqlite3.connect(str(DB_PATH))
@@ -743,17 +749,25 @@ def get_spp_history(nm_id, limit=30):
 
 # ===== ФУНКЦИИ ДЛЯ ПОИСКА NM_ID =====
 def get_nm_id_by_article(article_name: str) -> int:
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('SELECT nm_id FROM article_stats WHERE article = ? LIMIT 1', (article_name,))
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else 0
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute('SELECT nm_id FROM article_stats WHERE article = ? LIMIT 1', (article_name,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else 0
+    except Exception as e:
+        logger.error(f"Ошибка get_nm_id_by_article: {e}")
+        return 0
 
 def get_article_by_nm_id(nm_id: int) -> str:
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('SELECT article FROM article_stats WHERE nm_id = ? LIMIT 1', (nm_id,))
-    row = cursor.fetchone()
-    conn.close()
-    return row[0] if row else f"Товар {nm_id}"
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute('SELECT article FROM article_stats WHERE nm_id = ? LIMIT 1', (nm_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else f"Товар {nm_id}"
+    except Exception as e:
+        logger.error(f"Ошибка get_article_by_nm_id: {e}")
+        return f"Товар {nm_id}"
