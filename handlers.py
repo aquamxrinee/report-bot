@@ -31,7 +31,7 @@ from services import (
     detect_report_type, parse_date_from_period,
     ReportProcessor, scheduler
 )
-from spp_parser import get_spp_for_article
+from spp_parser import get_spp_for_article_async
 from spp_monitor import generate_spp_graph, monitor_spp
 
 async def check_access(update: Update) -> bool:
@@ -882,7 +882,7 @@ async def spp_check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("🔄 Запускаю проверку СПП...")
     try:
-        monitor_spp(context.bot_data.get('application', context.application))
+        await monitor_spp(context.bot_data.get('application', context.application))
         await update.message.reply_text("✅ Проверка завершена.")
     except Exception as e:
         logger.error(f"Ошибка: {e}")
@@ -909,13 +909,13 @@ async def test_parser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Некорректный nm_id.")
         return
     await update.message.reply_text(f"⏳ Парсинг артикула {nm_id}...")
-    data = get_spp_for_article(nm_id)
+    data = await get_spp_for_article_async(nm_id)
     if data:
         text = (
             f"✅ *Данные для {nm_id}*\n\n"
-            f"Цена: {data['current_price']} ₽\n"
-            f"Старая цена: {data['old_price']} ₽\n"
-            f"СПП: {data['spp_percent']}%\n"
+            f"Цена по API (до скидки): {data['api_price']} ₽\n"
+            f"Цена на сайте (для покупателя): {data['site_price']} ₽\n"
+            f"СПП: {data['spp_percent']:.1f}%\n"
             f"Название: {data['title']}\n"
             f"Ссылка: {data['url']}"
         )
@@ -1276,8 +1276,9 @@ async def send_spp_notification(bot_app, user_id, nm_id, old_spp, new_spp, data,
         f"📊 *Изменение СПП!*\n\n"
         f"Артикул: {nm_id}\n"
         f"Название: {title}\n"
-        f"СПП: {old_spp}% → {new_spp}% ({direction} на {diff:.1f} п.п.)\n"
-        f"Цена: {data['current_price']} ₽ (было {data['old_price']} ₽)\n"
+        f"СПП: {old_spp:.1f}% → {new_spp:.1f}% ({direction} на {diff:.1f} п.п.)\n"
+        f"Цена по API: {data['api_price']} ₽\n"
+        f"Цена на сайте: {data['site_price']} ₽\n"
         f"[Открыть карточку]({data['url']})"
     )
     keyboard = [
