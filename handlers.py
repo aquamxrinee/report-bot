@@ -1163,3 +1163,9 @@ async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_{nm_id}")]
         ])
     )
+async def spp_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    settings = get_spp_global_settings()
+    status = "✅ Включён" if settings['enabled'] else "❌ Отключён"
+    await update.message.reply_text(f"Текущий статус мониторинга СПП: {status}")
