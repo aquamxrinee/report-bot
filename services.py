@@ -21,16 +21,13 @@ from tg_news_parser import fetch_channel_messages, format_news_digest
 
 # ===== ОТПРАВКА НОВОСТЕЙ =====
 async def send_news_digest(context, user_id, time_of_day):
-    """Отправляет дайджест новостей из Telegram-канала"""
     from models import get_news_settings
     settings = get_news_settings(user_id)
     if not settings['enabled']:
         return
-    
     messages = fetch_channel_messages("news4sellers", limit=10)
     prefix = "🌅 **Утренняя сводка**" if time_of_day == 'morning' else "🌇 **Вечерняя сводка**"
     text = format_news_digest(messages, prefix)
-    
     try:
         await context.bot.send_message(
             chat_id=user_id,
@@ -144,10 +141,10 @@ class ReportProcessor:
                 break
 
         if qty_col is None:
-            logger.warning(f"❌ Колонка количества не найдена. Доступные нормализованные: {list(all_cols.keys())}")
+            logger.warning(f"❌ Колонка количества не найдена. Доступные: {list(all_cols.keys())}")
             return result
         if art_col is None:
-            logger.warning(f"❌ Колонка артикула не найдена. Доступные нормализованные: {list(all_cols.keys())}")
+            logger.warning(f"❌ Колонка артикула не найдена. Доступные: {list(all_cols.keys())}")
             return result
 
         logger.info(f"✅ Найдены колонки: количество='{qty_col}', артикул='{art_col}', nm_id='{nm_id_col}'")
@@ -162,25 +159,32 @@ class ReportProcessor:
                 if df_bren.empty:
                     continue
                 sales = df_bren[(df_bren['Тип документа'] == 'Продажа') & (df_bren[qty_col] > 0)]
-                agg_sales = sales.groupby(art_col).agg(
-                    quantity=(qty_col, 'sum'),
-                    revenue=('Цена розничная', 'sum'),
-                    nm_id=(nm_id_col, 'first') if nm_id_col else None
-                ).to_dict('index') if not sales.empty else {}
-
-                articles = {}
-                for art, vals in agg_sales.items():
-                    nm_id_val = vals.get('nm_id') if nm_id_col else None
-                    if nm_id_val is not None:
-                        try:
-                            nm_id_val = int(nm_id_val)
-                        except:
-                            nm_id_val = None
-                    articles[art] = {
-                        'quantity': vals['quantity'],
-                        'revenue': vals['revenue'],
-                        'nm_id': nm_id_val
+                if sales.empty:
+                    articles = {}
+                else:
+                    # Строим словарь для agg
+                    agg_dict = {
+                        'quantity': (qty_col, 'sum'),
+                        'revenue': ('Цена розничная', 'sum')
                     }
+                    if nm_id_col:
+                        agg_dict['nm_id'] = (nm_id_col, 'first')
+                    
+                    agg_sales = sales.groupby(art_col).agg(**agg_dict).to_dict('index')
+                    
+                    articles = {}
+                    for art, vals in agg_sales.items():
+                        nm_id_val = vals.get('nm_id') if nm_id_col else None
+                        if nm_id_val is not None:
+                            try:
+                                nm_id_val = int(nm_id_val)
+                            except:
+                                nm_id_val = None
+                        articles[art] = {
+                            'quantity': vals['quantity'],
+                            'revenue': vals['revenue'],
+                            'nm_id': nm_id_val
+                        }
                 if bren not in result:
                     result[bren] = {}
                 result[bren][key] = articles
