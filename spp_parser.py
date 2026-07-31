@@ -18,6 +18,22 @@ PROXIES = {
 
 _failed_cache = {}
 
+def check_proxy() -> bool:
+    """Проверяет работоспособность прокси."""
+    try:
+        test_url = "https://api.ipify.org?format=json"
+        response = requests.get(test_url, proxies=PROXIES, timeout=10)
+        if response.status_code == 200:
+            ip = response.json().get('ip')
+            logger.info(f"✅ Прокси работает, ваш IP: {ip}")
+            return True
+        else:
+            logger.error(f"❌ Прокси вернул статус {response.status_code}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки прокси: {e}")
+        return False
+
 def get_spp_for_article(nm_id: int, retries: int = 3) -> Optional[Dict[str, Any]]:
     if nm_id in _failed_cache and (datetime.now() - _failed_cache[nm_id]).seconds < 600:
         logger.warning(f"⏳ Артикул {nm_id} временно заблокирован (ждём 10 мин)")
@@ -26,6 +42,10 @@ def get_spp_for_article(nm_id: int, retries: int = 3) -> Optional[Dict[str, Any]
     url = f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx"
     for attempt in range(1, retries + 1):
         try:
+            # Проверяем прокси раз в 5 попыток
+            if attempt == 1:
+                check_proxy()
+            
             time.sleep(random.uniform(2.0, 5.0) * attempt)
             session = requests.Session()
             headers = {
@@ -38,12 +58,17 @@ def get_spp_for_article(nm_id: int, retries: int = 3) -> Optional[Dict[str, Any]
                 "Pragma": "no-cache",
                 "Referer": "https://www.wildberries.ru/"
             }
-            response = session.get(url, headers=headers, proxies=PROXIES, timeout=20)
+            response = session.get(url, headers=headers, proxies=PROXIES, timeout=25)
+            
             if response.status_code == 498:
                 logger.warning(f"⚠️ 498 Rate limit для {nm_id}, попытка {attempt}/{retries}")
                 _failed_cache[nm_id] = datetime.now()
                 wait = 15 * attempt
                 time.sleep(wait)
+                continue
+            if response.status_code == 502:
+                logger.warning(f"⚠️ 502 Bad Gateway (прокси не отвечает), попытка {attempt}/{retries}")
+                time.sleep(10 * attempt)
                 continue
             if response.status_code != 200:
                 logger.error(f"❌ Статус {response.status_code} для {nm_id}")
@@ -111,6 +136,11 @@ def get_spp_for_article(nm_id: int, retries: int = 3) -> Optional[Dict[str, Any]
                 'url': url,
                 'checked_at': datetime.now().isoformat()
             }
+        except requests.exceptions.ProxyError as e:
+            logger.error(f"❌ Ошибка прокси для {nm_id}: {e}")
+            if attempt == retries:
+                _failed_cache[nm_id] = datetime.now()
+            time.sleep(10 * attempt)
         except requests.exceptions.RequestException as e:
             logger.error(f"❌ Ошибка запроса для {nm_id}: {e}")
             if attempt == retries:
