@@ -9,6 +9,13 @@ from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
 from config import logger, PROXY_URL, WB_API_TOKEN
 
+# Импортируем aiohttp_socks для поддержки SOCKS5
+try:
+    from aiohttp_socks import ProxyConnector
+except ImportError:
+    logger.warning("⚠️ aiohttp-socks не установлен, SOCKS5 прокси не будет работать. Установите: pip install aiohttp-socks")
+    ProxyConnector = None
+
 STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1"
 
 ua = UserAgent()
@@ -16,7 +23,6 @@ _failed_cache = {}
 
 
 async def get_price_from_api(nm_id: int) -> Optional[float]:
-    """Получает цену до скидки продавца через WB API (наиболее надёжно)"""
     if not WB_API_TOKEN:
         logger.error("❌ WB_API_TOKEN не задан")
         return None
@@ -58,16 +64,10 @@ async def get_price_from_api(nm_id: int) -> Optional[float]:
 
 
 async def get_price_from_mobile_site(nm_id: int) -> Optional[Dict]:
-    """
-    Парсит мобильную версию Wildberries — легче и реже блокируется.
-    Используем m.wildberries.ru
-    """
     url = f"https://m.wildberries.ru/catalog/{nm_id}/detail.aspx"
-    
-    # Если мобильная версия не открывается, пробуем основную с параметром x=1 (упрощённая)
     fallback_url = f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx?x=1"
     
-    for attempt in range(1, 4):  # 3 попытки
+    for attempt in range(1, 4):
         try:
             await asyncio.sleep(random.uniform(2, 5) * attempt)
             
@@ -80,18 +80,18 @@ async def get_price_from_mobile_site(nm_id: int) -> Optional[Dict]:
                 "Referer": "https://m.wildberries.ru/"
             }
             
-            kwargs = {"headers": headers, "timeout": 20}
-            if PROXY_URL:
-                kwargs["proxy"] = PROXY_URL
+            # Создаём коннектор с прокси, если он задан
+            connector = None
+            if PROXY_URL and ProxyConnector:
+                connector = ProxyConnector.from_url(PROXY_URL)
             
-            async with aiohttp.ClientSession() as session:
-                # Сначала пробуем мобильную версию
-                response = await session.get(url, **kwargs)
+            async with aiohttp.ClientSession(connector=connector) as session:
+                # Пробуем мобильную версию
+                response = await session.get(url, headers=headers, timeout=20)
                 
-                # Если мобильная версия вернула ошибку, пробуем fallback
                 if response.status in (498, 429, 403):
                     logger.warning(f"⚠️ Мобильная версия {response.status} для {nm_id}, пробуем fallback")
-                    response = await session.get(fallback_url, **kwargs)
+                    response = await session.get(fallback_url, headers=headers, timeout=20)
                 
                 if response.status == 498:
                     logger.warning(f"⚠️ 498 Rate limit для {nm_id}, попытка {attempt}/3")
@@ -105,8 +105,7 @@ async def get_price_from_mobile_site(nm_id: int) -> Optional[Dict]:
                 html = await response.text()
                 soup = BeautifulSoup(html, 'html.parser')
                 
-                # Поиск цены в мобильной версии
-                # Селекторы могут отличаться, пробуем несколько вариантов
+                # Поиск цены
                 price_el = soup.find('span', class_='price-block__final-price')
                 if not price_el:
                     price_el = soup.find('span', {'data-wba': 'price-final'})
@@ -122,7 +121,7 @@ async def get_price_from_mobile_site(nm_id: int) -> Optional[Dict]:
                     price_text = re.sub(r'[^\d.,]', '', price_text).replace(',', '.')
                     site_price = float(price_text)
                 else:
-                    # Пробуем найти через JSON-LD
+                    # JSON-LD
                     scripts = soup.find_all('script', type='application/ld+json')
                     for script in scripts:
                         try:
@@ -136,7 +135,7 @@ async def get_price_from_mobile_site(nm_id: int) -> Optional[Dict]:
                         except:
                             continue
                     else:
-                        # Если ничего не нашли, пробуем regex
+                        # regex
                         match = re.search(r'"price":\s*([\d.]+)', html)
                         if match:
                             site_price = float(match.group(1))
@@ -166,18 +165,15 @@ async def get_price_from_mobile_site(nm_id: int) -> Optional[Dict]:
 
 
 async def get_spp_for_article_async(nm_id: int) -> Optional[Dict[str, Any]]:
-    """Основная функция получения данных о СПП"""
     if nm_id in _failed_cache and (datetime.now() - _failed_cache[nm_id]).seconds < 900:
         logger.warning(f"⏳ Артикул {nm_id} заблокирован (ждём 15 мин)")
         return None
     
-    # 1. Цена из API (до скидки продавца)
     api_price = await get_price_from_api(nm_id)
     if not api_price:
         logger.warning(f"⚠️ Не удалось получить цену из API для {nm_id}")
         return None
     
-    # 2. Цена с мобильного сайта (для покупателя)
     site_data = await get_price_from_mobile_site(nm_id)
     if not site_data:
         logger.warning(f"⚠️ Не удалось получить цену на сайте для {nm_id}")
@@ -187,7 +183,6 @@ async def get_spp_for_article_async(nm_id: int) -> Optional[Dict[str, Any]]:
     title = site_data['title']
     url = site_data['url']
     
-    # 3. Расчёт СПП
     if api_price > 0 and site_price > 0 and api_price != site_price:
         spp_percent = round((1 - site_price / api_price) * 100, 2)
     else:
