@@ -4,7 +4,6 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta
 import asyncio
-from urllib.parse import quote, unquote
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, filters
@@ -999,6 +998,7 @@ async def spp_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"• {article_name} (порог: {sub['threshold']} п.п.)\n"
     await update.message.reply_text(text)
 
+# ===== БЛОК МОНИТОРИНГА СПП (исправленный) =====
 async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1028,6 +1028,8 @@ async def spp_show_articles_callback(update: Update, context: ContextTypes.DEFAU
         return
     query = update.callback_query
     await query.answer()
+    
+    # Получаем список артикулов с nm_id
     articles = get_all_articles_with_costs()
     if not articles:
         await query.edit_message_text(
@@ -1037,66 +1039,71 @@ async def spp_show_articles_callback(update: Update, context: ContextTypes.DEFAU
             ])
         )
         return
+    
     keyboard = []
-    for item in articles[:30]:
+    count = 0
+    for item in articles:
         article = item['article']
-        label = article[:40]
-        # Кодируем артикул для передачи в callback_data
-        encoded_article = quote(article, safe='')
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"spp_subscribe_article_{encoded_article}")])
+        # Нам нужен nm_id для подписки. Пытаемся получить его из БД
+        nm_id = get_nm_id_by_article(article)
+        if not nm_id:
+            continue  # пропускаем артикулы без nm_id
+        
+        label = article[:35]
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"spp_subscribe_{nm_id}")])
+        count += 1
+        if count >= 20:
+            break  # ограничиваем 20 кнопками
+    
+    if not keyboard:
+        await query.edit_message_text(
+            "⚠️ Нет артикулов с указанным nm_id. Загрузите отчёты с колонкой 'Код номенклатуры'.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")]
+            ])
+        )
+        return
+    
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")])
-    await query.edit_message_text(
-        "📋 **Выберите артикул для подписки:**\n\n"
-        "Бот будет отслеживать изменения СПП по этому товару.",
-        parse_mode='Markdown',
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    
+    try:
+        await query.edit_message_text(
+            "📋 **Выберите артикул для подписки:**\n\n"
+            "Бот будет отслеживать изменения СПП по этому товару.",
+            parse_mode='Markdown',
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при отображении списка артикулов: {e}")
+        await query.edit_message_text(
+            "❌ Ошибка при формировании списка. Попробуйте позже.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")]
+            ])
+        )
 
 async def spp_subscribe_article_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
     query = update.callback_query
     await query.answer()
+    
     try:
-        encoded_article = query.data.replace("spp_subscribe_article_", "")
-        article = unquote(encoded_article)
-    except Exception as e:
-        logger.error(f"Ошибка декодирования артикула: {e}")
-        await query.edit_message_text("❌ Ошибка: некорректный артикул.")
+        nm_id = int(query.data.split("_")[2])
+    except (IndexError, ValueError):
+        await query.edit_message_text("❌ Ошибка: неверный артикул.")
         return
-
+    
     user_id = update.effective_user.id
-    try:
-        nm_id = get_nm_id_by_article(article)
-    except sqlite3.OperationalError as e:
-        if 'no such column: nm_id' in str(e):
-            logger.error("❌ Ошибка: столбец nm_id отсутствует в БД")
-            await query.edit_message_text(
-                "⚠️ Ошибка базы данных: отсутствует столбец nm_id.\n\n"
-                "Пожалуйста, обновите базу данных. Свяжитесь с администратором.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("◀️ Назад", callback_data="spp_show_articles")]
-                ])
-            )
-            return
-        raise
-
-    if not nm_id:
-        await query.edit_message_text(
-            f"❌ Не удалось найти nm_id для артикула {article}.\n"
-            "Возможно, артикул не загружен в систему.",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("◀️ Назад", callback_data="spp_show_articles")]
-            ])
-        )
-        return
-
     threshold = get_spp_global_settings()['default_threshold']
     subscribe_user(user_id, nm_id, threshold)
-    logger.info(f"✅ Пользователь {user_id} подписался на {article} (nm_id={nm_id})")
+    article_name = get_article_by_nm_id(nm_id)
+    logger.info(f"✅ Пользователь {user_id} подписался на {article_name} (nm_id={nm_id})")
+    
     await query.edit_message_text(
-        f"✅ Вы подписались на отслеживание СПП для {article}.\n"
+        f"✅ Вы подписались на отслеживание СПП для товара `{article_name}`.\n"
         f"Порог: {threshold} п.п.",
+        parse_mode='Markdown',
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("◀️ Назад к настройкам", callback_data="menu_spp")]
         ])
@@ -1107,6 +1114,7 @@ async def spp_my_subscriptions_callback(update: Update, context: ContextTypes.DE
         return
     query = update.callback_query
     await query.answer()
+    
     user_id = update.effective_user.id
     subs = get_user_subscriptions(user_id)
     if not subs:
@@ -1118,6 +1126,7 @@ async def spp_my_subscriptions_callback(update: Update, context: ContextTypes.DE
             ])
         )
         return
+    
     text = "📋 *Ваши подписки:*\n\n"
     keyboard = []
     for sub in subs:
@@ -1131,6 +1140,7 @@ async def spp_my_subscriptions_callback(update: Update, context: ContextTypes.DE
         ])
     keyboard.append([InlineKeyboardButton("➕ Выбрать артикулы", callback_data="spp_show_articles")])
     keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="menu_spp")])
+    
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def spp_unsubscribe_button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
