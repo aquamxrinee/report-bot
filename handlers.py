@@ -1305,3 +1305,19 @@ async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_{nm_id}")]
         ])
     )
+async def test_proxy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    await update.message.reply_text("🔄 Проверяю прокси...")
+    try:
+        import requests
+        test_url = "https://api.ipify.org?format=json"
+        proxies = {"http": PROXY_URL, "https": PROXY_URL}
+        response = requests.get(test_url, proxies=proxies, timeout=15, verify=False)
+        if response.status_code == 200:
+            ip = response.json().get('ip')
+            await update.message.reply_text(f"✅ Прокси работает! Ваш внешний IP: {ip}")
+        else:
+            await update.message.reply_text(f"❌ Прокси вернул статус {response.status_code}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка проверки прокси: {e}")
