@@ -1,69 +1,148 @@
-import requests
+import asyncio
+import aiohttp
 import json
 import re
-import time
 import random
 from datetime import datetime
 from typing import Optional, Dict, Any
 from bs4 import BeautifulSoup
 from fake_useragent import UserAgent
 from config import logger, PROXY_URL
+import os
+
+WB_API_TOKEN = os.getenv("WB_API_TOKEN")
+STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1"
 
 ua = UserAgent()
 _failed_cache = {}
 
-def parse_buyer_price(nm_id: int, retries: int = 3) -> Optional[float]:
-    """
-    Парсит цену для покупателя с клиентской страницы товара.
-    """
-    if nm_id in _failed_cache and (datetime.now() - _failed_cache[nm_id]).seconds < 900:
-        logger.warning(f"⏳ Артикул {nm_id} временно заблокирован (ждём 15 мин)")
+async def get_price_from_api(nm_id: int) -> Optional[float]:
+    """Получает цену до скидки продавца через WB API"""
+    if not WB_API_TOKEN:
+        logger.error("❌ WB_API_TOKEN не задан")
         return None
+    url = f"{STATISTICS_API}/supplier/sales"
+    headers = {"Authorization": f"Bearer {WB_API_TOKEN}"}
+    params = {"dateFrom": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers, params=params, timeout=15) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data and isinstance(data, list):
+                        # Ищем товар по nm_id
+                        for item in data:
+                            if item.get('nmId') == nm_id:
+                                return float(item.get('totalPrice', 0))
+                        logger.warning(f"⚠️ Артикул {nm_id} не найден в API")
+                else:
+                    logger.warning(f"⚠️ API вернул статус {response.status}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка API: {e}")
+    return None
 
+async def get_price_from_site(nm_id: int) -> Optional[Dict]:
+    """Получает цену на сайте WB через парсинг"""
     url = f"https://www.wildberries.ru/catalog/{nm_id}/detail.aspx"
-    for attempt in range(1, retries + 1):
+    proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
+    
+    for attempt in range(1, 4):
         try:
-            time.sleep(random.uniform(8.0, 15.0) * attempt)
+            await asyncio.sleep(random.uniform(3, 7) * attempt)
             headers = {
                 "User-Agent": ua.random,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Connection": "keep-alive",
                 "Cache-Control": "no-cache",
                 "Pragma": "no-cache",
                 "Referer": "https://www.wildberries.ru/"
             }
-            proxies = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
-            response = requests.get(url, headers=headers, proxies=proxies, timeout=30, verify=False)
-            if response.status_code == 498:
-                logger.warning(f"⚠️ 498 Rate limit для {nm_id}, попытка {attempt}/{retries}")
-                _failed_cache[nm_id] = datetime.now()
-                time.sleep(30 * attempt)
-                continue
-            if response.status_code != 200:
-                logger.error(f"❌ Статус {response.status_code} для {nm_id}")
-                if attempt == retries:
-                    _failed_cache[nm_id] = datetime.now()
-                continue
-
-            soup = BeautifulSoup(response.text, 'html.parser')
-            # Ищем цену покупателя
-            price_el = soup.find('span', class_='price-block__final-price')
-            if not price_el:
-                price_el = soup.find('span', {'data-wba': 'price-final'})
-            if price_el:
-                price_text = price_el.text.replace('\u2009', '').replace('\xa0', '').replace('₽', '').strip()
-                price_text = re.sub(r'[^\d.,]', '', price_text).replace(',', '.')
-                buyer_price = float(price_text)
-                _failed_cache.pop(nm_id, None)
-                return buyer_price
-            else:
-                logger.warning(f"⚠️ Цена покупателя не найдена для {nm_id}")
-                return None
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, proxy=PROXY_URL, timeout=30) as response:
+                    if response.status == 498:
+                        logger.warning(f"⚠️ 498 Rate limit для {nm_id}, попытка {attempt}/3")
+                        await asyncio.sleep(20 * attempt)
+                        continue
+                    if response.status != 200:
+                        logger.error(f"❌ Статус {response.status} для {nm_id}")
+                        continue
+                    html = await response.text()
+                    soup = BeautifulSoup(html, 'html.parser')
+                    
+                    # Ищем цену
+                    price_el = soup.find('span', class_='price-block__final-price')
+                    if not price_el:
+                        price_el = soup.find('span', {'data-wba': 'price-final'})
+                    if price_el:
+                        price_text = price_el.text.replace('\u2009', '').replace('\xa0', '').replace('₽', '').strip()
+                        price_text = re.sub(r'[^\d.,]', '', price_text).replace(',', '.')
+                        site_price = float(price_text)
+                    else:
+                        # Пробуем найти через JSON-LD
+                        scripts = soup.find_all('script', type='application/ld+json')
+                        for script in scripts:
+                            try:
+                                data = json.loads(script.string)
+                                if data.get('@type') == 'Product' and data.get('offers'):
+                                    offers = data.get('offers', {})
+                                    if isinstance(offers, list):
+                                        offers = offers[0] if offers else {}
+                                    site_price = float(offers.get('price', 0))
+                                    break
+                            except:
+                                continue
+                        else:
+                            logger.warning(f"⚠️ Цена не найдена для {nm_id}")
+                            return None
+                    
+                    # Название
+                    title_el = soup.find('h1', {'data-wba': 'product-name'})
+                    if not title_el:
+                        title_el = soup.find('h1', class_='product-page__title')
+                    title = title_el.text.strip() if title_el else f"Товар {nm_id}"
+                    
+                    return {'site_price': site_price, 'title': title, 'url': url}
         except Exception as e:
             logger.error(f"❌ Ошибка парсинга {nm_id}: {e}")
-            if attempt == retries:
-                _failed_cache[nm_id] = datetime.now()
-            time.sleep(15 * attempt)
+            await asyncio.sleep(10 * attempt)
     return None
+
+async def get_spp_for_article_async(nm_id: int) -> Optional[Dict[str, Any]]:
+    """Основная функция получения данных о СПП"""
+    if nm_id in _failed_cache and (datetime.now() - _failed_cache[nm_id]).seconds < 900:
+        logger.warning(f"⏳ Артикул {nm_id} заблокирован (ждём 15 мин)")
+        return None
+    
+    # 1. Получаем цену из API (до скидки продавца)
+    api_price = await get_price_from_api(nm_id)
+    if not api_price:
+        logger.warning(f"⚠️ Не удалось получить цену из API для {nm_id}")
+        return None
+    
+    # 2. Получаем цену на сайте (для покупателя)
+    site_data = await get_price_from_site(nm_id)
+    if not site_data:
+        logger.warning(f"⚠️ Не удалось получить цену на сайте для {nm_id}")
+        return None
+    
+    site_price = site_data['site_price']
+    title = site_data['title']
+    url = site_data['url']
+    
+    # 3. Рассчитываем СПП
+    if api_price > 0 and site_price > 0 and api_price != site_price:
+        spp_percent = round((1 - site_price / api_price) * 100, 2)
+    else:
+        spp_percent = 0.0
+    
+    _failed_cache.pop(nm_id, None)
+    
+    return {
+        'nm_id': nm_id,
+        'api_price': api_price,
+        'site_price': site_price,
+        'spp_percent': spp_percent,
+        'title': title,
+        'url': url,
+        'checked_at': datetime.now().isoformat()
+    }
