@@ -4,11 +4,12 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta
 import asyncio
+import requests
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, filters
 
-from config import MINI_APP_URL, TEMP_DIR, DB_PATH, USER_NAMES, logger, ALLOWED_USERS
+from config import MINI_APP_URL, TEMP_DIR, DB_PATH, USER_NAMES, logger, ALLOWED_USERS, PROXY_URL
 from models import (
     get_all_reports, get_all_report_ids, get_report_values, get_report_metrics,
     get_previous_report_id, get_previous_reports, get_article_stats_for_report,
@@ -80,7 +81,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/spp_check — запустить проверку\n"
         "/spp_status — статус мониторинга\n"
         "/spp_stats — статистика СПП\n"
-        "/test_parser <nm_id> — проверить парсер",
+        "/test_parser <nm_id> — проверить парсер\n"
+        "/test_proxy — проверить прокси",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
     )
@@ -149,6 +151,7 @@ async def dev_commands_callback(update: Update, context: ContextTypes.DEFAULT_TY
         "`/spp_subscribe <nm_id> [порог]` — подписаться вручную\n"
         "`/spp_unsubscribe <nm_id>` — отписаться\n"
         "`/test_parser <nm_id>` — проверить парсер\n"
+        "`/test_proxy` — проверить прокси\n"
         "`/sync_articles` — синхронизация артикулов (в разработке)\n"
         "`/osn` / `/vyk` — ручное указание типа файла (устарело)\n"
         "`/articles` — детали по артикулам\n\n"
@@ -158,7 +161,6 @@ async def dev_commands_callback(update: Update, context: ContextTypes.DEFAULT_TY
         [InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")]
     ]))
 
-# === НАСТРОЙКИ СЕБЕСТОИМОСТИ ===
 async def menu_costs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not await check_access(update):
@@ -318,7 +320,6 @@ async def handle_cost_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Введите число.")
 
-# === АНАЛИТИКА ПО АРТИКУЛАМ ===
 async def show_analytics_selection(query, context, page):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
@@ -517,7 +518,6 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# === ИСТОРИЯ (АРХИВ) С ВОЗМОЖНОСТЬЮ УДАЛЕНИЯ ===
 async def show_history_page(query, context, page):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
@@ -642,7 +642,6 @@ async def history_confirm_delete_callback(update: Update, context: ContextTypes.
         else:
             await query.edit_message_text("❌ Ошибка удаления.")
 
-# === ОБРАБОТЧИКИ ФАЙЛОВ ===
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -729,7 +728,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 def parse_date_from_period(date_period):
     try:
         parts = date_period.split('-')
@@ -800,7 +798,6 @@ def calculate_profit_and_margin(articles, start_date, end_date):
     margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
     return total_profit, margin
 
-# === ОБРАБОТЧИК ТЕКСТА ===
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -818,7 +815,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("Используйте кнопки меню или команды из /help")
 
-# === КОМАНДЫ СПП ===
 async def spp_subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -893,7 +889,6 @@ async def spp_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "✅ Включён" if settings['enabled'] else "❌ Отключён"
     await update.message.reply_text(f"Текущий статус мониторинга СПП: {status}")
 
-# === ТЕСТ ПАРСЕРА ===
 async def test_parser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -921,7 +916,22 @@ async def test_parser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"❌ Не удалось получить данные для {nm_id}. Возможно, страница заблокирована или артикул не существует.")
 
-# === СТАТИСТИКА СПП ===
+async def test_proxy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    await update.message.reply_text("🔄 Проверяю прокси...")
+    try:
+        test_url = "https://api.ipify.org?format=json"
+        proxies = {"http": PROXY_URL, "https": PROXY_URL}
+        response = requests.get(test_url, proxies=proxies, timeout=15, verify=False)
+        if response.status_code == 200:
+            ip = response.json().get('ip')
+            await update.message.reply_text(f"✅ Прокси работает! Ваш внешний IP: {ip}")
+        else:
+            await update.message.reply_text(f"❌ Прокси вернул статус {response.status_code}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка проверки прокси: {e}")
+
 async def spp_stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -987,7 +997,6 @@ async def get_spp_stats_text(user_id: int) -> str:
                 text += f"• {brand} — данных пока нет\n"
     return text
 
-# === МЕНЮ МОНИТОРИНГА СПП ===
 async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1012,7 +1021,6 @@ async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-# === ОСТАЛЬНЫЕ КОЛБЭКИ СПП ===
 async def spp_show_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1297,18 +1305,3 @@ async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_{nm_id}")]
         ])
     )
-async def test_proxy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    await update.message.reply_text("🔄 Проверяю прокси...")
-    try:
-        import requests
-        test_url = "https://api.ipify.org?format=json"
-        response = requests.get(test_url, proxies=PROXIES, timeout=10)
-        if response.status_code == 200:
-            ip = response.json().get('ip')
-            await update.message.reply_text(f"✅ Прокси работает! Ваш внешний IP: {ip}")
-        else:
-            await update.message.reply_text(f"❌ Прокси вернул статус {response.status_code}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Ошибка проверки прокси: {e}")
