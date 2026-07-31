@@ -35,7 +35,6 @@ def main():
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # === КОМАНДЫ ===
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("osn", lambda u,c: u.message.reply_text("Используйте отправку файлов")))
@@ -50,7 +49,6 @@ def main():
     app.add_handler(CommandHandler("test_parser", test_parser_cmd))
     app.add_handler(CommandHandler("test_proxy", test_proxy_cmd))
 
-    # === CALLBACK'и для меню ===
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_main_callback, pattern="^menu_analytics_main$"))
@@ -58,7 +56,6 @@ def main():
     app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
     app.add_handler(CallbackQueryHandler(dev_commands_callback, pattern="^dev_commands$"))
 
-    # === СЕБЕСТОИМОСТЬ ===
     app.add_handler(CallbackQueryHandler(menu_costs_callback, pattern="^menu_costs$"))
     app.add_handler(CallbackQueryHandler(cost_edit_callback, pattern="^cost_edit_"))
     app.add_handler(CallbackQueryHandler(cost_set_callback, pattern="^cost_set_"))
@@ -67,7 +64,6 @@ def main():
     app.add_handler(CallbackQueryHandler(cost_delete_all_callback, pattern="^cost_delete_all_"))
     app.add_handler(CallbackQueryHandler(cost_confirm_delete_all_callback, pattern="^cost_confirm_delete_all_"))
 
-    # === АНАЛИТИКА ===
     app.add_handler(CallbackQueryHandler(analytics_toggle_callback, pattern="^analytics_toggle_"))
     app.add_handler(CallbackQueryHandler(analytics_page_callback, pattern="^analytics_page_"))
     app.add_handler(CallbackQueryHandler(analytics_select_all_callback, pattern="^analytics_select_all$"))
@@ -75,7 +71,6 @@ def main():
     app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
     app.add_handler(CallbackQueryHandler(analytics_show_callback, pattern="^analytics_show$"))
 
-    # === ИСТОРИЯ ===
     app.add_handler(CallbackQueryHandler(history_page_callback, pattern="^history_page_"))
     app.add_handler(CallbackQueryHandler(history_report_callback, pattern="^history_report_"))
     app.add_handler(CallbackQueryHandler(history_toggle_delete_callback, pattern="^history_toggle_delete_"))
@@ -83,7 +78,6 @@ def main():
     app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
     app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
 
-    # === МОНИТОРИНГ СПП ===
     app.add_handler(CallbackQueryHandler(menu_spp_callback, pattern="^menu_spp$"))
     app.add_handler(CallbackQueryHandler(spp_show_articles_callback, pattern="^spp_show_articles$"))
     app.add_handler(CallbackQueryHandler(spp_subscribe_article_callback, pattern="^spp_subscribe_art_"))
@@ -99,13 +93,10 @@ def main():
     app.add_handler(CallbackQueryHandler(spp_mute_callback, pattern="^spp_mute_"))
     app.add_handler(CallbackQueryHandler(spp_graph_callback, pattern="^spp_graph_"))
 
-    # === ФАЙЛЫ И ТЕКСТ ===
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
-    # === ПЛАНИРОВЩИКИ ===
     scheduler.add_job(refresh_wb_cache, IntervalTrigger(hours=1))
-    # Мониторинг СПП — раз в 3 часа (снижаем нагрузку)
     scheduler.add_job(
         lambda: asyncio.run(monitor_spp(app)),
         IntervalTrigger(hours=3),
