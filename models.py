@@ -582,8 +582,10 @@ def set_spp_global_settings(enabled=None, interval_minutes=None, default_thresho
         updates.append("default_threshold = ?")
         params.append(default_threshold)
     if updates:
-        params.append(1)
-        cursor.execute(f"UPDATE spp_global_settings SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = 1", params)
+        cursor.execute(
+            f"UPDATE spp_global_settings SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+            params
+        )
         conn.commit()
     conn.close()
 
