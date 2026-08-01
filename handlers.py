@@ -590,14 +590,24 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     report_id = int(query.data.split("_")[-1])
     
-    # Проверяем, есть ли сохранённый файл
-    report_file = REPORTS_DIR / f"report_{report_id}.xlsx"
-    if report_file.exists():
-        # Отправляем файл
+    # Получаем период отчёта
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute("SELECT date_period FROM reports WHERE id = ?", (report_id,))
+    row = cursor.fetchone()
+    conn.close()
+    period = row[0] if row else None
+    
+    # Ищем файл по периоду
+    report_file = None
+    if period:
+        report_file = REPORTS_DIR / f"отчёт_{period}.xlsx"
+    
+    if report_file and report_file.exists():
         with open(report_file, 'rb') as f:
             await query.message.reply_document(
                 document=f,
-                filename=f"отчёт_{report_id}.xlsx",
+                filename=f"отчёт_{period}.xlsx",
                 caption="📄 Заполненный шаблон отчёта"
             )
     
@@ -624,7 +634,6 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
         avg_acquiring = metrics.get('avg_acquiring', 0)
         k_vyvodu_carp = metrics.get('k_vyvodu_carp', 0)
         k_vyvodu_hara = metrics.get('k_vyvodu_hara', 0)
-        # Исправлено: получаем k_vyvodu_hara_nalog из метрик
         k_vyvodu_hara_nalog = metrics.get('k_vyvodu_hara_nalog', 0)
         summary = (
             f"📊 *Сводка за {period}*\n"
@@ -733,7 +742,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"✅ Файл «{file_name}» загружен. Жду второй файл (для {'вык' if report_type == 'osn' else 'осн'}).")
 
-# ===== ОБНОВЛЁННАЯ process_and_send (с сохранением файла) =====
+# ===== ОБНОВЛЁННАЯ process_and_send (с сохранением файла по дате) =====
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     files = context.user_data.get('files', {})
@@ -760,7 +769,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         metrics = extract_metrics(values, articles, start_date, end_date)
         # Добавляем B38: К выводу Harakiri с вычетом налога
         metrics['k_vyvodu_hara_nalog'] = values.get('B38', 0)
-        # total_profit и margin не сохраняем (они уже не нужны)
         
         success, report_id = save_report_to_db(
             file_name=context.user_data.get('original_file_name', Path(osn_path).name),
@@ -777,8 +785,8 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Ошибка сохранения отчёта в БД.")
             return
         
-        # Сохраняем заполненный шаблон в папку /data/reports/
-        report_file = REPORTS_DIR / f"report_{report_id}.xlsx"
+        # Сохраняем заполненный шаблон в папку /data/reports/ с именем по дате
+        report_file = REPORTS_DIR / f"отчёт_{date_period}.xlsx"
         shutil.copy2(template_path, report_file)
         logger.info(f"📁 Сохранён файл отчёта: {report_file}")
         
