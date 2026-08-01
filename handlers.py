@@ -36,6 +36,10 @@ from spp_parser import get_spp_for_article_async
 from spp_monitor import generate_spp_graph, monitor_spp
 from wb_api import get_all_nm_ids_from_api
 
+# Директория для хранения готовых отчётов
+REPORTS_DIR = Path("/data/reports")
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+
 async def check_access(update: Update) -> bool:
     if not ALLOWED_USERS:
         return True
@@ -551,7 +555,6 @@ async def show_history_page(query, context, page):
             button_text = f"{checked} {file_name} ({date_period})"
             callback_data = f"history_toggle_delete_{report_id}"
         else:
-            # Используем оригинальное имя файла
             short_name = file_name if len(file_name) <= 25 else file_name[:22] + "..."
             button_text = f"📄 {short_name} ({date_period})"
             callback_data = f"history_report_{report_id}"
@@ -586,9 +589,20 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     report_id = int(query.data.split("_")[-1])
+    
+    # Проверяем, есть ли сохранённый файл
+    report_file = REPORTS_DIR / f"report_{report_id}.xlsx"
+    if report_file.exists():
+        # Отправляем файл
+        with open(report_file, 'rb') as f:
+            await query.message.reply_document(
+                document=f,
+                filename=f"отчёт_{report_id}.xlsx",
+                caption="📄 Заполненный шаблон отчёта"
+            )
+    
+    # Получаем метрики и информацию об отчёте
     metrics = get_report_metrics(report_id)
-    report = get_all_reports(page=0, per_page=1)  # получаем информацию об отчёте
-    # Но проще получить из БД имя и период
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute("SELECT date_period, file_name FROM reports WHERE id = ?", (report_id,))
@@ -602,17 +616,16 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
     period = row[0] or "неизвестный период"
     file_name = row[1] or "отчёт"
 
-    # Формируем сводку
+    # Формируем сводку (без прибыли и маржинальности)
     if metrics:
-        # Берём нужные метрики
         wb_total = metrics.get('wb_total', 0)
         wb_carp = metrics.get('wb_carp', 0)
         wb_hara = metrics.get('wb_hara', 0)
         avg_acquiring = metrics.get('avg_acquiring', 0)
         k_vyvodu_carp = metrics.get('k_vyvodu_carp', 0)
         k_vyvodu_hara = metrics.get('k_vyvodu_hara', 0)
-        k_vyvodu_hara_nalog = metrics.get('k_vyvodu_hara_nalog', 0)  # новая метрика
-        # Убрали прибыль и маржинальность
+        # Исправлено: получаем k_vyvodu_hara_nalog из метрик
+        k_vyvodu_hara_nalog = metrics.get('k_vyvodu_hara_nalog', 0)
         summary = (
             f"📊 *Сводка за {period}*\n"
             f"📄 Файл: {file_name}\n\n"
@@ -720,7 +733,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"✅ Файл «{file_name}» загружен. Жду второй файл (для {'вык' if report_type == 'osn' else 'осн'}).")
 
-# ===== ОБНОВЛЁННАЯ process_and_send (с оригинальным именем файла и добавлением B38) =====
+# ===== ОБНОВЛЁННАЯ process_and_send (с сохранением файла) =====
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     files = context.user_data.get('files', {})
@@ -747,11 +760,10 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         metrics = extract_metrics(values, articles, start_date, end_date)
         # Добавляем B38: К выводу Harakiri с вычетом налога
         metrics['k_vyvodu_hara_nalog'] = values.get('B38', 0)
-        # Прибыль и маржинальность больше не сохраняем в метрики (или сохраняем, но не показываем)
-        # total_profit и margin остаются в metrics, но в сводке их не будет
+        # total_profit и margin не сохраняем (они уже не нужны)
         
         success, report_id = save_report_to_db(
-            file_name=context.user_data.get('original_file_name', Path(osn_path).name),  # оригинальное имя
+            file_name=context.user_data.get('original_file_name', Path(osn_path).name),
             file_hash=file_hash,
             date_period=date_period,
             start_date=start_date,
@@ -764,6 +776,11 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not success:
             await update.message.reply_text("❌ Ошибка сохранения отчёта в БД.")
             return
+        
+        # Сохраняем заполненный шаблон в папку /data/reports/
+        report_file = REPORTS_DIR / f"report_{report_id}.xlsx"
+        shutil.copy2(template_path, report_file)
+        logger.info(f"📁 Сохранён файл отчёта: {report_file}")
         
         with open(template_path, 'rb') as f:
             await update.message.reply_document(
@@ -791,7 +808,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка: {e}")
     finally:
-        # Удаляем временные файлы в любом случае
+        # Удаляем временные файлы
         for p in [osn_path, vyk_path]:
             if p and Path(p).exists():
                 Path(p).unlink(missing_ok=True)
@@ -845,16 +862,10 @@ def extract_metrics(values, articles, start_date, end_date):
         'profit_hara': 0,
         'margin_carp': 0,
         'margin_hara': 0,
-        # total_profit и margin оставляем, но не выводим
         'total_profit': 0,
         'margin': 0
     }
-    # Добавляем B38 позже в process_and_send, так как здесь нет доступа к значениям
     return metrics
-
-def calculate_profit_and_margin(articles, start_date, end_date):
-    # Эта функция больше не используется для сводки, но оставлена для совместимости
-    return 0, 0
 
 # === ОБРАБОТЧИК ТЕКСТА ===
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
