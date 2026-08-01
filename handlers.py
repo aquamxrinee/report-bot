@@ -551,6 +551,7 @@ async def show_history_page(query, context, page):
             button_text = f"{checked} {file_name} ({date_period})"
             callback_data = f"history_toggle_delete_{report_id}"
         else:
+            # Используем оригинальное имя файла
             short_name = file_name if len(file_name) <= 25 else file_name[:22] + "..."
             button_text = f"📄 {short_name} ({date_period})"
             callback_data = f"history_report_{report_id}"
@@ -578,6 +579,7 @@ async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TY
     page = int(query.data.split("_")[-1])
     await show_history_page(query, context, page)
 
+# ===== ИСПРАВЛЕННЫЙ ОТОБРАЖЕНИЕ ОТЧЁТА В АРХИВЕ =====
 async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -585,17 +587,52 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     report_id = int(query.data.split("_")[-1])
     metrics = get_report_metrics(report_id)
-    text = f"📊 Отчёт ID {report_id}\n\n"
+    report = get_all_reports(page=0, per_page=1)  # получаем информацию об отчёте
+    # Но проще получить из БД имя и период
+    conn = sqlite3.connect(str(DB_PATH))
+    cursor = conn.cursor()
+    cursor.execute("SELECT date_period, file_name FROM reports WHERE id = ?", (report_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        await query.edit_message_text("❌ Отчёт не найден.", reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("◀️ Назад в архив", callback_data="menu_history")]
+        ]))
+        return
+    period = row[0] or "неизвестный период"
+    file_name = row[1] or "отчёт"
+
+    # Формируем сводку
     if metrics:
-        for k, v in metrics.items():
-            text += f"{k}: {v:,.2f}\n"
+        # Берём нужные метрики
+        wb_total = metrics.get('wb_total', 0)
+        wb_carp = metrics.get('wb_carp', 0)
+        wb_hara = metrics.get('wb_hara', 0)
+        avg_acquiring = metrics.get('avg_acquiring', 0)
+        k_vyvodu_carp = metrics.get('k_vyvodu_carp', 0)
+        k_vyvodu_hara = metrics.get('k_vyvodu_hara', 0)
+        k_vyvodu_hara_nalog = metrics.get('k_vyvodu_hara_nalog', 0)  # новая метрика
+        # Убрали прибыль и маржинальность
+        summary = (
+            f"📊 *Сводка за {period}*\n"
+            f"📄 Файл: {file_name}\n\n"
+            f"💰 Общий оборот: {format_number(wb_total)} ₽\n"
+            f"🟢 ЦАП: {format_number(wb_carp)} ₽\n"
+            f"🔴 Harakiri: {format_number(wb_hara)} ₽\n"
+            f"💳 Средний эквайринг: {avg_acquiring:.2f}%\n"
+            f"💵 К выводу ЦАП: {format_number(k_vyvodu_carp)} ₽\n"
+            f"💵 К выводу Harakiri: {format_number(k_vyvodu_hara)} ₽\n"
+            f"💵 К выводу Harakiri с вычетом налога: {format_number(k_vyvodu_hara_nalog)} ₽\n"
+        )
     else:
-        text += "Нет метрик.\n"
+        summary = f"📊 *Отчёт за {period}*\n\nНет данных для отображения."
+
     buttons = [
-        [InlineKeyboardButton("🔙 Назад к списку", callback_data="menu_history")],
+        [InlineKeyboardButton("◀️ Назад в архив", callback_data="menu_history")],
         [InlineKeyboardButton("🗑 Удалить отчёт", callback_data=f"history_confirm_delete_{report_id}")]
     ]
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode='Markdown')
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await query.edit_message_text(summary, parse_mode='Markdown', reply_markup=reply_markup)
 
 async def history_enable_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
@@ -663,6 +700,9 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not (file_name.endswith('.xlsx') or file_name.endswith('.xls')):
         await update.message.reply_text("❌ Поддерживаются только Excel-файлы.")
         return
+    # Сохраняем оригинальное имя файла
+    context.user_data['original_file_name'] = file_name
+
     temp_path = Path(TEMP_DIR) / f"{datetime.now().timestamp()}_{file_name}"
     temp_path.parent.mkdir(parents=True, exist_ok=True)
     file = await document.get_file()
@@ -680,7 +720,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"✅ Файл «{file_name}» загружен. Жду второй файл (для {'вык' if report_type == 'osn' else 'осн'}).")
 
-# ===== ОБНОВЛЁННАЯ process_and_send (с удалением временных файлов) =====
+# ===== ОБНОВЛЁННАЯ process_and_send (с оригинальным именем файла и добавлением B38) =====
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     files = context.user_data.get('files', {})
@@ -705,12 +745,13 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
         metrics = extract_metrics(values, articles, start_date, end_date)
-        total_profit, margin = calculate_profit_and_margin(articles, start_date, end_date)
-        metrics['total_profit'] = total_profit
-        metrics['margin'] = margin
+        # Добавляем B38: К выводу Harakiri с вычетом налога
+        metrics['k_vyvodu_hara_nalog'] = values.get('B38', 0)
+        # Прибыль и маржинальность больше не сохраняем в метрики (или сохраняем, но не показываем)
+        # total_profit и margin остаются в metrics, но в сводке их не будет
         
         success, report_id = save_report_to_db(
-            file_name=Path(osn_path).name,
+            file_name=context.user_data.get('original_file_name', Path(osn_path).name),  # оригинальное имя
             file_hash=file_hash,
             date_period=date_period,
             start_date=start_date,
@@ -731,14 +772,16 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 caption=f"✅ Отчёт за {date_period} обработан и сохранён!"
             )
         
+        # Сводка без прибыли и маржинальности
         summary = (
             f"📊 Сводка за {date_period}\n"
             f"💰 Оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
             f"🟢 ЦАП: {format_number(metrics.get('wb_carp', 0))} ₽\n"
             f"🔴 Harakiri: {format_number(metrics.get('wb_hara', 0))} ₽\n"
             f"💳 Эквайринг: {metrics.get('avg_acquiring', 0):.2f}%\n"
-            f"📈 Прибыль: {format_number(total_profit)} ₽\n"
-            f"📊 Маржинальность: {margin:.2f}%\n"
+            f"💵 К выводу ЦАП: {format_number(metrics.get('k_vyvodu_carp', 0))} ₽\n"
+            f"💵 К выводу Harakiri: {format_number(metrics.get('k_vyvodu_hara', 0))} ₽\n"
+            f"💵 К выводу Harakiri с вычетом налога: {format_number(metrics.get('k_vyvodu_hara_nalog', 0))} ₽\n"
         )
         await update.message.reply_text(summary, parse_mode='Markdown')
         
@@ -802,27 +845,16 @@ def extract_metrics(values, articles, start_date, end_date):
         'profit_hara': 0,
         'margin_carp': 0,
         'margin_hara': 0,
+        # total_profit и margin оставляем, но не выводим
+        'total_profit': 0,
+        'margin': 0
     }
+    # Добавляем B38 позже в process_and_send, так как здесь нет доступа к значениям
     return metrics
 
 def calculate_profit_and_margin(articles, start_date, end_date):
-    total_profit = 0
-    total_revenue = 0
-    for brand, data in articles.items():
-        for key in ['sales', 'vyk']:
-            for article, stats in data.get(key, {}).items():
-                quantity = stats.get('quantity', 0)
-                revenue = stats.get('revenue', 0)
-                if quantity == 0 or revenue == 0:
-                    continue
-                cost = get_active_cost(article, end_date)
-                if cost is None:
-                    cost = 0
-                profit = revenue - (cost * quantity)
-                total_profit += profit
-                total_revenue += revenue
-    margin = (total_profit / total_revenue * 100) if total_revenue > 0 else 0
-    return total_profit, margin
+    # Эта функция больше не используется для сводки, но оставлена для совместимости
+    return 0, 0
 
 # === ОБРАБОТЧИК ТЕКСТА ===
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -934,7 +966,7 @@ async def test_parser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = await get_spp_for_article_async(nm_id)
     if data:
         text = (
-            f"✅ *Данные para {nm_id}*\n\n"
+            f"✅ *Данные для {nm_id}*\n\n"
             f"Цена по API (до скидки): {data['api_price']} ₽\n"
             f"Цена со скидкой (текущая): {data['site_price']} ₽\n"
             f"СПП: {data['spp_percent']:.1f}%\n"
@@ -943,7 +975,7 @@ async def test_parser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await update.message.reply_text(text, parse_mode='Markdown', disable_web_page_preview=True)
     else:
-        await update.message.reply_text(f"❌ Не удалось получить данные para {nm_id}. Возможно, страница заблокирована или артикул не существует.")
+        await update.message.reply_text(f"❌ Не удалось получить данные для {nm_id}. Возможно, страница заблокирована или артикул не существует.")
 
 # === ТЕСТ ПРОКСИ ===
 async def test_proxy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1007,7 +1039,7 @@ async def set_article_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ''', (article, nm_id))
         conn.commit()
         conn.close()
-        await update.message.reply_text(f"✅ Артикул para {nm_id} установлен: {article}")
+        await update.message.reply_text(f"✅ Артикул для {nm_id} установлен: {article}")
     except Exception as e:
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
@@ -1195,7 +1227,7 @@ async def spp_subscribe_brand_callback(update: Update, context: ContextTypes.DEF
     brand = query.data.replace("spp_subscribe_brand_", "")
     context.user_data['spp_awaiting_brand'] = brand
     await query.edit_message_text(
-        f"✏️ Введите порог изменения para бренда {brand} (в п.п.):\n"
+        f"✏️ Введите порог изменения для бренда {brand} (в п.п.):\n"
         "Например: 5",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("◀️ Отмена", callback_data="menu_spp")]
@@ -1372,7 +1404,7 @@ async def send_spp_notification(bot_app, user_id, nm_id, old_spp, new_spp, data,
             reply_markup=reply_markup,
             disable_web_page_preview=True
         )
-        logger.info(f"✅ Уведомление о СПП отправлено пользователю {user_id} para {nm_id}")
+        logger.info(f"✅ Уведомление о СПП отправлено пользователю {user_id} для {nm_id}")
     except Exception as e:
         logger.error(f"❌ Ошибка отправки уведомления: {e}")
 
@@ -1384,9 +1416,9 @@ async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     nm_id = int(query.data.split("_")[2])
     img_base64 = generate_spp_graph(nm_id)
     if not img_base64:
-        await query.edit_message_text("❌ Недостаточно данных para графика.")
+        await query.edit_message_text("❌ Недостаточно данных для графика.")
         return
-    await query.message.reply_photo(photo=img_base64, caption=f"📈 График СПП para {nm_id}")
+    await query.message.reply_photo(photo=img_base64, caption=f"📈 График СПП для {nm_id}")
     await query.edit_message_reply_markup(
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📈 Обновить", callback_data=f"spp_graph_{nm_id}")],
