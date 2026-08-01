@@ -283,6 +283,11 @@ class ReportProcessor:
         else:
             values['B56'] = values['B59'] = values['B62'] = values['B65'] = 0
 
+        # ===== ДОБАВЛЯЕМ B38 (К выводу Harakiri с вычетом налога) =====
+        # Пока просто копируем F4, чтобы не было нуля
+        values['B38'] = values.get('F4', 0)
+        # Если нужно вычесть налог, можно добавить позже
+
         return values
 
     def _fill_template(self, template_path, values):
