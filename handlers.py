@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime, timedelta
 import asyncio
+import openpyxl
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, filters
@@ -582,7 +583,6 @@ async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TY
     page = int(query.data.split("_")[-1])
     await show_history_page(query, context, page)
 
-# ===== ИСПРАВЛЕННЫЙ ОТОБРАЖЕНИЕ ОТЧЁТА В АРХИВЕ =====
 async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -626,7 +626,7 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
     period = row[0] or "неизвестный период"
     file_name = row[1] or "отчёт"
 
-    # Формируем сводку (без прибыли и маржинальности)
+    # Формируем сводку
     if metrics:
         wb_total = metrics.get('wb_total', 0)
         wb_carp = metrics.get('wb_carp', 0)
@@ -742,7 +742,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"✅ Файл «{file_name}» загружен. Жду второй файл (для {'вык' if report_type == 'osn' else 'осн'}).")
 
-# ===== ОБНОВЛЁННАЯ process_and_send (с сохранением файла по дате) =====
+# ===== ПРОЦЕСС ОБРАБОТКИ ОТЧЁТА (С ЧТЕНИЕМ B38) =====
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     files = context.user_data.get('files', {})
@@ -767,8 +767,17 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
         metrics = extract_metrics(values, articles, start_date, end_date)
-        # Добавляем B38: К выводу Harakiri с вычетом налога
-        metrics['k_vyvodu_hara_nalog'] = values.get('B38', 0)
+        
+        # Сохраняем заполненный шаблон во временный файл
+        temp_template = Path(TEMP_DIR) / f"filled_{datetime.now().timestamp()}.xlsx"
+        shutil.copy2(template_path, temp_template)
+        
+        # Читаем значение B38 из сохранённого файла (там формула =F13-B35)
+        wb = openpyxl.load_workbook(temp_template, data_only=True)
+        ws = wb.active
+        b38_value = ws['B38'].value if ws['B38'].value is not None else 0
+        wb.close()
+        metrics['k_vyvodu_hara_nalog'] = float(b38_value) if isinstance(b38_value, (int, float)) else 0
         
         success, report_id = save_report_to_db(
             file_name=context.user_data.get('original_file_name', Path(osn_path).name),
@@ -785,17 +794,21 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Ошибка сохранения отчёта в БД.")
             return
         
-        # Сохраняем заполненный шаблон в папку /data/reports/ с именем по дате
+        # Сохраняем заполненный шаблон в /data/reports/ с именем по дате
         report_file = REPORTS_DIR / f"отчёт_{date_period}.xlsx"
-        shutil.copy2(template_path, report_file)
+        shutil.copy2(temp_template, report_file)
         logger.info(f"📁 Сохранён файл отчёта: {report_file}")
         
-        with open(template_path, 'rb') as f:
+        # Отправляем файл пользователю
+        with open(temp_template, 'rb') as f:
             await update.message.reply_document(
                 document=f,
                 filename=f"отчёт_{date_period}.xlsx",
                 caption=f"✅ Отчёт за {date_period} обработан и сохранён!"
             )
+        
+        # Удаляем временный шаблон
+        temp_template.unlink(missing_ok=True)
         
         # Сводка без прибыли и маржинальности
         summary = (
