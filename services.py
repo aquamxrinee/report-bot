@@ -120,7 +120,6 @@ class ReportProcessor:
         all_cols = {**cols_vyk, **cols_osn}
 
         qty_variants = ['количество', 'кол-во', 'количество товара', 'кол-во (шт.)', 'кол-во шт', 'quantity', 'количество,шт']
-        # Расширенный список для артикула поставщика
         art_variants = [
             'артикул поставщика', 'артикул', 'артикул товара', 'номенклатура',
             'sku', 'артикул(поставщика)', 'артикул поставщика (поставщика)',
@@ -145,7 +144,6 @@ class ReportProcessor:
                 nm_id_col = all_cols[v]
                 break
 
-        # Если не нашли через нормализацию, пробуем точное совпадение без приведения к нижнему регистру
         if art_col is None:
             original_cols = df_osn.columns.tolist()
             for col in original_cols:
@@ -283,11 +281,7 @@ class ReportProcessor:
         else:
             values['B56'] = values['B59'] = values['B62'] = values['B65'] = 0
 
-        # ===== ДОБАВЛЯЕМ B38 (К выводу Harakiri с вычетом налога) =====
-        # Пока просто копируем F4, чтобы не было нуля
-        values['B38'] = values.get('F4', 0)
-        # Если нужно вычесть налог, можно добавить позже
-
+        # НЕ перезаписываем B38, так как в шаблоне там формула =F13-B35
         return values
 
     def _fill_template(self, template_path, values):
