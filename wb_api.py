@@ -7,7 +7,6 @@ from config import logger, WB_API_TOKEN
 
 STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1"
 ANALYTICS_API = "https://seller-analytics-api.wildberries.ru/api/analytics"
-FINANCE_API = "https://statistics-api.wildberries.ru/api/v1"  # Тот же базовый URL
 
 _cache = {
     "data": None,
@@ -35,7 +34,7 @@ def _safe_request(method, url, params=None, json_data=None, max_retries=3):
             if response.status_code == 429:
                 logger.warning(f"⚠️ 429 Too Many Requests, попытка {attempt}/{max_retries}")
                 retry_after = response.headers.get("Retry-After")
-                wait = int(retry_after) + 1 if retry_after else 10 + attempt * 5
+                wait = int(retry_after) + 1 if retry_after else 20 + attempt * 10
                 time.sleep(wait)
                 continue
             if response.status_code == 404:
@@ -53,7 +52,6 @@ def _safe_request(method, url, params=None, json_data=None, max_retries=3):
 
 
 def get_sales(date_from: str, date_to: str = None) -> Dict:
-    """Получение списка продаж за период."""
     if not date_to:
         date_to = datetime.now().strftime("%Y-%m-%d")
     url = f"{STATISTICS_API}/supplier/sales"
@@ -62,13 +60,11 @@ def get_sales(date_from: str, date_to: str = None) -> Dict:
 
 
 def get_stocks() -> Dict:
-    """Получение остатков на складах."""
     url = f"{STATISTICS_API}/supplier/stocks"
     return _safe_request("GET", url)
 
 
 def get_orders(date_from: str, date_to: str = None) -> Dict:
-    """Получение списка заказов за период (опционально)."""
     if not date_to:
         date_to = datetime.now().strftime("%Y-%m-%d")
     url = f"{STATISTICS_API}/supplier/orders"
@@ -76,8 +72,7 @@ def get_orders(date_from: str, date_to: str = None) -> Dict:
     return _safe_request("GET", url, params=params)
 
 
-def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = None, limit=100) -> Dict:
-    """Воронка продаж (аналитика)."""
+def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = None, limit=1000) -> Dict:
     if not date_from:
         date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
     if not date_to:
@@ -90,11 +85,9 @@ def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = 
 
 
 def get_all_nm_ids_from_api(days_back: int = 90) -> List[int]:
-    """Получает все уникальные nmId из продаж, остатков и заказов."""
     nm_ids_set = set()
-
-    # 1. Продажи
     date_from = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
     sales_data = get_sales(date_from)
     if isinstance(sales_data, list):
         for item in sales_data:
@@ -105,7 +98,6 @@ def get_all_nm_ids_from_api(days_back: int = 90) -> List[int]:
     else:
         logger.warning(f"⚠️ Не удалось получить продажи: {sales_data.get('error', 'неизвестная ошибка')}")
 
-    # 2. Остатки
     stocks_data = get_stocks()
     if isinstance(stocks_data, list):
         for item in stocks_data:
@@ -116,7 +108,6 @@ def get_all_nm_ids_from_api(days_back: int = 90) -> List[int]:
     else:
         logger.warning(f"⚠️ Не удалось получить остатки: {stocks_data.get('error', 'неизвестная ошибка')}")
 
-    # 3. Заказы
     orders_data = get_orders(date_from)
     if isinstance(orders_data, list):
         for item in orders_data:
@@ -231,16 +222,9 @@ def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = 
     return result
 
 
-# ===== НОВАЯ ФУНКЦИЯ: получение еженедельных отчётов =====
 def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
-    """
-    Запрашивает финансовые отчёты за период.
-    Возвращает список словарей с ключами:
-        - url: ссылка для скачивания (действует ~1 час)
-        - report_type: 1 (основной) или 2 (выкупы)
-        - file_name: оригинальное имя файла
-    """
-    url = f"{FINANCE_API}/supplier/reportDetailByPeriod"
+    """Получение еженедельных финансовых отчётов."""
+    url = f"https://statistics-api.wildberries.ru/api/v1/supplier/reportDetailByPeriod"
     payload = {
         "dateFrom": date_from,
         "dateTo": date_to,
@@ -253,7 +237,6 @@ def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
         return []
 
     reports = []
-    # data – это список (или может быть обёрнуто в data?), по документации массив
     if isinstance(data, list):
         for item in data:
             file_url = item.get("url")
@@ -266,3 +249,40 @@ def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
                     "file_name": fname
                 })
     return reports
+
+
+def get_buyout_by_brands(date_from: str, date_to: str, brand_names: List[str] = None) -> Dict[str, Optional[float]]:
+    """
+    Возвращает процент выкупа (purchases/orders * 100) по указанным брендам за период.
+    Если бренды не указаны, возвращает по всем.
+    Результат: {'Цап царапкин': 85.5, 'Harakiri': 72.3} и т.д.
+    """
+    if brand_names is None:
+        brand_names = ['Цап царапкин', 'Harakiri']
+
+    # Получаем все товары за период с большим лимитом
+    funnel_data = get_sales_funnel(date_from=date_from, date_to=date_to, limit=2000)
+    if isinstance(funnel_data, dict) and "error" in funnel_data:
+        logger.error(f"Ошибка получения воронки для выкупов: {funnel_data['error']}")
+        return {b: None for b in brand_names}
+
+    products = funnel_data.get("data", {}).get("products", [])
+    # Агрегируем по брендам
+    brand_orders = {b: 0 for b in brand_names}
+    brand_purchases = {b: 0 for b in brand_names}
+    for product in products:
+        brand = product.get("product", {}).get("brandName", "")
+        if brand in brand_names:
+            stats = product.get("statistic", {}).get("selected", {})
+            orders = stats.get("orderCount", 0)
+            purchases = stats.get("buyoutCount", 0)
+            brand_orders[brand] += orders
+            brand_purchases[brand] += purchases
+
+    result = {}
+    for brand in brand_names:
+        if brand_orders[brand] > 0:
+            result[brand] = round(brand_purchases[brand] / brand_orders[brand] * 100, 1)
+        else:
+            result[brand] = None
+    return result
