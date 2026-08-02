@@ -735,6 +735,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"✅ Файл «{file_name}» загружен. Жду второй файл (для {'вык' if report_type == 'osn' else 'осн'}).")
 
+# ===== ПРОЦЕСС ОБРАБОТКИ ОТЧЁТА (B38 = F13 - B35) =====
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     files = context.user_data.get('files', {})
@@ -760,10 +761,10 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
         metrics = extract_metrics(values, articles, start_date, end_date)
         
-        # Новая формула: К выводу Harakiri с налогом = F13 - (оборот Harakiri * 1%)
+        # === Точная формула B38: F13 - B35 ===
         f13_val = values.get('F13', 0) or 0
-        hara_turnover = metrics.get('wb_hara', 0)
-        metrics['k_vyvodu_hara_nalog'] = f13_val - hara_turnover * 0.01
+        b35_val = values.get('B35', 0) or 0
+        metrics['k_vyvodu_hara_nalog'] = f13_val - b35_val
         
         success, report_id = save_report_to_db(
             file_name=context.user_data.get('original_file_name', Path(osn_path).name),
@@ -816,6 +817,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if p and Path(p).exists():
                 Path(p).unlink(missing_ok=True)
 
+# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 def parse_date_from_period(date_period):
     try:
         parts = date_period.split('-')
@@ -869,6 +871,7 @@ def extract_metrics(values, articles, start_date, end_date):
     }
     return metrics
 
+# === ОБРАБОТЧИК ТЕКСТА ===
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
