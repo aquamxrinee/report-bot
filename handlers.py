@@ -1458,3 +1458,15 @@ async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_{nm_id}")]
         ])
     )
+# === РУЧНАЯ ЗАГРУЗКА ЕЖЕНЕДЕЛЬНЫХ ОТЧЁТОВ ===
+async def fetch_weekly_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    await update.message.reply_text("🔄 Запущена загрузка еженедельных отчётов...")
+    try:
+        from services import fetch_weekly_reports_job
+        await fetch_weekly_reports_job(context.application)
+        await update.message.reply_text("✅ Проверка выполнена. Проверьте результат.")
+    except Exception as e:
+        logger.error(f"Ошибка fetch_weekly_cmd: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
