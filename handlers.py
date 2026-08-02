@@ -735,7 +735,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"✅ Файл «{file_name}» загружен. Жду второй файл (для {'вык' if report_type == 'osn' else 'осн'}).")
 
-# ===== ПРОЦЕСС ОБРАБОТКИ ОТЧЁТА (B38 = F13 - B35) =====
+# ===== ИСПРАВЛЕННАЯ process_and_send (ЧТЕНИЕ ФАКТИЧЕСКИХ ЗНАЧЕНИЙ) =====
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     files = context.user_data.get('files', {})
@@ -755,17 +755,31 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Файл шаблона 'шаблон.xlsx' не найден.")
             return
         
+        # 1. Заполняем шаблон, получаем базовые метрики
         values, articles, date_period = processor.process_files(osn_path, vyk_path, template_path)
         start_date, end_date = parse_date_from_period(date_period)
         
+        # 2. Сохраняем заполненный шаблон во временный файл и читаем с data_only=True
+        temp_template = Path(TEMP_DIR) / f"filled_{datetime.now().timestamp()}.xlsx"
+        shutil.copy2(template_path, temp_template)
+        
+        wb_data = openpyxl.load_workbook(temp_template, data_only=True)
+        ws_data = wb_data.active
+        
+        # Читаем РЕАЛЬНЫЕ ЗНАЧЕНИЯ F13 и B35
+        f13_val = ws_data['F13'].value or 0
+        b35_val = ws_data['B35'].value or 0
+        wb_data.close()
+        
+        # Вычисляем B38 по формуле Excel
+        k_vyvodu_hara_nalog = f13_val - b35_val
+        
+        # 3. Собираем метрики
         file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
         metrics = extract_metrics(values, articles, start_date, end_date)
+        metrics['k_vyvodu_hara_nalog'] = k_vyvodu_hara_nalog
         
-        # === Точная формула B38: F13 - B35 ===
-        f13_val = values.get('F13', 0) or 0
-        b35_val = values.get('B35', 0) or 0
-        metrics['k_vyvodu_hara_nalog'] = f13_val - b35_val
-        
+        # 4. Сохраняем в БД
         success, report_id = save_report_to_db(
             file_name=context.user_data.get('original_file_name', Path(osn_path).name),
             file_hash=file_hash,
@@ -781,8 +795,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Ошибка сохранения отчёта в БД.")
             return
         
-        temp_template = Path(TEMP_DIR) / f"filled_{datetime.now().timestamp()}.xlsx"
-        shutil.copy2(template_path, temp_template)
+        # 5. Сохраняем в постоянное хранилище и отправляем файл
         report_file = REPORTS_DIR / f"отчёт_{date_period}.xlsx"
         shutil.copy2(temp_template, report_file)
         logger.info(f"📁 Сохранён файл отчёта: {report_file}")
@@ -793,8 +806,8 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 filename=f"отчёт_{date_period}.xlsx",
                 caption=f"✅ Отчёт за {date_period} обработан и сохранён!"
             )
-        temp_template.unlink(missing_ok=True)
         
+        # 6. Сводка
         summary = (
             f"📊 Сводка за {date_period}\n"
             f"💰 Оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
@@ -813,6 +826,9 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка: {e}")
     finally:
+        # Удаляем временный шаблон
+        if 'temp_template' in locals() and temp_template.exists():
+            temp_template.unlink(missing_ok=True)
         for p in [osn_path, vyk_path]:
             if p and Path(p).exists():
                 Path(p).unlink(missing_ok=True)
