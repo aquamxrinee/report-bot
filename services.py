@@ -263,23 +263,21 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
     file_hash = calculate_file_hash(osn_path) + calculate_file_hash(vyk_path)
     metrics = extract_metrics_from_values(values)
 
-    # Расчёт B38
+    # Расчёт B38 (оставлен для совместимости, но в сводку не выводится)
     k_vyvodu_hara = metrics['k_vyvodu_hara']
     wb_hara = metrics['wb_hara']
     metrics['k_vyvodu_hara_nalog'] = k_vyvodu_hara - wb_hara * 0.01
 
-    # Процент выкупа
-    total_sales_qty = 0
-    total_vyk_qty = 0
-    for brand_data in articles.values():
-        sales = brand_data.get('sales', {})
-        vyk = brand_data.get('vyk', {})
-        for item in sales.values():
-            total_sales_qty += item.get('quantity', 0)
-        for item in vyk.values():
-            total_vyk_qty += item.get('quantity', 0)
-    buyout_percent = (total_vyk_qty / total_sales_qty * 100) if total_sales_qty > 0 else 0.0
-    metrics['buyout_percent'] = buyout_percent
+    # === Загружаем проценты выкупа по брендам через API ===
+    from wb_api import get_buyout_by_brands
+    try:
+        buyouts = get_buyout_by_brands(date_from, date_to)
+        metrics['buyout_carp'] = buyouts.get('Цап царапкин')
+        metrics['buyout_hara'] = buyouts.get('Harakiri')
+    except Exception as e:
+        logger.error(f"Ошибка получения выкупов в автоотчёте: {e}")
+        metrics['buyout_carp'] = None
+        metrics['buyout_hara'] = None
 
     success, report_id = save_report_to_db(
         file_name=f"auto_{period_str}.xlsx",
@@ -306,6 +304,9 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
             return f"{int(num):,}".replace(",", " ")
         return f"{num:,.2f}".replace(",", " ")
 
+    buyout_carp_str = f"{metrics['buyout_carp']:.1f}%" if metrics['buyout_carp'] is not None else "Н/Д"
+    buyout_hara_str = f"{metrics['buyout_hara']:.1f}%" if metrics['buyout_hara'] is not None else "Н/Д"
+
     summary = (
         f"📊 Автоматический отчёт за {period_str}\n"
         f"💰 Оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
@@ -314,8 +315,8 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
         f"💳 Эквайринг: {metrics.get('avg_acquiring', 0):.2f}%\n"
         f"💵 К выводу ЦАП: {format_number(metrics.get('k_vyvodu_carp', 0))} ₽\n"
         f"💵 К выводу Harakiri: {format_number(k_vyvodu_hara)} ₽\n"
-        f"💵 К выводу Harakiri с вычетом налога: {format_number(metrics.get('k_vyvodu_hara_nalog', 0))} ₽\n"
-        f"📦 Процент выкупа: {buyout_percent:.1f}%\n"
+        f"📦 Выкуп ЦАП: {buyout_carp_str}\n"
+        f"📦 Выкуп Harakiri: {buyout_hara_str}\n"
     )
 
     for uid in ALLOWED_USERS:
