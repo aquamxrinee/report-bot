@@ -588,24 +588,20 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     report_id = int(query.data.split("_")[-1])
     
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute("SELECT date_period FROM reports WHERE id = ?", (report_id,))
-    row = cursor.fetchone()
-    conn.close()
-    period = row[0] if row else None
-    
-    report_file = None
-    if period:
-        report_file = REPORTS_DIR / f"отчёт_{period}.xlsx"
-    
-    if report_file and report_file.exists():
+    # Отправляем файл по report_id
+    report_file = REPORTS_DIR / f"отчёт_{report_id}.xlsx"
+    if report_file.exists():
         with open(report_file, 'rb') as f:
             await query.message.reply_document(
                 document=f,
-                filename=f"отчёт_{period}.xlsx",
+                filename=f"отчёт_{report_id}.xlsx",
                 caption="📄 Заполненный шаблон отчёта"
             )
+    else:
+        await query.message.reply_text(
+            "ℹ️ Файл отчёта не найден. Возможно, он был загружен до обновления. "
+            "Загрузите этот отчёт повторно, чтобы сохранить файл."
+        )
     
     metrics = get_report_metrics(report_id)
     conn = sqlite3.connect(str(DB_PATH))
@@ -735,7 +731,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"✅ Файл «{file_name}» загружен. Жду второй файл (для {'вык' if report_type == 'osn' else 'осн'}).")
 
-# ===== ИСПРАВЛЕННАЯ process_and_send (ЧТЕНИЕ ФАКТИЧЕСКИХ ЗНАЧЕНИЙ) =====
+# ===== ПРОЦЕСС ОБРАБОТКИ ОТЧЁТА (с новым расчётом B38 и сохранением по ID) =====
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     files = context.user_data.get('files', {})
@@ -755,31 +751,20 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Файл шаблона 'шаблон.xlsx' не найден.")
             return
         
-        # 1. Заполняем шаблон, получаем базовые метрики
+        # 1. Заполняем шаблон
         values, articles, date_period = processor.process_files(osn_path, vyk_path, template_path)
         start_date, end_date = parse_date_from_period(date_period)
         
-        # 2. Сохраняем заполненный шаблон во временный файл и читаем с data_only=True
-        temp_template = Path(TEMP_DIR) / f"filled_{datetime.now().timestamp()}.xlsx"
-        shutil.copy2(template_path, temp_template)
-        
-        wb_data = openpyxl.load_workbook(temp_template, data_only=True)
-        ws_data = wb_data.active
-        
-        # Читаем РЕАЛЬНЫЕ ЗНАЧЕНИЯ F13 и B35
-        f13_val = ws_data['F13'].value or 0
-        b35_val = ws_data['B35'].value or 0
-        wb_data.close()
-        
-        # Вычисляем B38 по формуле Excel
-        k_vyvodu_hara_nalog = f13_val - b35_val
-        
-        # 3. Собираем метрики
+        # 2. Собираем метрики
         file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
         metrics = extract_metrics(values, articles, start_date, end_date)
-        metrics['k_vyvodu_hara_nalog'] = k_vyvodu_hara_nalog
         
-        # 4. Сохраняем в БД
+        # === РАСЧЁТ B38: К выводу Harakiri с налогом = F13 - (Оборот Harakiri * 1%) ===
+        k_vyvodu_hara = metrics.get('k_vyvodu_hara', 0)
+        wb_hara = metrics.get('wb_hara', 0)
+        metrics['k_vyvodu_hara_nalog'] = k_vyvodu_hara - (wb_hara * 0.01)
+        
+        # 3. Сохраняем в БД
         success, report_id = save_report_to_db(
             file_name=context.user_data.get('original_file_name', Path(osn_path).name),
             file_hash=file_hash,
@@ -795,27 +780,31 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Ошибка сохранения отчёта в БД.")
             return
         
-        # 5. Сохраняем в постоянное хранилище и отправляем файл
-        report_file = REPORTS_DIR / f"отчёт_{date_period}.xlsx"
+        # 4. Сохраняем файл с именем по report_id
+        temp_template = Path(TEMP_DIR) / f"filled_{datetime.now().timestamp()}.xlsx"
+        shutil.copy2(template_path, temp_template)
+        report_file = REPORTS_DIR / f"отчёт_{report_id}.xlsx"
         shutil.copy2(temp_template, report_file)
-        logger.info(f"📁 Сохранён файл отчёта: {report_file}")
+        logger.info(f"📁 Сохранён файл отчёта ID={report_id}: {report_file}")
         
+        # 5. Отправляем файл пользователю
         with open(temp_template, 'rb') as f:
             await update.message.reply_document(
                 document=f,
                 filename=f"отчёт_{date_period}.xlsx",
                 caption=f"✅ Отчёт за {date_period} обработан и сохранён!"
             )
+        temp_template.unlink(missing_ok=True)
         
         # 6. Сводка
         summary = (
             f"📊 Сводка за {date_period}\n"
             f"💰 Оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
             f"🟢 ЦАП: {format_number(metrics.get('wb_carp', 0))} ₽\n"
-            f"🔴 Harakiri: {format_number(metrics.get('wb_hara', 0))} ₽\n"
+            f"🔴 Harakiri: {format_number(wb_hara)} ₽\n"
             f"💳 Эквайринг: {metrics.get('avg_acquiring', 0):.2f}%\n"
             f"💵 К выводу ЦАП: {format_number(metrics.get('k_vyvodu_carp', 0))} ₽\n"
-            f"💵 К выводу Harakiri: {format_number(metrics.get('k_vyvodu_hara', 0))} ₽\n"
+            f"💵 К выводу Harakiri: {format_number(k_vyvodu_hara)} ₽\n"
             f"💵 К выводу Harakiri с вычетом налога: {format_number(metrics.get('k_vyvodu_hara_nalog', 0))} ₽\n"
         )
         await update.message.reply_text(summary, parse_mode='Markdown')
@@ -826,9 +815,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка: {e}")
     finally:
-        # Удаляем временный шаблон
-        if 'temp_template' in locals() and temp_template.exists():
-            temp_template.unlink(missing_ok=True)
         for p in [osn_path, vyk_path]:
             if p and Path(p).exists():
                 Path(p).unlink(missing_ok=True)
