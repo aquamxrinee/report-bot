@@ -10,7 +10,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from config import TELEGRAM_BOT_TOKEN, logger
 from flask_app import run_flask
 from handlers import *
-from services import scheduler
+from services import scheduler, fetch_weekly_reports_job
 from models import init_spp_tables, init_spp_global_settings, init_db, init_spp_brand_tables
 from spp_monitor import monitor_spp
 from wb_api import get_aggregated_stats
@@ -37,7 +37,7 @@ def main():
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Обработчики команд
+    # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("osn", lambda u,c: u.message.reply_text("Используйте отправку файлов")))
@@ -48,13 +48,13 @@ def main():
     app.add_handler(CommandHandler("spp_list", spp_list_cmd))
     app.add_handler(CommandHandler("spp_check", spp_check_cmd))
     app.add_handler(CommandHandler("spp_status", spp_status_cmd))
-    # app.add_handler(CommandHandler("spp_stats", spp_stats_cmd))  # УБРАЛИ - нет такой функции
     app.add_handler(CommandHandler("test_parser", test_parser_cmd))
     app.add_handler(CommandHandler("test_proxy", test_proxy_cmd))
     app.add_handler(CommandHandler("sync_articles", sync_articles_cmd))
     app.add_handler(CommandHandler("set_article", set_article_cmd))
+    app.add_handler(CommandHandler("fetch_weekly", fetch_weekly_cmd))  # <-- новая команда
 
-    # Обработчики колбэков
+    # Колбэки
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_main_callback, pattern="^menu_analytics_main$"))
@@ -102,11 +102,18 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
+    # Планировщик
     scheduler.add_job(refresh_wb_cache, IntervalTrigger(hours=1))
     scheduler.add_job(
         lambda: asyncio.run(monitor_spp(app)),
         IntervalTrigger(hours=3),
         next_run_time=datetime.now() + timedelta(minutes=1)
+    )
+    # Еженедельный отчёт: понедельник, 12:00 МСК = UTC 9:00
+    scheduler.add_job(
+        lambda: asyncio.run(fetch_weekly_reports_job(app)),
+        CronTrigger(day_of_week='mon', hour=9, minute=0),
+        id='weekly_report'
     )
     scheduler.start()
 
