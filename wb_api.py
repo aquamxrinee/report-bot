@@ -7,6 +7,7 @@ from config import logger, WB_API_TOKEN
 
 STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1"
 ANALYTICS_API = "https://seller-analytics-api.wildberries.ru/api/analytics"
+FINANCE_API = "https://statistics-api.wildberries.ru/api/v1"  # Тот же базовый URL
 
 _cache = {
     "data": None,
@@ -89,13 +90,7 @@ def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = 
 
 
 def get_all_nm_ids_from_api(days_back: int = 90) -> List[int]:
-    """
-    Получает все уникальные nmId из:
-    - продаж за последние days_back дней
-    - остатков
-    - заказов (если доступно)
-    Объединяет и возвращает список уникальных nmId.
-    """
+    """Получает все уникальные nmId из продаж, остатков и заказов."""
     nm_ids_set = set()
 
     # 1. Продажи
@@ -121,7 +116,7 @@ def get_all_nm_ids_from_api(days_back: int = 90) -> List[int]:
     else:
         logger.warning(f"⚠️ Не удалось получить остатки: {stocks_data.get('error', 'неизвестная ошибка')}")
 
-    # 3. Заказы (если метод доступен)
+    # 3. Заказы
     orders_data = get_orders(date_from)
     if isinstance(orders_data, list):
         for item in orders_data:
@@ -234,3 +229,40 @@ def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = 
                 })
         time.sleep(2)
     return result
+
+
+# ===== НОВАЯ ФУНКЦИЯ: получение еженедельных отчётов =====
+def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
+    """
+    Запрашивает финансовые отчёты за период.
+    Возвращает список словарей с ключами:
+        - url: ссылка для скачивания (действует ~1 час)
+        - report_type: 1 (основной) или 2 (выкупы)
+        - file_name: оригинальное имя файла
+    """
+    url = f"{FINANCE_API}/supplier/reportDetailByPeriod"
+    payload = {
+        "dateFrom": date_from,
+        "dateTo": date_to,
+        "limit": 10,
+        "rrdid": 0
+    }
+    data = _safe_request("POST", url, json_data=payload)
+    if isinstance(data, dict) and "error" in data:
+        logger.error(f"Ошибка получения списка отчётов: {data['error']}")
+        return []
+
+    reports = []
+    # data – это список (или может быть обёрнуто в data?), по документации массив
+    if isinstance(data, list):
+        for item in data:
+            file_url = item.get("url")
+            rtype = item.get("reportType")
+            fname = item.get("fileName", "")
+            if file_url and rtype in [1, 2]:
+                reports.append({
+                    "url": file_url,
+                    "report_type": rtype,
+                    "file_name": fname
+                })
+    return reports
