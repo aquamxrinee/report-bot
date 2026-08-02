@@ -293,3 +293,108 @@ class ReportProcessor:
                 ws[cell].number_format = '0.00'
         ws.sheet_view.calcMode = 'manual'
         wb.save(template_path)
+# Вставьте этот блок в конец services.py
+from pathlib import Path
+import requests
+from models import save_report_to_db
+from config import logger, WB_API_TOKEN, TEMP_DIR
+from handlers import process_and_send  # Осторожно с циклическим импортом! Лучше вынести в отдельный модуль.
+
+# Но чтобы избежать циклического импорта, напишем функцию прямо здесь.
+# Импорты будут внутри, чтобы не сломать существующий код.
+async def fetch_and_process_weekly(app):
+    """
+    Автоматически загружает и обрабатывает еженедельные отчёты за прошлую неделю.
+    Отправляет уведомления пользователям.
+    """
+    from wb_api import get_weekly_reports
+    from models import get_report_id_by_period, save_report_to_db
+    from handlers import process_and_send  # Проблема циклического импорта, решим иначе
+
+    # Определим прошлую неделю (пн-вс)
+    today = datetime.now().date()
+    # Понедельник прошлой недели
+    last_monday = today - timedelta(days=today.weekday() + 7)
+    last_sunday = last_monday + timedelta(days=6)
+    date_from = last_monday.strftime("%Y-%m-%d")
+    date_to = last_sunday.strftime("%Y-%m-%d")
+    period_str = f"{last_monday.strftime('%d.%m')}-{last_sunday.strftime('%d.%m')}"
+
+    logger.info(f"🔍 Проверка еженедельных отчётов за {period_str} ({date_from} - {date_to})")
+
+    try:
+        reports_meta = get_weekly_reports(date_from, date_to)
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения метаданных отчётов: {e}")
+        for uid in ALLOWED_USERS:
+            await app.bot.send_message(uid, f"❌ Не удалось получить отчёты за {period_str}: {e}")
+        return
+
+    if not reports_meta:
+        msg = f"📭 Отчёты за {period_str} ещё не готовы. Попробую позже."
+        logger.info(msg)
+        for uid in ALLOWED_USERS:
+            await app.bot.send_message(uid, msg)
+        return
+
+    # Проверим, не загружены ли уже эти отчёты (по хешу или периоду)
+    # Для простоты проверим наличие отчёта в базе по датам
+    from models import get_report_id_by_period
+    existing = get_report_id_by_period(date_from, date_to)
+    if existing:
+        msg = f"ℹ️ Отчёт за {period_str} уже загружен (ID: {existing})."
+        logger.info(msg)
+        for uid in ALLOWED_USERS:
+            await app.bot.send_message(uid, msg)
+        return
+
+    # Скачиваем файлы
+    temp_files = []
+    for meta in reports_meta:
+        try:
+            r = requests.get(meta["url"], timeout=60)
+            r.raise_for_status()
+            fname = meta["file_name"] or f"report_{meta['report_type']}.xlsx"
+            temp_path = Path(TEMP_DIR) / f"auto_{datetime.now().timestamp()}_{fname}"
+            with open(temp_path, 'wb') as f:
+                f.write(r.content)
+            temp_files.append(str(temp_path))
+            logger.info(f"✅ Скачан файл {fname} (тип {meta['report_type']})")
+        except Exception as e:
+            logger.error(f"❌ Ошибка скачивания {meta['url']}: {e}")
+
+    if len(temp_files) != 2:
+        for uid in ALLOWED_USERS:
+            await app.bot.send_message(uid, f"⚠️ Скачано {len(temp_files)} файлов вместо 2 за {period_str}. Проверьте вручную.")
+        return
+
+    # Сортируем: основной (reportType=1) и выкупы (reportType=2)
+    # Предположим, что первый файл — основной, второй — выкупы. Определим по имени или порядку.
+    # Лучше по имени файла.
+    osn_path = None
+    vyk_path = None
+    for i, meta in enumerate(reports_meta):
+        fname = meta["file_name"].lower()
+        if "осн" in fname or "продажи" in fname or meta["report_type"] == 1:
+            osn_path = temp_files[i]
+        elif "вык" in fname or "возврат" in fname or meta["report_type"] == 2:
+            vyk_path = temp_files[i]
+
+    if not osn_path:
+        osn_path = temp_files[0]
+    if not vyk_path:
+        vyk_path = temp_files[1]
+
+    # Симулируем пользовательский контекст, чтобы вызвать process_and_send
+    # Но process_and_send требует update и context. Поэтому придётся дублировать логику.
+    # Проще написать новую функцию, которая вызывает обработку.
+    from handlers import process_auto_report
+    try:
+        await process_auto_report(app, osn_path, vyk_path, period_str, date_from, date_to)
+    except Exception as e:
+        logger.error(f"❌ Ошибка обработки автоотчёта: {e}")
+        for uid in ALLOWED_USERS:
+            await app.bot.send_message(uid, f"❌ Ошибка обработки отчёта за {period_str}: {e}")
+    finally:
+        for p in temp_files:
+            Path(p).unlink(missing_ok=True)
