@@ -35,7 +35,6 @@ async def send_news_digest(context, user_id, time_of_day):
 
 async def scheduled_morning_digest(context):
     import sqlite3
-    from config import DB_PATH
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('SELECT user_id FROM news_settings WHERE enabled = 1')
@@ -46,7 +45,6 @@ async def scheduled_morning_digest(context):
 
 async def scheduled_evening_digest(context):
     import sqlite3
-    from config import DB_PATH
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute('SELECT user_id FROM news_settings WHERE enabled = 1')
@@ -95,9 +93,19 @@ class ReportProcessor:
         articles = self._get_articles_stats(df_osn, df_vyk)
         return values, articles, date_range
 
-    # ... все остальные методы класса ReportProcessor (без изменений) ...
-    # (вставьте сюда полный код _get_articles_stats, _calculate_all_values, _fill_template из вашего исходного services.py)
-    # Я не дублирую их здесь из-за длины, но они должны остаться как есть.
+    # ===== ВСТАВЬТЕ СЮДА ВСЕ МЕТОДЫ _get_articles_stats, _calculate_all_values, _fill_template =====
+    # (Я не копирую их полностью, чтобы не раздувать ответ. Они точно такие же, как в вашем текущем services.py)
+    # Просто убедитесь, что они здесь есть!
+
+    def _fill_template(self, template_path, values):
+        wb = openpyxl.load_workbook(template_path, data_only=False, keep_links=False, keep_vba=False)
+        ws = wb.active
+        for cell, value in values.items():
+            ws[cell] = value
+            if isinstance(value, float) and value != int(value):
+                ws[cell].number_format = '0.00'
+        ws.sheet_view.calcMode = 'manual'
+        wb.save(template_path)
 
 # ===== АВТОМАТИЧЕСКАЯ ЗАГРУЗКА ЕЖЕНЕДЕЛЬНЫХ ОТЧЁТОВ =====
 def extract_metrics_from_values(values):
@@ -120,12 +128,10 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
     file_hash = calculate_file_hash(osn_path) + calculate_file_hash(vyk_path)
     metrics = extract_metrics_from_values(values)
 
-    # Расчёт B38
     k_vyvodu_hara = metrics['k_vyvodu_hara']
     wb_hara = metrics['wb_hara']
     metrics['k_vyvodu_hara_nalog'] = k_vyvodu_hara - wb_hara * 0.01
 
-    # Сохранение в БД
     success, report_id = save_report_to_db(
         file_name=f"auto_{period_str}.xlsx",
         file_hash=file_hash,
@@ -140,13 +146,11 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
         logger.error("Ошибка сохранения автоотчёта")
         return
 
-    # Сохранение файла в постоянное хранилище
     report_dir = Path("/data/reports")
     report_dir.mkdir(parents=True, exist_ok=True)
     report_file = report_dir / f"отчёт_{report_id}.xlsx"
     shutil.copy2(template_path, report_file)
 
-    # Формирование сводки
     def format_number(num):
         if num is None: return "0"
         if isinstance(num, float) and num.is_integer():
@@ -164,7 +168,6 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
         f"💵 К выводу Harakiri с вычетом налога: {format_number(metrics.get('k_vyvodu_hara_nalog', 0))} ₽\n"
     )
 
-    # Отправка всем разрешённым пользователям
     for uid in ALLOWED_USERS:
         try:
             with open(template_path, 'rb') as f:
@@ -177,8 +180,8 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
         except Exception as e:
             logger.error(f"Не удалось отправить автоотчёт пользователю {uid}: {e}")
 
-async def fetch_and_process_weekly_job(app):
-    """Задача для планировщика: проверяет и загружает отчёты за прошлую неделю."""
+async def fetch_weekly_reports_job(app):
+    """Проверяет и загружает отчёты за прошлую неделю."""
     from wb_api import get_weekly_reports
 
     today = datetime.now().date()
@@ -190,7 +193,6 @@ async def fetch_and_process_weekly_job(app):
 
     logger.info(f"🔍 Автопроверка отчётов за {period_str}")
 
-    # Проверка дубликата
     if get_report_id_by_period(date_from, date_to):
         msg = f"ℹ️ Отчёт за {period_str} уже существует в базе."
         logger.info(msg)
@@ -201,7 +203,6 @@ async def fetch_and_process_weekly_job(app):
                 pass
         return
 
-    # Получение метаданных
     reports_meta = get_weekly_reports(date_from, date_to)
     if not reports_meta:
         msg = f"📭 Еженедельный отчёт за {period_str} ещё не готов."
@@ -213,8 +214,7 @@ async def fetch_and_process_weekly_job(app):
                 pass
         return
 
-    # Скачивание файлов
-    temp_files = []  # список кортежей (report_type, путь)
+    temp_files = []
     for meta in reports_meta:
         try:
             r = requests.get(meta["url"], timeout=60)
@@ -236,12 +236,10 @@ async def fetch_and_process_weekly_job(app):
                 await app.bot.send_message(uid, msg)
             except:
                 pass
-        # Удаляем временные файлы
         for _, p in temp_files:
             Path(p).unlink(missing_ok=True)
         return
 
-    # Определяем основной и выкупы (reportType 1 - основной, 2 - выкупы)
     osn_path = None
     vyk_path = None
     for rtype, path in temp_files:
@@ -254,7 +252,6 @@ async def fetch_and_process_weekly_job(app):
     if not vyk_path:
         vyk_path = temp_files[1][1]
 
-    # Обработка
     try:
         await process_auto_report(app, osn_path, vyk_path, period_str, date_from, date_to)
     except Exception as e:
@@ -265,6 +262,5 @@ async def fetch_and_process_weekly_job(app):
             except:
                 pass
     finally:
-        # Удаляем временные файлы
         for _, p in temp_files:
             Path(p).unlink(missing_ok=True)
