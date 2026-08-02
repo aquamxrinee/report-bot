@@ -35,7 +35,7 @@ from services import (
 )
 from spp_parser import get_spp_for_article_async
 from spp_monitor import generate_spp_graph, monitor_spp
-from wb_api import get_all_nm_ids_from_api
+from wb_api import get_all_nm_ids_from_api, get_buyout_by_brands
 
 REPORTS_DIR = Path("/data/reports")
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -648,8 +648,8 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
         avg_acquiring = metrics.get('avg_acquiring', 0)
         k_vyvodu_carp = metrics.get('k_vyvodu_carp', 0)
         k_vyvodu_hara = metrics.get('k_vyvodu_hara', 0)
-        buyout_percent = metrics.get('buyout_percent', 0)
-        buyout_str = f"{buyout_percent:.1f}%" if buyout_percent > 0 else "Н/Д"
+        buyout_carp_str = f"{metrics['buyout_carp']:.1f}%" if metrics.get('buyout_carp') is not None else "Н/Д"
+        buyout_hara_str = f"{metrics['buyout_hara']:.1f}%" if metrics.get('buyout_hara') is not None else "Н/Д"
         summary = (
             f"📊 *Сводка за {period}*\n"
             f"📄 Файл: {file_name}\n\n"
@@ -659,7 +659,8 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
             f"💳 Средний эквайринг: {avg_acquiring:.2f}%\n"
             f"💵 К выводу ЦАП: {format_number(k_vyvodu_carp)} ₽\n"
             f"💵 К выводу Harakiri: {format_number(k_vyvodu_hara)} ₽\n"
-            f"📦 Процент выкупа: {buyout_str}\n"
+            f"📦 Выкуп ЦАП: {buyout_carp_str}\n"
+            f"📦 Выкуп Harakiri: {buyout_hara_str}\n"
         )
     else:
         summary = f"📊 *Отчёт за {period}*\n\nНет данных для отображения."
@@ -781,16 +782,16 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
         metrics = extract_metrics(values, articles, start_date, end_date)
         
-        # Процент выкупа
-        total_sales_qty = 0
-        total_vyk_qty = 0
-        for brand_data in articles.values():
-            for item in brand_data.get('sales', {}).values():
-                total_sales_qty += item.get('quantity', 0)
-            for item in brand_data.get('vyk', {}).values():
-                total_vyk_qty += item.get('quantity', 0)
-        buyout_percent = (total_vyk_qty / total_sales_qty * 100) if total_sales_qty > 0 else 0.0
-        metrics['buyout_percent'] = buyout_percent
+        # === Загружаем проценты выкупа по брендам через API ===
+        await update.message.reply_text("📡 Загружаю данные по выкупам...")
+        try:
+            buyouts = get_buyout_by_brands(start_date, end_date)
+            metrics['buyout_carp'] = buyouts.get('Цап царапкин')
+            metrics['buyout_hara'] = buyouts.get('Harakiri')
+        except Exception as e:
+            logger.error(f"Ошибка получения выкупов: {e}")
+            metrics['buyout_carp'] = None
+            metrics['buyout_hara'] = None
         
         success, report_id = save_report_to_db(
             file_name=context.user_data.get('original_file_name', Path(osn_path).name),
@@ -821,7 +822,8 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         temp_template.unlink(missing_ok=True)
         
-        buyout_str = f"{buyout_percent:.1f}%" if total_sales_qty > 0 else "Н/Д"
+        buyout_carp_str = f"{metrics['buyout_carp']:.1f}%" if metrics['buyout_carp'] is not None else "Н/Д"
+        buyout_hara_str = f"{metrics['buyout_hara']:.1f}%" if metrics['buyout_hara'] is not None else "Н/Д"
         summary = (
             f"📊 Сводка за {date_period}\n"
             f"💰 Оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
@@ -830,7 +832,8 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💳 Эквайринг: {metrics.get('avg_acquiring', 0):.2f}%\n"
             f"💵 К выводу ЦАП: {format_number(metrics.get('k_vyvodu_carp', 0))} ₽\n"
             f"💵 К выводу Harakiri: {format_number(metrics.get('k_vyvodu_hara', 0))} ₽\n"
-            f"📦 Процент выкупа: {buyout_str}\n"
+            f"📦 Выкуп ЦАП: {buyout_carp_str}\n"
+            f"📦 Выкуп Harakiri: {buyout_hara_str}\n"
         )
         await update.message.reply_text(summary, parse_mode='Markdown')
         
