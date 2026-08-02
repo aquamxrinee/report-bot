@@ -30,7 +30,7 @@ from models import (
     add_or_update_article
 )
 from services import (
-    detect_report_type, parse_date_from_period as service_parse_date,
+    detect_report_type, parse_date_from_period,
     ReportProcessor, scheduler
 )
 from spp_parser import get_spp_for_article_async
@@ -40,6 +40,7 @@ from wb_api import get_all_nm_ids_from_api
 REPORTS_DIR = Path("/data/reports")
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
+# ======================== ПРОВЕРКА ДОСТУПА ========================
 async def check_access(update: Update) -> bool:
     if not ALLOWED_USERS:
         return True
@@ -61,6 +62,7 @@ def get_main_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
+# ======================== БАЗОВЫЕ КОМАНДЫ ========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -77,9 +79,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📋 Команды:\n"
         "/start — начать\n"
         "/help — помощь\n"
-        "/osn — отметить файл как основной\n"
-        "/vyk — отметить файл как выкупы\n"
-        "/articles — детали по артикулам\n"
+        "/fetch_weekly — загрузить еженедельный отчёт\n"
         "/spp_subscribe <nm_id> [порог] — подписаться\n"
         "/spp_unsubscribe <nm_id> — отписаться\n"
         "/spp_list — список подписок\n"
@@ -87,13 +87,14 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/spp_status — статус мониторинга\n"
         "/test_parser <nm_id> — проверить парсер\n"
         "/test_proxy — проверить прокси\n"
-        "/sync_articles — синхронизировать артикулы из статистики\n"
-        "/set_article <nm_id> <артикул> — установить артикул продавца\n\n"
+        "/sync_articles — синхронизировать артикулы\n"
+        "/set_article <nm_id> <артикул> — установить артикул\n\n"
         "Статистика СПП доступна через меню настроек.",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
     )
 
+# ======================== НАВИГАЦИЯ ПО МЕНЮ ========================
 async def menu_analytics_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -151,7 +152,6 @@ async def dev_commands_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     text = (
         "🛠 *Команды разработчика*\n\n"
-        "Эти команды доступны только по прямому вводу:\n\n"
         "`/spp_check` — запустить проверку СПП сейчас\n"
         "`/spp_status` — показать статус мониторинга\n"
         "`/spp_list` — список ваших подписок\n"
@@ -161,15 +161,13 @@ async def dev_commands_callback(update: Update, context: ContextTypes.DEFAULT_TY
         "`/test_proxy` — проверить прокси\n"
         "`/sync_articles` — синхронизация артикулов из статистики\n"
         "`/set_article <nm_id> <артикул>` — установить артикул продавца\n"
-        "`/osn` / `/vyk` — ручное указание типа файла (устарело)\n"
-        "`/articles` — детали по артикулам\n\n"
-        "Для получения помощи используйте `/help`."
+        "`/fetch_weekly` — загрузить еженедельный отчёт"
     )
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")]
     ]))
 
-# === НАСТРОЙКИ СЕБЕСТОИМОСТИ ===
+# ======================== НАСТРОЙКИ СЕБЕСТОИМОСТИ ========================
 async def menu_costs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if not await check_access(update):
@@ -330,7 +328,7 @@ async def handle_cost_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Введите число.")
 
-# === АНАЛИТИКА ПО АРТИКУЛАМ ===
+# ======================== АНАЛИТИКА ПО АРТИКУЛАМ ========================
 async def show_analytics_selection(query, context, page):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
@@ -529,7 +527,7 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# === ИСТОРИЯ (АРХИВ) ===
+# ======================== ИСТОРИЯ (АРХИВ) ========================
 async def show_history_page(query, context, page):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
@@ -582,7 +580,6 @@ async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TY
     await show_history_page(query, context, page)
 
 def generate_report_file(report_id):
-    """Генерирует заполненный шаблон из БД и возвращает путь к временному файлу."""
     values = get_report_values(report_id)
     if not values:
         return None
@@ -608,11 +605,9 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     report_id = int(query.data.split("_")[-1])
     
-    # Ищем сохранённый файл
     report_file = REPORTS_DIR / f"отчёт_{report_id}.xlsx"
     generated = None
     if not report_file.exists():
-        # Пробуем сгенерировать из БД
         generated = generate_report_file(report_id)
         if generated:
             report_file = generated
@@ -621,7 +616,6 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
             await query.message.reply_text("❌ Не удалось создать файл отчёта.")
             return
 
-    # Отправляем файл
     with open(report_file, 'rb') as f:
         await query.message.reply_document(
             document=f,
@@ -629,12 +623,10 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
             caption="📄 Заполненный шаблон отчёта"
         )
     
-    # Если сгенерировали, сохраняем на будущее
     if generated:
         shutil.copy2(generated, REPORTS_DIR / f"отчёт_{report_id}.xlsx")
         generated.unlink(missing_ok=True)
     
-    # Сводка
     metrics = get_report_metrics(report_id)
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -657,6 +649,7 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
         k_vyvodu_carp = metrics.get('k_vyvodu_carp', 0)
         k_vyvodu_hara = metrics.get('k_vyvodu_hara', 0)
         k_vyvodu_hara_nalog = metrics.get('k_vyvodu_hara_nalog', 0)
+        buyout_percent = metrics.get('buyout_percent', 0)
         summary = (
             f"📊 *Сводка за {period}*\n"
             f"📄 Файл: {file_name}\n\n"
@@ -667,6 +660,7 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
             f"💵 К выводу ЦАП: {format_number(k_vyvodu_carp)} ₽\n"
             f"💵 К выводу Harakiri: {format_number(k_vyvodu_hara)} ₽\n"
             f"💵 К выводу Harakiri с вычетом налога: {format_number(k_vyvodu_hara_nalog)} ₽\n"
+            f"📦 Процент выкупа: {buyout_percent:.1f}%\n"
         )
     else:
         summary = f"📊 *Отчёт за {period}*\n\nНет данных для отображения."
@@ -732,7 +726,7 @@ async def history_confirm_delete_callback(update: Update, context: ContextTypes.
         else:
             await query.edit_message_text("❌ Ошибка удаления.")
 
-# === ОБРАБОТЧИКИ ФАЙЛОВ ===
+# ======================== ОБРАБОТЧИКИ ФАЙЛОВ ========================
 async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -763,7 +757,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"✅ Файл «{file_name}» загружен. Жду второй файл (для {'вык' if report_type == 'osn' else 'осн'}).")
 
-# ===== ПРОЦЕСС ОБРАБОТКИ ОТЧЁТА (с сохранением по ID и правильным B38) =====
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     files = context.user_data.get('files', {})
@@ -783,20 +776,28 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Файл шаблона 'шаблон.xlsx' не найден.")
             return
         
-        # 1. Заполняем шаблон
         values, articles, date_period = processor.process_files(osn_path, vyk_path, template_path)
         start_date, end_date = parse_date_from_period(date_period)
         
-        # 2. Собираем метрики
         file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
         metrics = extract_metrics(values, articles, start_date, end_date)
         
-        # === B38 = F13 - (Оборот Harakiri * 1%) ===
+        # Процент выкупа
+        total_sales_qty = 0
+        total_vyk_qty = 0
+        for brand_data in articles.values():
+            for item in brand_data.get('sales', {}).values():
+                total_sales_qty += item.get('quantity', 0)
+            for item in brand_data.get('vyk', {}).values():
+                total_vyk_qty += item.get('quantity', 0)
+        buyout_percent = (total_vyk_qty / total_sales_qty * 100) if total_sales_qty > 0 else 0.0
+        metrics['buyout_percent'] = buyout_percent
+        
+        # B38 = К выводу Harakiri - (Оборот Harakiri * 1%)
         k_vyvodu_hara = metrics.get('k_vyvodu_hara', 0)
         wb_hara = metrics.get('wb_hara', 0)
-        metrics['k_vyvodu_hara_nalog'] = k_vyvodu_hara - (wb_hara * 0.01)
+        metrics['k_vyvodu_hara_nalog'] = k_vyvodu_hara - wb_hara * 0.01
         
-        # 3. Сохраняем в БД
         success, report_id = save_report_to_db(
             file_name=context.user_data.get('original_file_name', Path(osn_path).name),
             file_hash=file_hash,
@@ -812,14 +813,12 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Ошибка сохранения отчёта в БД.")
             return
         
-        # 4. Сохраняем файл с именем по report_id
         temp_template = Path(TEMP_DIR) / f"filled_{datetime.now().timestamp()}.xlsx"
         shutil.copy2(template_path, temp_template)
         report_file = REPORTS_DIR / f"отчёт_{report_id}.xlsx"
         shutil.copy2(temp_template, report_file)
         logger.info(f"📁 Сохранён файл отчёта ID={report_id}: {report_file}")
         
-        # 5. Отправляем файл пользователю
         with open(temp_template, 'rb') as f:
             await update.message.reply_document(
                 document=f,
@@ -828,7 +827,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         temp_template.unlink(missing_ok=True)
         
-        # 6. Сводка
         summary = (
             f"📊 Сводка за {date_period}\n"
             f"💰 Оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
@@ -838,6 +836,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💵 К выводу ЦАП: {format_number(metrics.get('k_vyvodu_carp', 0))} ₽\n"
             f"💵 К выводу Harakiri: {format_number(k_vyvodu_hara)} ₽\n"
             f"💵 К выводу Harakiri с вычетом налога: {format_number(metrics.get('k_vyvodu_hara_nalog', 0))} ₽\n"
+            f"📦 Процент выкупа: {buyout_percent:.1f}%\n"
         )
         await update.message.reply_text(summary, parse_mode='Markdown')
         
@@ -851,7 +850,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if p and Path(p).exists():
                 Path(p).unlink(missing_ok=True)
 
-# === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
+# ======================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ========================
 def parse_date_from_period(date_period):
     try:
         parts = date_period.split('-')
@@ -905,7 +904,7 @@ def extract_metrics(values, articles, start_date, end_date):
     }
     return metrics
 
-# === ОБРАБОТЧИК ТЕКСТА ===
+# ======================== ОБРАБОТЧИК ТЕКСТА ========================
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -923,7 +922,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text("Используйте кнопки меню или команды из /help")
 
-# === КОМАНДЫ СПП ===
+# ======================== КОМАНДЫ СПП ========================
 async def spp_subscribe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -998,7 +997,7 @@ async def spp_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "✅ Включён" if settings['enabled'] else "❌ Отключён"
     await update.message.reply_text(f"Текущий статус мониторинга СПП: {status}")
 
-# === ТЕСТ ПАРСЕРА ===
+# ======================== ТЕСТ ПАРСЕРА / ПРОКСИ ========================
 async def test_parser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1026,7 +1025,6 @@ async def test_parser_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"❌ Не удалось получить данные для {nm_id}.")
 
-# === ТЕСТ ПРОКСИ ===
 async def test_proxy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1044,7 +1042,7 @@ async def test_proxy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка проверки прокси: {e}")
 
-# === СИНХРОНИЗАЦИЯ АРТИКУЛОВ ===
+# ======================== СИНХРОНИЗАЦИЯ И УСТАНОВКА АРТИКУЛОВ ========================
 async def sync_articles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1063,7 +1061,6 @@ async def sync_articles_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка синхронизации: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# === УСТАНОВКА АРТИКУЛА ПРОДАВЦА ВРУЧНУЮ ===
 async def set_article_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1086,7 +1083,7 @@ async def set_article_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
 
-# === СТАТИСТИКА СПП (колбэк) ===
+# ======================== СТАТИСТИКА СПП (колбэк) ========================
 async def spp_stats_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1145,7 +1142,7 @@ async def get_spp_stats_text(user_id: int) -> str:
                 text += f"• {brand} — данных пока нет\n"
     return text
 
-# === МЕНЮ МОНИТОРИНГА СПП ===
+# ======================== МЕНЮ МОНИТОРИНГА СПП ========================
 async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1458,15 +1455,16 @@ async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             [InlineKeyboardButton("🔇 Глушить на 2ч", callback_data=f"spp_mute_{nm_id}")]
         ])
     )
-# === РУЧНАЯ ЗАГРУЗКА ЕЖЕНЕДЕЛЬНЫХ ОТЧЁТОВ ===
+
+# ======================== РУЧНАЯ ЗАГРУЗКА ЕЖЕНЕДЕЛЬНЫХ ОТЧЁТОВ ========================
 async def fetch_weekly_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
-    await update.message.reply_text("🔄 Запущена загрузка еженедельных отчётов...")
+    await update.message.reply_text("🔄 Запущена проверка и загрузка еженедельных отчётов...")
     try:
         from services import fetch_weekly_reports_job
         await fetch_weekly_reports_job(context.application)
-        await update.message.reply_text("✅ Проверка выполнена. Проверьте результат.")
+        await update.message.reply_text("✅ Проверка завершена. Проверьте результат.")
     except Exception as e:
         logger.error(f"Ошибка fetch_weekly_cmd: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
