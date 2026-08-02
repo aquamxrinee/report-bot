@@ -1,114 +1,213 @@
-import threading
-import asyncio
+import os
+import time
+import requests
 from datetime import datetime, timedelta
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
-from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
+from typing import Dict, List, Optional, Any
+from config import logger, WB_API_TOKEN
 
-from config import TELEGRAM_BOT_TOKEN, logger
-from flask_app import run_flask
-from handlers import *
-from services import scheduler
-from models import init_spp_tables, init_spp_global_settings, init_db, init_spp_brand_tables
-from spp_monitor import monitor_spp
-from wb_api import get_aggregated_stats
+STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1"
+ANALYTICS_API = "https://seller-analytics-api.wildberries.ru/api/analytics"
 
+_cache = {
+    "data": None,
+    "timestamp": None,
+    "error": None
+}
+CACHE_TTL = timedelta(hours=6)
 
-def refresh_wb_cache():
-    logger.info("🔄 Фоновое обновление кеша WB API")
-    try:
-        get_aggregated_stats(force_refresh=True)
-    except Exception as e:
-        logger.error(f"❌ Ошибка фонового обновления WB: {e}")
+def get_headers() -> Dict:
+    return {"Authorization": f"Bearer {WB_API_TOKEN}"}
 
+def _safe_request(method, url, params=None, json_data=None, max_retries=3):
+    if not WB_API_TOKEN:
+        return {"error": "WB_API_TOKEN не задан"}
 
-def main():
-    print("🤖 Запуск бота...")
+    for attempt in range(1, max_retries + 1):
+        try:
+            if method.upper() == "GET":
+                response = requests.get(url, headers=get_headers(), params=params, timeout=30)
+            else:
+                response = requests.post(url, headers=get_headers(), json=json_data, timeout=30)
 
-    init_db()
-    init_spp_tables()
-    init_spp_global_settings()
-    init_spp_brand_tables()
+            if response.status_code == 429:
+                logger.warning(f"⚠️ 429 Too Many Requests, попытка {attempt}/{max_retries}")
+                retry_after = response.headers.get("Retry-After")
+                wait = int(retry_after) + 1 if retry_after else 20 + attempt * 10
+                time.sleep(wait)
+                continue
+            if response.status_code == 404:
+                return {"error": f"404 Not Found: {url}", "status_code": 404}
+            if response.status_code == 403:
+                return {"error": "403 Forbidden", "status_code": 403}
+            response.raise_for_status()
+            return response.json()
+        except Exception as e:
+            logger.error(f"Ошибка запроса: {e}")
+            if attempt == max_retries:
+                return {"error": str(e)}
+            time.sleep(5 * attempt)
+    return {"error": "Превышено количество попыток"}
 
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
+def get_sales(date_from: str, date_to: str = None) -> Dict:
+    if not date_to:
+        date_to = datetime.now().strftime("%Y-%m-%d")
+    url = f"{STATISTICS_API}/supplier/sales"
+    params = {"dateFrom": date_from, "dateTo": date_to}
+    return _safe_request("GET", url, params=params)
 
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+def get_stocks() -> Dict:
+    url = f"{STATISTICS_API}/supplier/stocks"
+    return _safe_request("GET", url)
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("osn", lambda u,c: u.message.reply_text("Используйте отправку файлов")))
-    app.add_handler(CommandHandler("vyk", lambda u,c: u.message.reply_text("Используйте отправку файлов")))
-    app.add_handler(CommandHandler("articles", menu_analytics_callback))
-    app.add_handler(CommandHandler("spp_subscribe", spp_subscribe_cmd))
-    app.add_handler(CommandHandler("spp_unsubscribe", spp_unsubscribe_cmd))
-    app.add_handler(CommandHandler("spp_list", spp_list_cmd))
-    app.add_handler(CommandHandler("spp_check", spp_check_cmd))
-    app.add_handler(CommandHandler("spp_status", spp_status_cmd))
-    app.add_handler(CommandHandler("spp_stats", spp_stats_cmd))
-    app.add_handler(CommandHandler("test_parser", test_parser_cmd))
-    app.add_handler(CommandHandler("test_proxy", test_proxy_cmd))
-    app.add_handler(CommandHandler("sync_articles", sync_articles_cmd))
-    app.add_handler(CommandHandler("set_article", set_article_cmd))
+def get_orders(date_from: str, date_to: str = None) -> Dict:
+    if not date_to:
+        date_to = datetime.now().strftime("%Y-%m-%d")
+    url = f"{STATISTICS_API}/supplier/orders"
+    params = {"dateFrom": date_from, "dateTo": date_to}
+    return _safe_request("GET", url, params=params)
 
-    app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
-    app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
-    app.add_handler(CallbackQueryHandler(menu_analytics_main_callback, pattern="^menu_analytics_main$"))
-    app.add_handler(CallbackQueryHandler(menu_settings_callback, pattern="^menu_settings$"))
-    app.add_handler(CallbackQueryHandler(back_to_menu_callback, pattern="^back_to_menu$"))
-    app.add_handler(CallbackQueryHandler(dev_commands_callback, pattern="^dev_commands$"))
+def get_sales_funnel(nm_ids: list = None, date_from: str = None, date_to: str = None, limit=100) -> Dict:
+    if not date_from:
+        date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    if not date_to:
+        date_to = datetime.now().strftime("%Y-%m-%d")
+    url = f"{ANALYTICS_API}/v3/sales-funnel/products"
+    payload = {"selectedPeriod": {"start": date_from, "end": date_to}, "limit": limit}
+    if nm_ids:
+        payload["nmIds"] = nm_ids
+    return _safe_request("POST", url, json_data=payload)
 
-    app.add_handler(CallbackQueryHandler(menu_costs_callback, pattern="^menu_costs$"))
-    app.add_handler(CallbackQueryHandler(cost_edit_callback, pattern="^cost_edit_"))
-    app.add_handler(CallbackQueryHandler(cost_set_callback, pattern="^cost_set_"))
-    app.add_handler(CallbackQueryHandler(cost_history_callback, pattern="^cost_history_"))
-    app.add_handler(CallbackQueryHandler(cost_delete_callback, pattern="^cost_delete_"))
-    app.add_handler(CallbackQueryHandler(cost_delete_all_callback, pattern="^cost_delete_all_"))
-    app.add_handler(CallbackQueryHandler(cost_confirm_delete_all_callback, pattern="^cost_confirm_delete_all_"))
+def get_all_nm_ids_from_api(days_back: int = 90) -> List[int]:
+    nm_ids_set = set()
+    date_from = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
-    app.add_handler(CallbackQueryHandler(analytics_toggle_callback, pattern="^analytics_toggle_"))
-    app.add_handler(CallbackQueryHandler(analytics_page_callback, pattern="^analytics_page_"))
-    app.add_handler(CallbackQueryHandler(analytics_select_all_callback, pattern="^analytics_select_all$"))
-    app.add_handler(CallbackQueryHandler(analytics_deselect_all_callback, pattern="^analytics_deselect_all$"))
-    app.add_handler(CallbackQueryHandler(analytics_quick_callback, pattern="^analytics_quick_"))
-    app.add_handler(CallbackQueryHandler(analytics_show_callback, pattern="^analytics_show$"))
+    sales_data = get_sales(date_from)
+    if isinstance(sales_data, list):
+        for item in sales_data:
+            nm_id = item.get('nmId')
+            if nm_id:
+                nm_ids_set.add(nm_id)
+        logger.info(f"✅ Из продаж получено {len(sales_data)} записей, уникальных nmId: {len(nm_ids_set)}")
+    else:
+        logger.warning(f"⚠️ Не удалось получить продажи: {sales_data.get('error', 'неизвестная ошибка')}")
 
-    app.add_handler(CallbackQueryHandler(history_page_callback, pattern="^history_page_"))
-    app.add_handler(CallbackQueryHandler(history_report_callback, pattern="^history_report_"))
-    app.add_handler(CallbackQueryHandler(history_toggle_delete_callback, pattern="^history_toggle_delete_"))
-    app.add_handler(CallbackQueryHandler(history_enable_delete_callback, pattern="^history_enable_delete$"))
-    app.add_handler(CallbackQueryHandler(history_cancel_delete_callback, pattern="^history_cancel_delete$"))
-    app.add_handler(CallbackQueryHandler(history_confirm_delete_callback, pattern="^history_confirm_delete$"))
+    stocks_data = get_stocks()
+    if isinstance(stocks_data, list):
+        for item in stocks_data:
+            nm_id = item.get('nmId')
+            if nm_id:
+                nm_ids_set.add(nm_id)
+        logger.info(f"✅ Из остатков добавлено уникальных nmId: {len(nm_ids_set)}")
+    else:
+        logger.warning(f"⚠️ Не удалось получить остатки: {stocks_data.get('error', 'неизвестная ошибка')}")
 
-    app.add_handler(CallbackQueryHandler(menu_spp_callback, pattern="^menu_spp$"))
-    app.add_handler(CallbackQueryHandler(spp_show_articles_callback, pattern="^spp_show_articles$"))
-    app.add_handler(CallbackQueryHandler(spp_subscribe_article_callback, pattern="^spp_subscribe_art_"))
-    app.add_handler(CallbackQueryHandler(spp_show_brands_callback, pattern="^spp_show_brands$"))
-    app.add_handler(CallbackQueryHandler(spp_subscribe_brand_callback, pattern="^spp_subscribe_brand_"))
-    app.add_handler(CallbackQueryHandler(spp_my_subscriptions_callback, pattern="^spp_my_subscriptions$"))
-    app.add_handler(CallbackQueryHandler(spp_unsubscribe_button_callback, pattern="^spp_unsubscribe_"))
-    app.add_handler(CallbackQueryHandler(spp_stats_callback, pattern="^spp_stats$"))
-    app.add_handler(CallbackQueryHandler(spp_toggle_global_callback, pattern="^spp_toggle_global$"))
-    app.add_handler(CallbackQueryHandler(spp_threshold_callback, pattern="^spp_threshold$"))
-    app.add_handler(CallbackQueryHandler(spp_set_threshold_callback, pattern="^spp_set_threshold_"))
-    app.add_handler(CallbackQueryHandler(spp_threshold_custom_callback, pattern="^spp_threshold_custom$"))
-    app.add_handler(CallbackQueryHandler(spp_mute_callback, pattern="^spp_mute_"))
-    app.add_handler(CallbackQueryHandler(spp_graph_callback, pattern="^spp_graph_"))
+    orders_data = get_orders(date_from)
+    if isinstance(orders_data, list):
+        for item in orders_data:
+            nm_id = item.get('nmId')
+            if nm_id:
+                nm_ids_set.add(nm_id)
+        logger.info(f"✅ Из заказов добавлено уникальных nmId: {len(nm_ids_set)}")
+    else:
+        logger.warning(f"⚠️ Не удалось получить заказы: {orders_data.get('error', 'неизвестная ошибка')}")
 
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    logger.info(f"📊 Всего уникальных nmId получено: {len(nm_ids_set)}")
+    return list(nm_ids_set)
 
-    scheduler.add_job(refresh_wb_cache, IntervalTrigger(hours=1))
-    scheduler.add_job(
-        lambda: asyncio.run(monitor_spp(app)),
-        IntervalTrigger(hours=3),
-        next_run_time=datetime.now() + timedelta(minutes=1)
-    )
-    scheduler.start()
+def get_aggregated_stats(force_refresh=False) -> Dict:
+    global _cache
+    now = datetime.now()
+    if not force_refresh and _cache["timestamp"] and (now - _cache["timestamp"]) < CACHE_TTL:
+        return _cache["data"] if _cache["data"] else {"error": "Нет данных"}
 
-    print("✅ Бот готов, запускаем polling...")
-    app.run_polling(allowed_updates=[])
+    today = datetime.now().strftime("%Y-%m-%d")
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
 
+    sales = get_sales(week_ago, today)
+    time.sleep(5)
+    stocks = get_stocks()
+    time.sleep(5)
+    funnel = get_sales_funnel(date_from=week_ago, date_to=today)
 
-if __name__ == "__main__":
-    main()
+    result = {
+        "total_revenue": 0,
+        "total_orders": 0,
+        "avg_order_value": 0,
+        "total_stock": 0,
+        "unique_articles": 0,
+        "views": 0,
+        "cart_adds": 0,
+        "orders": 0,
+        "purchases": 0,
+        "conversion_view_to_cart": 0,
+        "conversion_cart_to_order": 0,
+        "conversion_order_to_purchase": 0,
+        "last_update": now.isoformat(),
+        "errors": []
+    }
+
+    if isinstance(sales, dict) and "error" in sales:
+        result["errors"].append(f"sales: {sales['error']}")
+    elif isinstance(sales, list):
+        total_revenue = sum(item.get("totalPrice", 0) for item in sales)
+        total_orders = len(sales)
+        result["total_revenue"] = total_revenue
+        result["total_orders"] = total_orders
+        result["avg_order_value"] = total_revenue / total_orders if total_orders else 0
+
+    if isinstance(stocks, dict) and "error" in stocks:
+        if stocks.get("status_code") != 404:
+            result["errors"].append(f"stocks: {stocks['error']}")
+    elif isinstance(stocks, list):
+        result["total_stock"] = sum(item.get("quantity", 0) for item in stocks)
+        result["unique_articles"] = len(set(item.get("nmId") for item in stocks if item.get("nmId")))
+
+    if isinstance(funnel, dict) and "error" in funnel:
+        result["errors"].append(f"funnel: {funnel['error']}")
+    elif isinstance(funnel, dict) and "data" in funnel:
+        products = funnel.get("data", {}).get("products", [])
+        for product in products:
+            stats = product.get("statistic", {}).get("selected", {})
+            result["views"] += stats.get("openCount", 0)
+            result["cart_adds"] += stats.get("cartCount", 0)
+            result["orders"] += stats.get("orderCount", 0)
+            result["purchases"] += stats.get("buyoutCount", 0)
+        if result["views"] > 0:
+            result["conversion_view_to_cart"] = (result["cart_adds"] / result["views"]) * 100
+        if result["cart_adds"] > 0:
+            result["conversion_cart_to_order"] = (result["orders"] / result["cart_adds"]) * 100
+        if result["orders"] > 0:
+            result["conversion_order_to_purchase"] = (result["purchases"] / result["orders"]) * 100
+
+    _cache["data"] = result
+    _cache["timestamp"] = now
+    return result
+
+def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = None) -> Dict:
+    if not date_from:
+        date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    if not date_to:
+        date_to = datetime.now().strftime("%Y-%m-%d")
+    result = {"items": [], "errors": []}
+    for i in range(0, len(nm_ids), 1000):
+        chunk = nm_ids[i:i+1000]
+        data = get_sales_funnel(nm_ids=chunk, date_from=date_from, date_to=date_to, limit=len(chunk))
+        if isinstance(data, dict) and "error" in data:
+            result["errors"].append(data["error"])
+        elif isinstance(data, dict) and "data" in data:
+            products = data.get("data", {}).get("products", [])
+            for product in products:
+                product_info = product.get("product", {})
+                stats = product.get("statistic", {}).get("selected", {})
+                result["items"].append({
+                    "nmId": product_info.get("nmId"),
+                    "name": product_info.get("title", ""),
+                    "brand": product_info.get("brandName", ""),
+                    "views": stats.get("openCount", 0),
+                    "cart": stats.get("cartCount", 0),
+                    "orders": stats.get("orderCount", 0),
+                    "purchases": stats.get("buyoutCount", 0),
+                    "revenue": stats.get("orderSum", 0)
+                })
+        time.sleep(2)
+    return result
