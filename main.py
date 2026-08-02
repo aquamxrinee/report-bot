@@ -1,5 +1,7 @@
 import threading
 import asyncio
+import traceback
+import sys
 from datetime import datetime, timedelta
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from apscheduler.triggers.cron import CronTrigger
@@ -35,6 +37,7 @@ def main():
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
+    # Обработчики команд
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("osn", lambda u,c: u.message.reply_text("Используйте отправку файлов")))
@@ -51,6 +54,7 @@ def main():
     app.add_handler(CommandHandler("sync_articles", sync_articles_cmd))
     app.add_handler(CommandHandler("set_article", set_article_cmd))
 
+    # Обработчики колбэков
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_main_callback, pattern="^menu_analytics_main$"))
@@ -111,4 +115,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except MemoryError:
+        print("❌ КРИТИЧЕСКАЯ ОШИБКА: нехватка памяти!")
+        logger.error("Бот упал из-за нехватки памяти (MemoryError). Railway может перезапустить процесс.")
+        # При MemoryError бот уже не сможет отправить сообщение, т.к. память исчерпана.
+        # Railway автоматически перезапустит контейнер, если процесс упал.
+        sys.exit(1)
+    except Exception as e:
+        print("❌ КРИТИЧЕСКАЯ ОШИБКА ПРИ ЗАПУСКЕ:")
+        traceback.print_exc()
+        logger.error(f"Бот упал с ошибкой: {e}")
+        sys.exit(1)
