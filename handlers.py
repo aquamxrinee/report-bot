@@ -80,6 +80,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start — начать\n"
         "/help — помощь\n"
         "/fetch_weekly — загрузить еженедельный отчёт\n"
+        "/refresh_buyout <report_id> — обновить выкуп\n"
         "/spp_subscribe <nm_id> [порог] — подписаться\n"
         "/spp_unsubscribe <nm_id> — отписаться\n"
         "/spp_list — список подписок\n"
@@ -161,7 +162,8 @@ async def dev_commands_callback(update: Update, context: ContextTypes.DEFAULT_TY
         "`/test_proxy` — проверить прокси\n"
         "`/sync_articles` — синхронизация артикулов из статистики\n"
         "`/set_article <nm_id> <артикул>` — установить артикул продавца\n"
-        "`/fetch_weekly` — загрузить еженедельный отчёт"
+        "`/fetch_weekly` — загрузить еженедельный отчёт\n"
+        "`/refresh_buyout <report_id>` — обновить выкуп для отчёта"
     )
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")]
@@ -527,7 +529,7 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# ======================== ИСТОРИЯ (АРХИВ) ========================
+# ======================== ИСТОРИЯ (АРХИВ) С АВТООБНОВЛЕНИЕМ ВЫКУПА ========================
 async def show_history_page(query, context, page):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
@@ -605,32 +607,11 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     report_id = int(query.data.split("_")[-1])
     
-    report_file = REPORTS_DIR / f"отчёт_{report_id}.xlsx"
-    generated = None
-    if not report_file.exists():
-        generated = generate_report_file(report_id)
-        if generated:
-            report_file = generated
-            logger.info(f"Сгенерирован файл для отчёта ID={report_id}")
-        else:
-            await query.message.reply_text("❌ Не удалось создать файл отчёта.")
-            return
-
-    with open(report_file, 'rb') as f:
-        await query.message.reply_document(
-            document=f,
-            filename=f"отчёт_{report_id}.xlsx",
-            caption="📄 Заполненный шаблон отчёта"
-        )
-    
-    if generated:
-        shutil.copy2(generated, REPORTS_DIR / f"отчёт_{report_id}.xlsx")
-        generated.unlink(missing_ok=True)
-    
+    # Получаем метрики и даты отчёта
     metrics = get_report_metrics(report_id)
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
-    cursor.execute("SELECT date_period, file_name FROM reports WHERE id = ?", (report_id,))
+    cursor.execute("SELECT date_period, file_name, start_date, end_date FROM reports WHERE id = ?", (report_id,))
     row = cursor.fetchone()
     conn.close()
     if not row:
@@ -640,30 +621,60 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
         return
     period = row[0] or "неизвестный период"
     file_name = row[1] or "отчёт"
+    start_date = row[2]
+    end_date = row[3]
 
-    if metrics:
-        wb_total = metrics.get('wb_total', 0)
-        wb_carp = metrics.get('wb_carp', 0)
-        wb_hara = metrics.get('wb_hara', 0)
-        avg_acquiring = metrics.get('avg_acquiring', 0)
-        k_vyvodu_carp = metrics.get('k_vyvodu_carp', 0)
-        k_vyvodu_hara = metrics.get('k_vyvodu_hara', 0)
-        buyout_carp_str = f"{metrics['buyout_carp']:.1f}%" if metrics.get('buyout_carp') is not None else "Н/Д"
-        buyout_hara_str = f"{metrics['buyout_hara']:.1f}%" if metrics.get('buyout_hara') is not None else "Н/Д"
-        summary = (
-            f"📊 *Сводка за {period}*\n"
-            f"📄 Файл: {file_name}\n\n"
-            f"💰 Общий оборот: {format_number(wb_total)} ₽\n"
-            f"🟢 ЦАП: {format_number(wb_carp)} ₽\n"
-            f"🔴 Harakiri: {format_number(wb_hara)} ₽\n"
-            f"💳 Средний эквайринг: {avg_acquiring:.2f}%\n"
-            f"💵 К выводу ЦАП: {format_number(k_vyvodu_carp)} ₽\n"
-            f"💵 К выводу Harakiri: {format_number(k_vyvodu_hara)} ₽\n"
-            f"📦 Выкуп ЦАП: {buyout_carp_str}\n"
-            f"📦 Выкуп Harakiri: {buyout_hara_str}\n"
-        )
-    else:
-        summary = f"📊 *Отчёт за {period}*\n\nНет данных для отображения."
+    # === Автообновление выкупа, если данных нет ===
+    need_update = (metrics.get('buyout_carp') is None or metrics.get('buyout_hara') is None)
+    if need_update and start_date and end_date:
+        await query.message.reply_text("🔄 Обновляю данные по выкупам...")
+        try:
+            buyouts = get_buyout_by_brands(start_date, end_date)
+            metrics['buyout_carp'] = buyouts.get('Цап царапкин')
+            metrics['buyout_hara'] = buyouts.get('Harakiri')
+            # Сохраняем в БД
+            conn = sqlite3.connect(str(DB_PATH))
+            cursor = conn.cursor()
+            cursor.execute("INSERT OR REPLACE INTO report_metrics (report_id, metric_name, metric_value) VALUES (?, 'buyout_carp', ?)", (report_id, metrics['buyout_carp']))
+            cursor.execute("INSERT OR REPLACE INTO report_metrics (report_id, metric_name, metric_value) VALUES (?, 'buyout_hara', ?)", (report_id, metrics['buyout_hara']))
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Ошибка обновления выкупа для отчёта {report_id}: {e}")
+
+    # Отправляем файл
+    report_file = REPORTS_DIR / f"отчёт_{report_id}.xlsx"
+    generated = None
+    if not report_file.exists():
+        generated = generate_report_file(report_id)
+        if generated:
+            report_file = generated
+    if report_file.exists():
+        with open(report_file, 'rb') as f:
+            await query.message.reply_document(
+                document=f,
+                filename=f"отчёт_{report_id}.xlsx",
+                caption="📄 Заполненный шаблон отчёта"
+            )
+    if generated:
+        shutil.copy2(generated, REPORTS_DIR / f"отчёт_{report_id}.xlsx")
+        generated.unlink(missing_ok=True)
+
+    # Сводка
+    buyout_carp_str = f"{metrics['buyout_carp']:.1f}%" if metrics.get('buyout_carp') is not None else "Н/Д"
+    buyout_hara_str = f"{metrics['buyout_hara']:.1f}%" if metrics.get('buyout_hara') is not None else "Н/Д"
+    summary = (
+        f"📊 *Сводка за {period}*\n"
+        f"📄 Файл: {file_name}\n\n"
+        f"💰 Общий оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
+        f"🟢 ЦАП: {format_number(metrics.get('wb_carp', 0))} ₽\n"
+        f"🔴 Harakiri: {format_number(metrics.get('wb_hara', 0))} ₽\n"
+        f"💳 Средний эквайринг: {metrics.get('avg_acquiring', 0):.2f}%\n"
+        f"💵 К выводу ЦАП: {format_number(metrics.get('k_vyvodu_carp', 0))} ₽\n"
+        f"💵 К выводу Harakiri: {format_number(metrics.get('k_vyvodu_hara', 0))} ₽\n"
+        f"📦 Выкуп ЦАП: {buyout_carp_str}\n"
+        f"📦 Выкуп Harakiri: {buyout_hara_str}\n"
+    )
 
     buttons = [
         [InlineKeyboardButton("◀️ Назад в архив", callback_data="menu_history")],
@@ -1464,4 +1475,51 @@ async def fetch_weekly_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ Проверка завершена. Проверьте результат.")
     except Exception as e:
         logger.error(f"Ошибка fetch_weekly_cmd: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+# ======================== ОБНОВЛЕНИЕ ВЫКУПА ПО КОМАНДЕ ========================
+async def refresh_buyout_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("❌ Укажите report_id. Пример: /refresh_buyout 42")
+        return
+    try:
+        report_id = int(args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Некорректный report_id.")
+        return
+
+    await update.message.reply_text("🔄 Обновляю данные по выкупам...")
+    try:
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute("SELECT start_date, end_date FROM reports WHERE id = ?", (report_id,))
+        row = cursor.fetchone()
+        conn.close()
+        if not row:
+            await update.message.reply_text("❌ Отчёт с таким ID не найден.")
+            return
+        start_date, end_date = row
+        if not start_date or not end_date:
+            await update.message.reply_text("❌ В отчёте не указаны даты начала и конца.")
+            return
+
+        buyouts = get_buyout_by_brands(start_date, end_date)
+        conn = sqlite3.connect(str(DB_PATH))
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR REPLACE INTO report_metrics (report_id, metric_name, metric_value) VALUES (?, 'buyout_carp', ?)",
+                       (report_id, buyouts.get('Цап царапкин')))
+        cursor.execute("INSERT OR REPLACE INTO report_metrics (report_id, metric_name, metric_value) VALUES (?, 'buyout_hara', ?)",
+                       (report_id, buyouts.get('Harakiri')))
+        conn.commit()
+        conn.close()
+        await update.message.reply_text(
+            f"✅ Выкуп для отчёта {report_id} обновлён.\n"
+            f"ЦАП: {buyouts.get('Цап царапкин', 'Н/Д')}%\n"
+            f"Harakiri: {buyouts.get('Harakiri', 'Н/Д')}%"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка refresh_buyout_cmd: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
