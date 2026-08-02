@@ -52,7 +52,7 @@ def main():
     app.add_handler(CommandHandler("test_proxy", test_proxy_cmd))
     app.add_handler(CommandHandler("sync_articles", sync_articles_cmd))
     app.add_handler(CommandHandler("set_article", set_article_cmd))
-    app.add_handler(CommandHandler("fetch_weekly", fetch_weekly_cmd))  # <-- новая команда
+    app.add_handler(CommandHandler("fetch_weekly", fetch_weekly_cmd))
 
     # Колбэки
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
@@ -109,7 +109,6 @@ def main():
         IntervalTrigger(hours=3),
         next_run_time=datetime.now() + timedelta(minutes=1)
     )
-    # Еженедельный отчёт: понедельник, 12:00 МСК = UTC 9:00
     scheduler.add_job(
         lambda: asyncio.run(fetch_weekly_reports_job(app)),
         CronTrigger(day_of_week='mon', hour=9, minute=0),
