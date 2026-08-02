@@ -205,7 +205,7 @@ async def cost_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
         query = update.callback_query
         await query.answer()
-        article = query.data.split("_")[2]
+        article = query.data[9:]  # убираем "cost_edit_"
         current = get_current_cost(article)
         keyboard = [
             [InlineKeyboardButton("➕ Установить новую", callback_data=f"cost_set_{article}")],
@@ -228,7 +228,7 @@ async def cost_set_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     query = update.callback_query
     await query.answer()
-    article = query.data.split("_")[2]
+    article = query.data[8:]  # "cost_set_"
     context.user_data['waiting_for_cost'] = article
     await query.edit_message_text(
         "💵 Введите новую себестоимость (только число):\nНапример: 450.50",
@@ -243,7 +243,7 @@ async def cost_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
     query = update.callback_query
     await query.answer()
-    article = query.data.split("_")[2]
+    article = query.data[12:]  # "cost_history_"
     history = get_cost_history(article)
     if not history:
         await query.edit_message_text(f"📭 Нет истории для `{article}`.", parse_mode='Markdown')
@@ -267,7 +267,7 @@ async def cost_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     query = update.callback_query
     await query.answer()
-    record_id = int(query.data.split("_")[2])
+    record_id = int(query.data[11:])  # "cost_delete_"
     success = delete_cost_history(record_id)
     if success:
         await query.edit_message_text("✅ Запись удалена.")
@@ -280,7 +280,7 @@ async def cost_delete_all_callback(update: Update, context: ContextTypes.DEFAULT
         return
     query = update.callback_query
     await query.answer()
-    article = query.data.split("_")[3]
+    article = query.data[15:]  # "cost_delete_all_"
     keyboard = [
         [InlineKeyboardButton("✅ Да, удалить всё", callback_data=f"cost_confirm_delete_all_{article}")],
         [InlineKeyboardButton("❌ Отмена", callback_data=f"cost_history_{article}")]
@@ -296,12 +296,13 @@ async def cost_confirm_delete_all_callback(update: Update, context: ContextTypes
         return
     query = update.callback_query
     await query.answer()
-    article = query.data.split("_")[4]
+    article = query.data[23:]  # "cost_confirm_delete_all_"
     deleted = delete_all_costs_for_article(article)
     if deleted > 0:
         await query.edit_message_text(f"✅ Удалено {deleted} записей для `{article}`.", parse_mode='Markdown')
     else:
         await query.edit_message_text(f"❌ Не найдено записей для `{article}`.", parse_mode='Markdown')
+    await asyncio.sleep(1)
     await menu_costs_callback(update, context)
 
 async def handle_cost_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -590,7 +591,6 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     report_id = int(query.data.split("_")[-1])
     
-    # Получаем период отчёта
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
     cursor.execute("SELECT date_period FROM reports WHERE id = ?", (report_id,))
@@ -598,7 +598,6 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
     conn.close()
     period = row[0] if row else None
     
-    # Ищем файл по периоду
     report_file = None
     if period:
         report_file = REPORTS_DIR / f"отчёт_{period}.xlsx"
@@ -611,7 +610,6 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
                 caption="📄 Заполненный шаблон отчёта"
             )
     
-    # Получаем метрики и информацию об отчёте
     metrics = get_report_metrics(report_id)
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -626,7 +624,6 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
     period = row[0] or "неизвестный период"
     file_name = row[1] or "отчёт"
 
-    # Формируем сводку
     if metrics:
         wb_total = metrics.get('wb_total', 0)
         wb_carp = metrics.get('wb_carp', 0)
@@ -722,7 +719,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not (file_name.endswith('.xlsx') or file_name.endswith('.xls')):
         await update.message.reply_text("❌ Поддерживаются только Excel-файлы.")
         return
-    # Сохраняем оригинальное имя файла
     context.user_data['original_file_name'] = file_name
 
     temp_path = Path(TEMP_DIR) / f"{datetime.now().timestamp()}_{file_name}"
@@ -768,16 +764,11 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
         metrics = extract_metrics(values, articles, start_date, end_date)
         
-        # Сохраняем заполненный шаблон во временный файл
-        temp_template = Path(TEMP_DIR) / f"filled_{datetime.now().timestamp()}.xlsx"
-        shutil.copy2(template_path, temp_template)
-        
-        # Читаем значение B38 из сохранённого файла (там формула =F13-B35)
-        wb = openpyxl.load_workbook(temp_template, data_only=True)
-        ws = wb.active
-        b38_value = ws['B38'].value if ws['B38'].value is not None else 0
-        wb.close()
-        metrics['k_vyvodu_hara_nalog'] = float(b38_value) if isinstance(b38_value, (int, float)) else 0
+        # === ИСПРАВЛЕНИЕ B38: вычисляем напрямую из заполненных ячеек ===
+        # B38 = F13 - B35 (К выводу Harakiri с вычетом налога)
+        f13_val = values.get('F13', 0) or 0
+        b35_val = values.get('B35', 0) or 0
+        metrics['k_vyvodu_hara_nalog'] = f13_val - b35_val
         
         success, report_id = save_report_to_db(
             file_name=context.user_data.get('original_file_name', Path(osn_path).name),
@@ -794,23 +785,23 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Ошибка сохранения отчёта в БД.")
             return
         
-        # Сохраняем заполненный шаблон в /data/reports/ с именем по дате
+        # Сохраняем заполненный шаблон в /data/reports/
+        temp_template = Path(TEMP_DIR) / f"filled_{datetime.now().timestamp()}.xlsx"
+        shutil.copy2(template_path, temp_template)
         report_file = REPORTS_DIR / f"отчёт_{date_period}.xlsx"
         shutil.copy2(temp_template, report_file)
         logger.info(f"📁 Сохранён файл отчёта: {report_file}")
         
-        # Отправляем файл пользователю
+        # Отправляем файл
         with open(temp_template, 'rb') as f:
             await update.message.reply_document(
                 document=f,
                 filename=f"отчёт_{date_period}.xlsx",
                 caption=f"✅ Отчёт за {date_period} обработан и сохранён!"
             )
-        
-        # Удаляем временный шаблон
         temp_template.unlink(missing_ok=True)
         
-        # Сводка без прибыли и маржинальности
+        # Сводка
         summary = (
             f"📊 Сводка за {date_period}\n"
             f"💰 Оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
@@ -829,7 +820,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Ошибка: {e}", exc_info=True)
         await update.message.reply_text(f"❌ Ошибка: {e}")
     finally:
-        # Удаляем временные файлы
         for p in [osn_path, vyk_path]:
             if p and Path(p).exists():
                 Path(p).unlink(missing_ok=True)
@@ -1167,7 +1157,6 @@ async def menu_spp_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup(keyboard))
 
-# === ОСТАЛЬНЫЕ КОЛБЭКИ СПП ===
 async def spp_show_articles_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
