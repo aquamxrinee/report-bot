@@ -581,6 +581,26 @@ async def history_page_callback(update: Update, context: ContextTypes.DEFAULT_TY
     page = int(query.data.split("_")[-1])
     await show_history_page(query, context, page)
 
+def generate_report_file(report_id):
+    """Генерирует заполненный шаблон из БД и возвращает путь к временному файлу."""
+    values = get_report_values(report_id)
+    if not values:
+        return None
+    template_path = Path("шаблон.xlsx")
+    if not template_path.exists():
+        return None
+    wb = openpyxl.load_workbook(template_path)
+    ws = wb.active
+    for cell_name, cell_value in values.items():
+        try:
+            ws[cell_name] = cell_value
+        except:
+            pass
+    temp_file = Path(TEMP_DIR) / f"generated_{report_id}.xlsx"
+    wb.save(temp_file)
+    wb.close()
+    return temp_file
+
 async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -588,21 +608,33 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     report_id = int(query.data.split("_")[-1])
     
-    # Отправляем файл по report_id
+    # Ищем сохранённый файл
     report_file = REPORTS_DIR / f"отчёт_{report_id}.xlsx"
-    if report_file.exists():
-        with open(report_file, 'rb') as f:
-            await query.message.reply_document(
-                document=f,
-                filename=f"отчёт_{report_id}.xlsx",
-                caption="📄 Заполненный шаблон отчёта"
-            )
-    else:
-        await query.message.reply_text(
-            "ℹ️ Файл отчёта не найден. Возможно, он был загружен до обновления. "
-            "Загрузите этот отчёт повторно, чтобы сохранить файл."
+    generated = None
+    if not report_file.exists():
+        # Пробуем сгенерировать из БД
+        generated = generate_report_file(report_id)
+        if generated:
+            report_file = generated
+            logger.info(f"Сгенерирован файл для отчёта ID={report_id}")
+        else:
+            await query.message.reply_text("❌ Не удалось создать файл отчёта.")
+            return
+
+    # Отправляем файл
+    with open(report_file, 'rb') as f:
+        await query.message.reply_document(
+            document=f,
+            filename=f"отчёт_{report_id}.xlsx",
+            caption="📄 Заполненный шаблон отчёта"
         )
     
+    # Если сгенерировали, сохраняем на будущее
+    if generated:
+        shutil.copy2(generated, REPORTS_DIR / f"отчёт_{report_id}.xlsx")
+        generated.unlink(missing_ok=True)
+    
+    # Сводка
     metrics = get_report_metrics(report_id)
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -731,7 +763,7 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"✅ Файл «{file_name}» загружен. Жду второй файл (для {'вык' if report_type == 'osn' else 'осн'}).")
 
-# ===== ПРОЦЕСС ОБРАБОТКИ ОТЧЁТА (с новым расчётом B38 и сохранением по ID) =====
+# ===== ПРОЦЕСС ОБРАБОТКИ ОТЧЁТА (с сохранением по ID и правильным B38) =====
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     files = context.user_data.get('files', {})
@@ -759,7 +791,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
         metrics = extract_metrics(values, articles, start_date, end_date)
         
-        # === РАСЧЁТ B38: К выводу Harakiri с налогом = F13 - (Оборот Harakiri * 1%) ===
+        # === B38 = F13 - (Оборот Harakiri * 1%) ===
         k_vyvodu_hara = metrics.get('k_vyvodu_hara', 0)
         wb_hara = metrics.get('wb_hara', 0)
         metrics['k_vyvodu_hara_nalog'] = k_vyvodu_hara - (wb_hara * 0.01)
