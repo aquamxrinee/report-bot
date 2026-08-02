@@ -41,6 +41,14 @@ def _safe_request(method, url, params=None, json_data=None, max_retries=3):
                 return {"error": f"404 Not Found: {url}", "status_code": 404}
             if response.status_code == 403:
                 return {"error": "403 Forbidden", "status_code": 403}
+            if response.status_code >= 400:
+                # Логируем тело ответа при ошибке клиента/сервера
+                try:
+                    error_body = response.text
+                except:
+                    error_body = "(не удалось прочитать тело)"
+                logger.error(f"❌ Ошибка API {response.status_code} для {url}: {error_body}")
+                response.raise_for_status()
             response.raise_for_status()
             return response.json()
         except Exception as e:
@@ -223,7 +231,6 @@ def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = 
 
 
 def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
-    """Получение еженедельных финансовых отчётов."""
     url = f"https://statistics-api.wildberries.ru/api/v1/supplier/reportDetailByPeriod"
     payload = {
         "dateFrom": date_from,
@@ -252,22 +259,29 @@ def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
 
 
 def get_buyout_by_brands(date_from: str, date_to: str, brand_names: List[str] = None) -> Dict[str, Optional[float]]:
-    """
-    Возвращает процент выкупа (purchases/orders * 100) по указанным брендам за период.
-    Если бренды не указаны, возвращает по всем.
-    Результат: {'Цап царапкин': 85.5, 'Harakiri': 72.3} и т.д.
-    """
     if brand_names is None:
         brand_names = ['Цап царапкин', 'Harakiri']
 
-    # Получаем все товары за период с большим лимитом
-    funnel_data = get_sales_funnel(date_from=date_from, date_to=date_to, limit=2000)
+    # Пробуем запрос без nmIds с небольшим лимитом
+    funnel_data = get_sales_funnel(date_from=date_from, date_to=date_to, limit=1000)
     if isinstance(funnel_data, dict) and "error" in funnel_data:
-        logger.error(f"Ошибка получения воронки для выкупов: {funnel_data['error']}")
-        return {b: None for b in brand_names}
+        logger.error(f"Ошибка получения воронки для выкупов (без nmIds): {funnel_data['error']}")
+        # Возможно, API требует nmIds. Попробуем получить все nmIds и запросить с ними.
+        logger.info("Пробуем получить выкуп с передачей nmIds...")
+        try:
+            nm_ids = get_all_nm_ids_from_api(days_back=90)
+            if nm_ids:
+                funnel_data = get_sales_funnel(nm_ids=nm_ids, date_from=date_from, date_to=date_to, limit=1000)
+                if isinstance(funnel_data, dict) and "error" in funnel_data:
+                    logger.error(f"Ошибка получения воронки для выкупов (с nmIds): {funnel_data['error']}")
+                    return {b: None for b in brand_names}
+            else:
+                return {b: None for b in brand_names}
+        except Exception as e:
+            logger.error(f"Исключение при повторном запросе с nmIds: {e}")
+            return {b: None for b in brand_names}
 
     products = funnel_data.get("data", {}).get("products", [])
-    # Агрегируем по брендам
     brand_orders = {b: 0 for b in brand_names}
     brand_purchases = {b: 0 for b in brand_names}
     for product in products:
