@@ -48,7 +48,7 @@ def main():
     app.add_handler(CommandHandler("spp_list", spp_list_cmd))
     app.add_handler(CommandHandler("spp_check", spp_check_cmd))
     app.add_handler(CommandHandler("spp_status", spp_status_cmd))
-    app.add_handler(CommandHandler("spp_stats", spp_stats_cmd))
+    # app.add_handler(CommandHandler("spp_stats", spp_stats_cmd))  # УБРАЛИ - нет такой функции
     app.add_handler(CommandHandler("test_parser", test_parser_cmd))
     app.add_handler(CommandHandler("test_proxy", test_proxy_cmd))
     app.add_handler(CommandHandler("sync_articles", sync_articles_cmd))
@@ -120,8 +120,6 @@ if __name__ == "__main__":
     except MemoryError:
         print("❌ КРИТИЧЕСКАЯ ОШИБКА: нехватка памяти!")
         logger.error("Бот упал из-за нехватки памяти (MemoryError). Railway может перезапустить процесс.")
-        # При MemoryError бот уже не сможет отправить сообщение, т.к. память исчерпана.
-        # Railway автоматически перезапустит контейнер, если процесс упал.
         sys.exit(1)
     except Exception as e:
         print("❌ КРИТИЧЕСКАЯ ОШИБКА ПРИ ЗАПУСКЕ:")
