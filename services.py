@@ -263,11 +263,6 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
     file_hash = calculate_file_hash(osn_path) + calculate_file_hash(vyk_path)
     metrics = extract_metrics_from_values(values)
 
-    # Расчёт B38 (оставлен для совместимости, но в сводку не выводится)
-    k_vyvodu_hara = metrics['k_vyvodu_hara']
-    wb_hara = metrics['wb_hara']
-    metrics['k_vyvodu_hara_nalog'] = k_vyvodu_hara - wb_hara * 0.01
-
     # === Загружаем проценты выкупа по брендам через API ===
     from wb_api import get_buyout_by_brands
     try:
@@ -311,10 +306,10 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
         f"📊 Автоматический отчёт за {period_str}\n"
         f"💰 Оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
         f"🟢 ЦАП: {format_number(metrics.get('wb_carp', 0))} ₽\n"
-        f"🔴 Harakiri: {format_number(wb_hara)} ₽\n"
+        f"🔴 Harakiri: {format_number(metrics.get('wb_hara', 0))} ₽\n"
         f"💳 Эквайринг: {metrics.get('avg_acquiring', 0):.2f}%\n"
         f"💵 К выводу ЦАП: {format_number(metrics.get('k_vyvodu_carp', 0))} ₽\n"
-        f"💵 К выводу Harakiri: {format_number(k_vyvodu_hara)} ₽\n"
+        f"💵 К выводу Harakiri: {format_number(metrics.get('k_vyvodu_hara', 0))} ₽\n"
         f"📦 Выкуп ЦАП: {buyout_carp_str}\n"
         f"📦 Выкуп Harakiri: {buyout_hara_str}\n"
     )
