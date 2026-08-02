@@ -11,47 +11,10 @@ import asyncio
 import os
 
 from config import TEMP_DIR, logger, DB_PATH, ALLOWED_USERS
-from models import get_active_cost, save_report_to_db, get_report_id_by_period, calculate_file_hash
+from models import save_report_to_db, get_report_id_by_period, calculate_file_hash
 
 # ===== ПЛАНИРОВЩИК =====
 scheduler = BackgroundScheduler()
-
-# ===== НОВОСТИ ИЗ TELEGRAM-КАНАЛА =====
-from tg_news_parser import fetch_channel_messages, format_news_digest
-
-async def send_news_digest(context, user_id, time_of_day):
-    from models import get_news_settings
-    settings = get_news_settings(user_id)
-    if not settings['enabled']:
-        return
-    messages = fetch_channel_messages("news4sellers", limit=10)
-    prefix = "🌅 **Утренняя сводка**" if time_of_day == 'morning' else "🌇 **Вечерняя сводка**"
-    text = format_news_digest(messages, prefix)
-    try:
-        await context.bot.send_message(chat_id=user_id, text=text, parse_mode='Markdown', disable_web_page_preview=True)
-        logger.info(f"✅ Новостная сводка ({time_of_day}) отправлена пользователю {user_id}")
-    except Exception as e:
-        logger.error(f"❌ Ошибка отправки новостей пользователю {user_id}: {e}")
-
-async def scheduled_morning_digest(context):
-    import sqlite3
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id FROM news_settings WHERE enabled = 1')
-    users = cursor.fetchall()
-    conn.close()
-    for (user_id,) in users:
-        await send_news_digest(context, user_id, 'morning')
-
-async def scheduled_evening_digest(context):
-    import sqlite3
-    conn = sqlite3.connect(str(DB_PATH))
-    cursor = conn.cursor()
-    cursor.execute('SELECT user_id FROM news_settings WHERE enabled = 1')
-    users = cursor.fetchall()
-    conn.close()
-    for (user_id,) in users:
-        await send_news_digest(context, user_id, 'evening')
 
 # ===== ОПРЕДЕЛЕНИЕ ТИПА ФАЙЛА =====
 def detect_report_type(filename):
@@ -277,6 +240,7 @@ class ReportProcessor:
         ws.sheet_view.calcMode = 'manual'
         wb.save(template_path)
 
+
 # ===== АВТОМАТИЧЕСКАЯ ЗАГРУЗКА ЕЖЕНЕДЕЛЬНЫХ ОТЧЁТОВ =====
 def extract_metrics_from_values(values):
     metrics = {
@@ -289,6 +253,7 @@ def extract_metrics_from_values(values):
     }
     return metrics
 
+
 async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, date_to):
     """Обработка автоматически загруженных отчётов без участия пользователя."""
     processor = ReportProcessor()
@@ -298,9 +263,23 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
     file_hash = calculate_file_hash(osn_path) + calculate_file_hash(vyk_path)
     metrics = extract_metrics_from_values(values)
 
+    # Расчёт B38
     k_vyvodu_hara = metrics['k_vyvodu_hara']
     wb_hara = metrics['wb_hara']
     metrics['k_vyvodu_hara_nalog'] = k_vyvodu_hara - wb_hara * 0.01
+
+    # Процент выкупа
+    total_sales_qty = 0
+    total_vyk_qty = 0
+    for brand_data in articles.values():
+        sales = brand_data.get('sales', {})
+        vyk = brand_data.get('vyk', {})
+        for item in sales.values():
+            total_sales_qty += item.get('quantity', 0)
+        for item in vyk.values():
+            total_vyk_qty += item.get('quantity', 0)
+    buyout_percent = (total_vyk_qty / total_sales_qty * 100) if total_sales_qty > 0 else 0.0
+    metrics['buyout_percent'] = buyout_percent
 
     success, report_id = save_report_to_db(
         file_name=f"auto_{period_str}.xlsx",
@@ -336,6 +315,7 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
         f"💵 К выводу ЦАП: {format_number(metrics.get('k_vyvodu_carp', 0))} ₽\n"
         f"💵 К выводу Harakiri: {format_number(k_vyvodu_hara)} ₽\n"
         f"💵 К выводу Harakiri с вычетом налога: {format_number(metrics.get('k_vyvodu_hara_nalog', 0))} ₽\n"
+        f"📦 Процент выкупа: {buyout_percent:.1f}%\n"
     )
 
     for uid in ALLOWED_USERS:
@@ -349,6 +329,7 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
             await app.bot.send_message(uid, summary, parse_mode='Markdown')
         except Exception as e:
             logger.error(f"Не удалось отправить автоотчёт пользователю {uid}: {e}")
+
 
 async def fetch_weekly_reports_job(app):
     """Проверяет и загружает отчёты за прошлую неделю."""
