@@ -648,8 +648,8 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
         avg_acquiring = metrics.get('avg_acquiring', 0)
         k_vyvodu_carp = metrics.get('k_vyvodu_carp', 0)
         k_vyvodu_hara = metrics.get('k_vyvodu_hara', 0)
-        k_vyvodu_hara_nalog = metrics.get('k_vyvodu_hara_nalog', 0)
         buyout_percent = metrics.get('buyout_percent', 0)
+        buyout_str = f"{buyout_percent:.1f}%" if buyout_percent > 0 else "Н/Д"
         summary = (
             f"📊 *Сводка за {period}*\n"
             f"📄 Файл: {file_name}\n\n"
@@ -659,8 +659,7 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
             f"💳 Средний эквайринг: {avg_acquiring:.2f}%\n"
             f"💵 К выводу ЦАП: {format_number(k_vyvodu_carp)} ₽\n"
             f"💵 К выводу Harakiri: {format_number(k_vyvodu_hara)} ₽\n"
-            f"💵 К выводу Harakiri с вычетом налога: {format_number(k_vyvodu_hara_nalog)} ₽\n"
-            f"📦 Процент выкупа: {buyout_percent:.1f}%\n"
+            f"📦 Процент выкупа: {buyout_str}\n"
         )
     else:
         summary = f"📊 *Отчёт за {period}*\n\nНет данных для отображения."
@@ -793,11 +792,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buyout_percent = (total_vyk_qty / total_sales_qty * 100) if total_sales_qty > 0 else 0.0
         metrics['buyout_percent'] = buyout_percent
         
-        # B38 = К выводу Harakiri - (Оборот Harakiri * 1%)
-        k_vyvodu_hara = metrics.get('k_vyvodu_hara', 0)
-        wb_hara = metrics.get('wb_hara', 0)
-        metrics['k_vyvodu_hara_nalog'] = k_vyvodu_hara - wb_hara * 0.01
-        
         success, report_id = save_report_to_db(
             file_name=context.user_data.get('original_file_name', Path(osn_path).name),
             file_hash=file_hash,
@@ -827,16 +821,16 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         temp_template.unlink(missing_ok=True)
         
+        buyout_str = f"{buyout_percent:.1f}%" if total_sales_qty > 0 else "Н/Д"
         summary = (
             f"📊 Сводка за {date_period}\n"
             f"💰 Оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
             f"🟢 ЦАП: {format_number(metrics.get('wb_carp', 0))} ₽\n"
-            f"🔴 Harakiri: {format_number(wb_hara)} ₽\n"
+            f"🔴 Harakiri: {format_number(metrics.get('wb_hara', 0))} ₽\n"
             f"💳 Эквайринг: {metrics.get('avg_acquiring', 0):.2f}%\n"
             f"💵 К выводу ЦАП: {format_number(metrics.get('k_vyvodu_carp', 0))} ₽\n"
-            f"💵 К выводу Harakiri: {format_number(k_vyvodu_hara)} ₽\n"
-            f"💵 К выводу Harakiri с вычетом налога: {format_number(metrics.get('k_vyvodu_hara_nalog', 0))} ₽\n"
-            f"📦 Процент выкупа: {buyout_percent:.1f}%\n"
+            f"💵 К выводу Harakiri: {format_number(metrics.get('k_vyvodu_hara', 0))} ₽\n"
+            f"📦 Процент выкупа: {buyout_str}\n"
         )
         await update.message.reply_text(summary, parse_mode='Markdown')
         
