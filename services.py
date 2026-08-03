@@ -329,7 +329,7 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
 
 async def fetch_weekly_reports_job(app):
     """Проверяет и загружает отчёты за прошлую неделю."""
-    from wb_api import get_weekly_reports
+    from wb_api import get_weekly_reports, download_report
 
     today = datetime.now().date()
     last_monday = today - timedelta(days=today.weekday() + 7)
@@ -363,17 +363,16 @@ async def fetch_weekly_reports_job(app):
 
     temp_files = []
     for meta in reports_meta:
-        try:
-            r = requests.get(meta["url"], timeout=60)
-            r.raise_for_status()
-            fname = meta.get("fileName", f"report_{meta['reportType']}.xlsx")
-            temp_path = Path(TEMP_DIR) / f"auto_{datetime.now().timestamp()}_{fname}"
-            with open(temp_path, 'wb') as f:
-                f.write(r.content)
-            temp_files.append((meta["reportType"], str(temp_path)))
-            logger.info(f"Скачан файл {fname}")
-        except Exception as e:
-            logger.error(f"Ошибка скачивания {meta['url']}: {e}")
+        rrdid = meta["rrdid"]
+        content = download_report(rrdid)
+        if not content:
+            continue
+        fname = meta["file_name"] or f"report_{meta['report_type']}.xlsx"
+        temp_path = Path(TEMP_DIR) / f"auto_{datetime.now().timestamp()}_{fname}"
+        with open(temp_path, 'wb') as f:
+            f.write(content)
+        temp_files.append((meta["report_type"], str(temp_path)))
+        logger.info(f"Скачан файл {fname}")
 
     if len(temp_files) < 2:
         msg = f"⚠️ Скачано {len(temp_files)} файлов вместо 2 за {period_str}."
