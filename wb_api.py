@@ -21,7 +21,6 @@ def get_headers() -> Dict:
 
 
 def _safe_request(method, url, params=None, json_data=None, max_retries=3, raw=False):
-    """Универсальный запрос. raw=True – вернуть объект Response (для бинарного контента)."""
     if not WB_API_TOKEN:
         return {"error": "WB_API_TOKEN не задан"}
 
@@ -38,10 +37,6 @@ def _safe_request(method, url, params=None, json_data=None, max_retries=3, raw=F
                 wait = int(retry_after) + 1 if retry_after else 20 + attempt * 10
                 time.sleep(wait)
                 continue
-            if response.status_code == 404:
-                return {"error": f"404 Not Found: {url}", "status_code": 404}
-            if response.status_code == 403:
-                return {"error": "403 Forbidden", "status_code": 403}
             if response.status_code >= 400:
                 try:
                     error_body = response.text[:500]
@@ -104,8 +99,6 @@ def get_all_nm_ids_from_api(days_back: int = 90) -> List[int]:
             nm_id = item.get('nmId')
             if nm_id:
                 nm_ids_set.add(nm_id)
-    else:
-        logger.warning(f"⚠️ Не удалось получить продажи: {sales_data.get('error', 'неизвестная ошибка')}")
 
     stocks_data = get_stocks()
     if isinstance(stocks_data, list):
@@ -113,6 +106,7 @@ def get_all_nm_ids_from_api(days_back: int = 90) -> List[int]:
             nm_id = item.get('nmId')
             if nm_id:
                 nm_ids_set.add(nm_id)
+
     orders_data = get_orders(date_from)
     if isinstance(orders_data, list):
         for item in orders_data:
@@ -210,60 +204,62 @@ def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = 
 
 def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
     """
-    Возвращает список готовых еженедельных отчётов за период.
-    Каждый элемент: {"report_type": 1 или 2, "file_name": ..., "rrdid": ...}
+    Пытается получить список еженедельных отчётов за период.
+    Пробует несколько известных методов API.
+    Возвращает список словарей или пустой список.
     """
-    url = f"{STATISTICS_API}/supplier/reportDetailByPeriod"
-    payload = {
-        "dateFrom": date_from,
-        "dateTo": date_to,
-        "limit": 10,
-        "rrdid": 0
-    }
-    logger.info(f"Запрос отчётов за {date_from} – {date_to} через POST {url}")
-    data = _safe_request("POST", url, json_data=payload)
+    # Вариант 1: POST /supplier/reportDetailByPeriod (основной метод)
+    url1 = f"{STATISTICS_API}/supplier/reportDetailByPeriod"
+    payload1 = {"dateFrom": date_from, "dateTo": date_to, "limit": 10, "rrdid": 0}
+    logger.info(f"Попытка 1: POST {url1}")
+    resp1 = _safe_request("POST", url1, json_data=payload1)
+    if isinstance(resp1, list):
+        reports = []
+        for item in resp1:
+            if item.get("reportType") in [1, 2]:
+                reports.append({
+                    "rrdid": item.get("rrdid"),
+                    "report_type": item.get("reportType"),
+                    "file_name": item.get("fileName", f"report.xlsx"),
+                    "download_url": item.get("url") or item.get("fileUrl")
+                })
+        if reports:
+            return reports
+    else:
+        logger.warning(f"Метод 1 вернул ошибку: {resp1.get('error', '')}. Пробуем следующий...")
 
-    if isinstance(data, dict) and "error" in data:
-        logger.error(f"Ошибка получения списка отчётов: {data['error']}")
-        return []
+    # Вариант 2: GET /supplier/reports (старый метод)
+    url2 = f"{STATISTICS_API}/supplier/reports"
+    params2 = {"dateFrom": date_from, "dateTo": date_to}
+    logger.info(f"Попытка 2: GET {url2}")
+    resp2 = _safe_request("GET", url2, params=params2)
+    if isinstance(resp2, list):
+        reports = []
+        for item in resp2:
+            if item.get("status") == "ready" and item.get("reportType") in [1, 2]:
+                reports.append({
+                    "rrdid": item.get("rrdid"),
+                    "report_type": item.get("reportType"),
+                    "file_name": item.get("fileName", f"report.xlsx"),
+                    "download_url": None
+                })
+        if reports:
+            return reports
+    else:
+        logger.warning(f"Метод 2 вернул ошибку: {resp2.get('error', '')}")
 
-    # data – список объектов
-    if not isinstance(data, list):
-        logger.warning(f"Неожиданный формат ответа от reportDetailByPeriod: {type(data)}. Тело: {str(data)[:300]}")
-        return []
-
-    ready = []
-    for item in data:
-        rrdid = item.get("rrdid")
-        rtype = item.get("reportType")  # 1 – продажи (осн), 2 – возвраты (вык)
-        fname = item.get("fileName", f"report_{rtype}.xlsx")
-        # Скачиваемая ссылка может быть в поле url или fileUrl
-        download_url = item.get("url") or item.get("fileUrl")
-        if rrdid and rtype in [1, 2]:
-            ready.append({
-                "rrdid": rrdid,
-                "report_type": rtype,
-                "file_name": fname,
-                "download_url": download_url
-            })
-    logger.info(f"Найдено готовых отчётов: {len(ready)}")
-    return ready
+    logger.error("Все попытки получить список отчётов не удались. API отчётов недоступен.")
+    return []
 
 
 def download_report(rrdid: int) -> Optional[bytes]:
-    """Скачивает файл отчёта по его rrdid."""
+    """Скачивание файла отчёта по rrdid."""
     url = f"{STATISTICS_API}/supplier/reportDetailByPeriod/{rrdid}"
-    logger.info(f"Скачивание отчёта rrdid={rrdid} по {url}")
-    response = _safe_request("GET", url, raw=True)
-    if isinstance(response, requests.Response):
-        if response.status_code == 200:
-            return response.content
-        else:
-            logger.error(f"Ошибка скачивания отчёта {rrdid}: {response.status_code}")
-            return None
-    else:
-        logger.error(f"Ошибка при скачивании отчёта {rrdid}: {response}")
-        return None
+    logger.info(f"Скачивание отчёта {rrdid} по {url}")
+    resp = _safe_request("GET", url, raw=True)
+    if isinstance(resp, requests.Response) and resp.status_code == 200:
+        return resp.content
+    return None
 
 
 def get_buyout_by_brands(date_from: str, date_to: str, brand_names: List[str] = None) -> Dict[str, Optional[float]]:
