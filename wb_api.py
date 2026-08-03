@@ -20,7 +20,11 @@ def get_headers() -> Dict:
     return {"Authorization": f"Bearer {WB_API_TOKEN}"}
 
 
-def _safe_request(method, url, params=None, json_data=None, max_retries=3):
+def _safe_request(method, url, params=None, json_data=None, max_retries=3, raw=False):
+    """
+    Универсальный запрос. Если raw=True, возвращает response (для бинарного контента).
+    Иначе пытается вернуть JSON.
+    """
     if not WB_API_TOKEN:
         return {"error": "WB_API_TOKEN не задан"}
 
@@ -42,14 +46,15 @@ def _safe_request(method, url, params=None, json_data=None, max_retries=3):
             if response.status_code == 403:
                 return {"error": "403 Forbidden", "status_code": 403}
             if response.status_code >= 400:
-                # Логируем тело ответа при ошибке клиента/сервера
                 try:
                     error_body = response.text
                 except:
                     error_body = "(не удалось прочитать тело)"
                 logger.error(f"❌ Ошибка API {response.status_code} для {url}: {error_body}")
                 response.raise_for_status()
-            response.raise_for_status()
+
+            if raw:
+                return response
             return response.json()
         except Exception as e:
             logger.error(f"Ошибка запроса: {e}")
@@ -231,43 +236,68 @@ def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = 
 
 
 def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
-    url = f"https://statistics-api.wildberries.ru/api/v1/supplier/reportDetailByPeriod"
-    payload = {
-        "dateFrom": date_from,
-        "dateTo": date_to,
-        "limit": 10,
-        "rrdid": 0
-    }
-    data = _safe_request("POST", url, json_data=payload)
+    """
+    Получает список готовых еженедельных отчётов за период.
+    Возвращает список словарей с ключами:
+        - report_type: 1 (основной) или 2 (выкупы)
+        - file_name: оригинальное имя файла
+        - rrdid: идентификатор отчёта для скачивания
+    """
+    # 1. Получаем список всех отчётов о реализации за период
+    url = f"{STATISTICS_API}/supplier/reports"
+    params = {"dateFrom": date_from, "dateTo": date_to}
+    data = _safe_request("GET", url, params=params)
     if isinstance(data, dict) and "error" in data:
         logger.error(f"Ошибка получения списка отчётов: {data['error']}")
         return []
 
-    reports = []
-    if isinstance(data, list):
-        for item in data:
-            file_url = item.get("url")
-            rtype = item.get("reportType")
-            fname = item.get("fileName", "")
-            if file_url and rtype in [1, 2]:
-                reports.append({
-                    "url": file_url,
-                    "report_type": rtype,
-                    "file_name": fname
-                })
-    return reports
+    # data – список отчётов
+    if not isinstance(data, list):
+        logger.warning(f"Неожиданный формат ответа от /supplier/reports: {type(data)}")
+        return []
+
+    ready_reports = []
+    for report in data:
+        status = report.get("status", "")
+        if status != "ready":
+            logger.debug(f"Пропускаем отчёт {report.get('rrdid')} со статусом {status}")
+            continue
+        rrdid = report.get("rrdid")
+        rtype = report.get("reportType")  # 1 – продажи, 2 – возвраты (выкупы)
+        fname = report.get("fileName", f"report_{rtype}.xlsx")
+        if rrdid and rtype in [1, 2]:
+            ready_reports.append({
+                "rrdid": rrdid,
+                "report_type": rtype,
+                "file_name": fname
+            })
+
+    logger.info(f"Найдено готовых отчётов за {date_from}-{date_to}: {len(ready_reports)}")
+    return ready_reports
+
+
+def download_report(rrdid: int) -> Optional[bytes]:
+    """Скачивает файл отчёта по его rrdid. Возвращает бинарное содержимое."""
+    url = f"{STATISTICS_API}/supplier/reportDetailByPeriod/{rrdid}"
+    response = _safe_request("GET", url, raw=True)
+    if isinstance(response, requests.Response):
+        if response.status_code == 200:
+            return response.content
+        else:
+            logger.error(f"Ошибка скачивания отчёта {rrdid}: статус {response.status_code}")
+            return None
+    else:
+        logger.error(f"Ошибка при скачивании отчёта {rrdid}: {response}")
+        return None
 
 
 def get_buyout_by_brands(date_from: str, date_to: str, brand_names: List[str] = None) -> Dict[str, Optional[float]]:
     if brand_names is None:
         brand_names = ['Цап царапкин', 'Harakiri']
 
-    # Пробуем запрос без nmIds с небольшим лимитом
     funnel_data = get_sales_funnel(date_from=date_from, date_to=date_to, limit=1000)
     if isinstance(funnel_data, dict) and "error" in funnel_data:
         logger.error(f"Ошибка получения воронки для выкупов (без nmIds): {funnel_data['error']}")
-        # Возможно, API требует nmIds. Попробуем получить все nmIds и запросить с ними.
-        logger.info("Пробуем получить выкуп с передачей nmIds...")
         try:
             nm_ids = get_all_nm_ids_from_api(days_back=90)
             if nm_ids:
