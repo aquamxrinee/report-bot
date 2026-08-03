@@ -21,10 +21,7 @@ def get_headers() -> Dict:
 
 
 def _safe_request(method, url, params=None, json_data=None, max_retries=3, raw=False):
-    """
-    Универсальный запрос. Если raw=True, возвращает response (для бинарного контента).
-    Иначе пытается вернуть JSON.
-    """
+    """Универсальный запрос. raw=True – вернуть объект Response (для бинарного контента)."""
     if not WB_API_TOKEN:
         return {"error": "WB_API_TOKEN не задан"}
 
@@ -47,10 +44,10 @@ def _safe_request(method, url, params=None, json_data=None, max_retries=3, raw=F
                 return {"error": "403 Forbidden", "status_code": 403}
             if response.status_code >= 400:
                 try:
-                    error_body = response.text
+                    error_body = response.text[:500]
                 except:
                     error_body = "(не удалось прочитать тело)"
-                logger.error(f"❌ Ошибка API {response.status_code} для {url}: {error_body}")
+                logger.error(f"❌ API {response.status_code} для {url}. Ответ: {error_body}")
                 response.raise_for_status()
 
             if raw:
@@ -107,7 +104,6 @@ def get_all_nm_ids_from_api(days_back: int = 90) -> List[int]:
             nm_id = item.get('nmId')
             if nm_id:
                 nm_ids_set.add(nm_id)
-        logger.info(f"✅ Из продаж получено {len(sales_data)} записей, уникальных nmId: {len(nm_ids_set)}")
     else:
         logger.warning(f"⚠️ Не удалось получить продажи: {sales_data.get('error', 'неизвестная ошибка')}")
 
@@ -117,19 +113,12 @@ def get_all_nm_ids_from_api(days_back: int = 90) -> List[int]:
             nm_id = item.get('nmId')
             if nm_id:
                 nm_ids_set.add(nm_id)
-        logger.info(f"✅ Из остатков добавлено уникальных nmId: {len(nm_ids_set)}")
-    else:
-        logger.warning(f"⚠️ Не удалось получить остатки: {stocks_data.get('error', 'неизвестная ошибка')}")
-
     orders_data = get_orders(date_from)
     if isinstance(orders_data, list):
         for item in orders_data:
             nm_id = item.get('nmId')
             if nm_id:
                 nm_ids_set.add(nm_id)
-        logger.info(f"✅ Из заказов добавлено уникальных nmId: {len(nm_ids_set)}")
-    else:
-        logger.warning(f"⚠️ Не удалось получить заказы: {orders_data.get('error', 'неизвестная ошибка')}")
 
     logger.info(f"📊 Всего уникальных nmId получено: {len(nm_ids_set)}")
     return list(nm_ids_set)
@@ -151,54 +140,41 @@ def get_aggregated_stats(force_refresh=False) -> Dict:
     funnel = get_sales_funnel(date_from=week_ago, date_to=today)
 
     result = {
-        "total_revenue": 0,
-        "total_orders": 0,
-        "avg_order_value": 0,
-        "total_stock": 0,
-        "unique_articles": 0,
-        "views": 0,
-        "cart_adds": 0,
-        "orders": 0,
-        "purchases": 0,
-        "conversion_view_to_cart": 0,
-        "conversion_cart_to_order": 0,
+        "total_revenue": 0, "total_orders": 0, "avg_order_value": 0,
+        "total_stock": 0, "unique_articles": 0,
+        "views": 0, "cart_adds": 0, "orders": 0, "purchases": 0,
+        "conversion_view_to_cart": 0, "conversion_cart_to_order": 0,
         "conversion_order_to_purchase": 0,
-        "last_update": now.isoformat(),
-        "errors": []
+        "last_update": now.isoformat(), "errors": []
     }
 
-    if isinstance(sales, dict) and "error" in sales:
+    if isinstance(sales, list):
+        result["total_revenue"] = sum(item.get("totalPrice", 0) for item in sales)
+        result["total_orders"] = len(sales)
+        result["avg_order_value"] = result["total_revenue"] / result["total_orders"] if result["total_orders"] else 0
+    elif isinstance(sales, dict) and "error" in sales:
         result["errors"].append(f"sales: {sales['error']}")
-    elif isinstance(sales, list):
-        total_revenue = sum(item.get("totalPrice", 0) for item in sales)
-        total_orders = len(sales)
-        result["total_revenue"] = total_revenue
-        result["total_orders"] = total_orders
-        result["avg_order_value"] = total_revenue / total_orders if total_orders else 0
 
-    if isinstance(stocks, dict) and "error" in stocks:
-        if stocks.get("status_code") != 404:
-            result["errors"].append(f"stocks: {stocks['error']}")
-    elif isinstance(stocks, list):
+    if isinstance(stocks, list):
         result["total_stock"] = sum(item.get("quantity", 0) for item in stocks)
         result["unique_articles"] = len(set(item.get("nmId") for item in stocks if item.get("nmId")))
+    elif isinstance(stocks, dict) and "error" in stocks:
+        if stocks.get("status_code") != 404:
+            result["errors"].append(f"stocks: {stocks['error']}")
 
-    if isinstance(funnel, dict) and "error" in funnel:
-        result["errors"].append(f"funnel: {funnel['error']}")
-    elif isinstance(funnel, dict) and "data" in funnel:
-        products = funnel.get("data", {}).get("products", [])
-        for product in products:
-            stats = product.get("statistic", {}).get("selected", {})
+    if isinstance(funnel, dict) and "data" in funnel:
+        products = funnel["data"].get("products", [])
+        for p in products:
+            stats = p.get("statistic", {}).get("selected", {})
             result["views"] += stats.get("openCount", 0)
             result["cart_adds"] += stats.get("cartCount", 0)
             result["orders"] += stats.get("orderCount", 0)
             result["purchases"] += stats.get("buyoutCount", 0)
-        if result["views"] > 0:
-            result["conversion_view_to_cart"] = (result["cart_adds"] / result["views"]) * 100
-        if result["cart_adds"] > 0:
-            result["conversion_cart_to_order"] = (result["orders"] / result["cart_adds"]) * 100
-        if result["orders"] > 0:
-            result["conversion_order_to_purchase"] = (result["purchases"] / result["orders"]) * 100
+        if result["views"]: result["conversion_view_to_cart"] = result["cart_adds"] / result["views"] * 100
+        if result["cart_adds"]: result["conversion_cart_to_order"] = result["orders"] / result["cart_adds"] * 100
+        if result["orders"]: result["conversion_order_to_purchase"] = result["purchases"] / result["orders"] * 100
+    elif isinstance(funnel, dict) and "error" in funnel:
+        result["errors"].append(f"funnel: {funnel['error']}")
 
     _cache["data"] = result
     _cache["timestamp"] = now
@@ -206,85 +182,84 @@ def get_aggregated_stats(force_refresh=False) -> Dict:
 
 
 def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = None) -> Dict:
-    if not date_from:
-        date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    if not date_to:
-        date_to = datetime.now().strftime("%Y-%m-%d")
+    if not date_from: date_from = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    if not date_to: date_to = datetime.now().strftime("%Y-%m-%d")
     result = {"items": [], "errors": []}
     for i in range(0, len(nm_ids), 1000):
         chunk = nm_ids[i:i+1000]
         data = get_sales_funnel(nm_ids=chunk, date_from=date_from, date_to=date_to, limit=len(chunk))
-        if isinstance(data, dict) and "error" in data:
-            result["errors"].append(data["error"])
-        elif isinstance(data, dict) and "data" in data:
-            products = data.get("data", {}).get("products", [])
-            for product in products:
-                product_info = product.get("product", {})
-                stats = product.get("statistic", {}).get("selected", {})
+        if isinstance(data, dict) and "data" in data:
+            for p in data["data"].get("products", []):
+                info = p.get("product", {})
+                stats = p.get("statistic", {}).get("selected", {})
                 result["items"].append({
-                    "nmId": product_info.get("nmId"),
-                    "name": product_info.get("title", ""),
-                    "brand": product_info.get("brandName", ""),
+                    "nmId": info.get("nmId"),
+                    "name": info.get("title", ""),
+                    "brand": info.get("brandName", ""),
                     "views": stats.get("openCount", 0),
                     "cart": stats.get("cartCount", 0),
                     "orders": stats.get("orderCount", 0),
                     "purchases": stats.get("buyoutCount", 0),
                     "revenue": stats.get("orderSum", 0)
                 })
+        elif isinstance(data, dict) and "error" in data:
+            result["errors"].append(data["error"])
         time.sleep(2)
     return result
 
 
 def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
     """
-    Получает список готовых еженедельных отчётов за период.
-    Возвращает список словарей с ключами:
-        - report_type: 1 (основной) или 2 (выкупы)
-        - file_name: оригинальное имя файла
-        - rrdid: идентификатор отчёта для скачивания
+    Возвращает список готовых еженедельных отчётов за период.
+    Каждый элемент: {"report_type": 1 или 2, "file_name": ..., "rrdid": ...}
     """
-    # 1. Получаем список всех отчётов о реализации за период
-    url = f"{STATISTICS_API}/supplier/reports"
-    params = {"dateFrom": date_from, "dateTo": date_to}
-    data = _safe_request("GET", url, params=params)
+    url = f"{STATISTICS_API}/supplier/reportDetailByPeriod"
+    payload = {
+        "dateFrom": date_from,
+        "dateTo": date_to,
+        "limit": 10,
+        "rrdid": 0
+    }
+    logger.info(f"Запрос отчётов за {date_from} – {date_to} через POST {url}")
+    data = _safe_request("POST", url, json_data=payload)
+
     if isinstance(data, dict) and "error" in data:
         logger.error(f"Ошибка получения списка отчётов: {data['error']}")
         return []
 
-    # data – список отчётов
+    # data – список объектов
     if not isinstance(data, list):
-        logger.warning(f"Неожиданный формат ответа от /supplier/reports: {type(data)}")
+        logger.warning(f"Неожиданный формат ответа от reportDetailByPeriod: {type(data)}. Тело: {str(data)[:300]}")
         return []
 
-    ready_reports = []
-    for report in data:
-        status = report.get("status", "")
-        if status != "ready":
-            logger.debug(f"Пропускаем отчёт {report.get('rrdid')} со статусом {status}")
-            continue
-        rrdid = report.get("rrdid")
-        rtype = report.get("reportType")  # 1 – продажи, 2 – возвраты (выкупы)
-        fname = report.get("fileName", f"report_{rtype}.xlsx")
+    ready = []
+    for item in data:
+        rrdid = item.get("rrdid")
+        rtype = item.get("reportType")  # 1 – продажи (осн), 2 – возвраты (вык)
+        fname = item.get("fileName", f"report_{rtype}.xlsx")
+        # Скачиваемая ссылка может быть в поле url или fileUrl
+        download_url = item.get("url") or item.get("fileUrl")
         if rrdid and rtype in [1, 2]:
-            ready_reports.append({
+            ready.append({
                 "rrdid": rrdid,
                 "report_type": rtype,
-                "file_name": fname
+                "file_name": fname,
+                "download_url": download_url
             })
-
-    logger.info(f"Найдено готовых отчётов за {date_from}-{date_to}: {len(ready_reports)}")
-    return ready_reports
+    logger.info(f"Найдено готовых отчётов: {len(ready)}")
+    return ready
 
 
 def download_report(rrdid: int) -> Optional[bytes]:
-    """Скачивает файл отчёта по его rrdid. Возвращает бинарное содержимое."""
+    """Скачивает файл отчёта по его rrdid."""
     url = f"{STATISTICS_API}/supplier/reportDetailByPeriod/{rrdid}"
+    logger.info(f"Скачивание отчёта rrdid={rrdid} по {url}")
     response = _safe_request("GET", url, raw=True)
     if isinstance(response, requests.Response):
         if response.status_code == 200:
             return response.content
         else:
-            logger.error(f"Ошибка скачивания отчёта {rrdid}: статус {response.status_code}")
+            logger.error(f"Ошибка скачивания отчёта {rrdid}: {response.status_code}")
             return None
     else:
         logger.error(f"Ошибка при скачивании отчёта {rrdid}: {response}")
@@ -297,36 +272,26 @@ def get_buyout_by_brands(date_from: str, date_to: str, brand_names: List[str] = 
 
     funnel_data = get_sales_funnel(date_from=date_from, date_to=date_to, limit=1000)
     if isinstance(funnel_data, dict) and "error" in funnel_data:
-        logger.error(f"Ошибка получения воронки для выкупов (без nmIds): {funnel_data['error']}")
+        logger.error(f"Ошибка получения воронки: {funnel_data['error']}")
         try:
             nm_ids = get_all_nm_ids_from_api(days_back=90)
             if nm_ids:
                 funnel_data = get_sales_funnel(nm_ids=nm_ids, date_from=date_from, date_to=date_to, limit=1000)
-                if isinstance(funnel_data, dict) and "error" in funnel_data:
-                    logger.error(f"Ошибка получения воронки для выкупов (с nmIds): {funnel_data['error']}")
-                    return {b: None for b in brand_names}
-            else:
-                return {b: None for b in brand_names}
         except Exception as e:
-            logger.error(f"Исключение при повторном запросе с nmIds: {e}")
+            logger.error(f"Исключение при повторном запросе: {e}")
             return {b: None for b in brand_names}
 
     products = funnel_data.get("data", {}).get("products", [])
-    brand_orders = {b: 0 for b in brand_names}
-    brand_purchases = {b: 0 for b in brand_names}
-    for product in products:
-        brand = product.get("product", {}).get("brandName", "")
+    orders = {b: 0 for b in brand_names}
+    purchases = {b: 0 for b in brand_names}
+    for p in products:
+        brand = p.get("product", {}).get("brandName", "")
         if brand in brand_names:
-            stats = product.get("statistic", {}).get("selected", {})
-            orders = stats.get("orderCount", 0)
-            purchases = stats.get("buyoutCount", 0)
-            brand_orders[brand] += orders
-            brand_purchases[brand] += purchases
+            stats = p.get("statistic", {}).get("selected", {})
+            orders[brand] += stats.get("orderCount", 0)
+            purchases[brand] += stats.get("buyoutCount", 0)
 
     result = {}
-    for brand in brand_names:
-        if brand_orders[brand] > 0:
-            result[brand] = round(brand_purchases[brand] / brand_orders[brand] * 100, 1)
-        else:
-            result[brand] = None
+    for b in brand_names:
+        result[b] = round(purchases[b] / orders[b] * 100, 1) if orders[b] > 0 else None
     return result
