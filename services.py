@@ -61,7 +61,7 @@ class ReportProcessor:
         art_variants = [
             'артикул поставщика', 'артикул', 'артикул товара', 'номенклатура',
             'sku', 'артикул(поставщика)', 'артикул поставщика (поставщика)',
-            'код товара', 'id товара', 'vendor code', 'article'
+            'код товара', 'id товара', 'vendor code', 'article', 'vendorcode'
         ]
         nm_id_variants = ['код номенклатуры', 'nmId', 'nm_id', 'артикул товара', 'номенклатура', 'артикул']
         qty_col = art_col = nm_id_col = None
@@ -235,6 +235,15 @@ def prepare_api_dataframe(detail_list):
     df['Количество'] = df.get('quantity', 0).astype(int)
     df['acquiring_percent'] = df.get('acquiringPercent', 0)
     df['Размер компенсации платёжных услуг/Комиссии за интеграцию платёжных сервисов, %'] = df['acquiring_percent']
+    # Добавляем колонки для артикула
+    if 'vendorCode' in df.columns:
+        df['Артикул поставщика'] = df['vendorCode']
+    else:
+        df['Артикул поставщика'] = ''
+    if 'nmId' in df.columns:
+        df['nmId'] = df['nmId']
+    else:
+        df['nmId'] = ''
     return df
 
 
@@ -246,12 +255,9 @@ async def process_auto_report(app, osn_detail, vyk_detail, period_str, date_from
     temp_osn_path = temp_dir / f"auto_osn_{period_str}.xlsx"
     temp_vyk_path = temp_dir / f"auto_vyk_{period_str}.xlsx"
     
-    cols_to_save = ['Бренд', 'Тип документа', 'Цена розничная', 'К перечислению Продавцу за реализованный Товар',
-                    'Общая сумма штрафов', 'Услуги по доставке товара покупателю', 'Операции на приемке',
-                    'Хранение', 'Удержания', 'Разовое изменение срока перечисления денежных средств',
-                    'Количество', 'Размер компенсации платёжных услуг/Комиссии за интеграцию платёжных сервисов, %']
-    df_osn[cols_to_save].to_excel(temp_osn_path, index=False)
-    df_vyk[cols_to_save].to_excel(temp_vyk_path, index=False)
+    # Сохраняем все колонки, которые могут понадобиться
+    df_osn.to_excel(temp_osn_path, index=False)
+    df_vyk.to_excel(temp_vyk_path, index=False)
     
     processor = ReportProcessor()
     template_path = Path("шаблон.xlsx")
