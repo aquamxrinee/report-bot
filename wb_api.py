@@ -204,7 +204,6 @@ def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = 
 
 
 def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
-    """Получает список готовых еженедельных отчётов реализации за период."""
     url = f"{FINANCE_API}/sales-reports/list"
     payload = {
         "dateFrom": date_from,
@@ -239,29 +238,41 @@ def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
 
 
 def get_report_detail(report_id: int) -> List[Dict]:
-    """Получает детализацию (строки) отчёта реализации по его ID."""
     url = f"{FINANCE_API}/sales-reports/detailed/{report_id}"
-    payload = {
-        "limit": 100000,
-        "rrdId": 0
-    }
-    logger.info(f"Запрос детализации отчёта {report_id}")
-    data = _safe_request("POST", url, json_data=payload)
+    all_rows = []
+    rrd_id = 0
+    limit = 100000
+    while True:
+        payload = {
+            "limit": limit,
+            "rrdId": rrd_id
+        }
+        logger.info(f"Запрос детализации отчёта {report_id}, rrdId={rrd_id}")
+        data = _safe_request("POST", url, json_data=payload)
 
-    if isinstance(data, dict) and "error" in data:
-        logger.error(f"Ошибка получения детализации отчёта {report_id}: {data['error']}")
-        return []
+        if isinstance(data, dict):
+            if "error" in data:
+                logger.error(f"Ошибка получения детализации отчёта {report_id}: {data['error']}")
+                return []
+            # Если вернулся словарь, возможно, это конец данных (пустой ответ)
+            break
+        if isinstance(data, list):
+            if not data:
+                break
+            all_rows.extend(data)
+            rrd_id = data[-1].get("rrdId", 0)
+            if rrd_id == 0 or len(data) < limit:
+                break
+            time.sleep(1)
+        else:
+            logger.warning(f"Неожиданный формат детализации отчёта {report_id}: {str(data)[:500]}")
+            break
 
-    if isinstance(data, list):
-        logger.info(f"Получено строк детализации: {len(data)}")
-        return data
-    else:
-        logger.warning(f"Неожиданный формат детализации отчёта {report_id}: {str(data)[:500]}")
-        return []
+    logger.info(f"Всего строк детализации для отчёта {report_id}: {len(all_rows)}")
+    return all_rows
 
 
 def get_buyout_by_brands(date_from: str, date_to: str, brand_names: List[str] = None) -> Dict[str, Optional[float]]:
-    """Возвращает процент выкупа по брендам через воронку продаж (для старых отчётов)."""
     if brand_names is None:
         brand_names = ['Цап царапкин', 'Harakiri']
 
