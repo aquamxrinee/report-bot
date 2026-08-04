@@ -35,7 +35,7 @@ from services import (
 )
 from spp_parser import get_spp_for_article_async
 from spp_monitor import generate_spp_graph, monitor_spp
-from wb_api import get_all_nm_ids_from_api
+from wb_api import get_all_nm_ids_from_api, get_buyout_by_brands
 
 REPORTS_DIR = Path("/data/reports")
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
