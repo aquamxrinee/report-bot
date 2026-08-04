@@ -235,7 +235,6 @@ def prepare_api_dataframe(detail_list):
     df['Количество'] = df.get('quantity', 0).astype(int)
     df['acquiring_percent'] = df.get('acquiringPercent', 0)
     df['Размер компенсации платёжных услуг/Комиссии за интеграцию платёжных сервисов, %'] = df['acquiring_percent']
-    # Добавляем колонки для артикула
     if 'vendorCode' in df.columns:
         df['Артикул поставщика'] = df['vendorCode']
     else:
@@ -255,7 +254,6 @@ async def process_auto_report(app, osn_detail, vyk_detail, period_str, date_from
     temp_osn_path = temp_dir / f"auto_osn_{period_str}.xlsx"
     temp_vyk_path = temp_dir / f"auto_vyk_{period_str}.xlsx"
     
-    # Сохраняем все колонки, которые могут понадобиться
     df_osn.to_excel(temp_osn_path, index=False)
     df_vyk.to_excel(temp_vyk_path, index=False)
     
