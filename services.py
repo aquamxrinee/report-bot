@@ -40,30 +40,23 @@ class ReportProcessor:
     def process_files(self, osn_path, vyk_path, template_path):
         df_osn = pd.read_excel(osn_path)
         df_vyk = pd.read_excel(vyk_path)
-
         logger.info(f"Колонки основного: {df_osn.columns.tolist()}")
         logger.info(f"Колонки выкупов: {df_vyk.columns.tolist()}")
-
         filename = Path(osn_path).name
         match = re.search(r'(\d{1,2})\.(\d{2})-(\d{1,2})\.(\d{2})', filename)
         date_range = f"{match.group(1)}.{match.group(2)}-{match.group(3)}.{match.group(4)}" if match else datetime.now().strftime("%d.%m")
-
         values = self._calculate_all_values(df_osn, df_vyk, date_range)
         self._fill_template(template_path, values)
-
         articles = self._get_articles_stats(df_osn, df_vyk)
         return values, articles, date_range
 
     def _get_articles_stats(self, df_osn, df_vyk):
         result = {}
-
         def normalize_cols(df):
             return {str(col).strip().lower(): col for col in df.columns}
-
         cols_osn = normalize_cols(df_osn)
         cols_vyk = normalize_cols(df_vyk)
         all_cols = {**cols_vyk, **cols_osn}
-
         qty_variants = ['количество', 'кол-во', 'количество товара', 'кол-во (шт.)', 'кол-во шт', 'quantity', 'количество,шт']
         art_variants = [
             'артикул поставщика', 'артикул', 'артикул товара', 'номенклатура',
@@ -71,11 +64,7 @@ class ReportProcessor:
             'код товара', 'id товара', 'vendor code', 'article'
         ]
         nm_id_variants = ['код номенклатуры', 'nmId', 'nm_id', 'артикул товара', 'номенклатура', 'артикул']
-
-        qty_col = None
-        art_col = None
-        nm_id_col = None
-
+        qty_col = art_col = nm_id_col = None
         for v in qty_variants:
             if v in all_cols:
                 qty_col = all_cols[v]
@@ -88,7 +77,6 @@ class ReportProcessor:
             if v in all_cols:
                 nm_id_col = all_cols[v]
                 break
-
         if art_col is None:
             original_cols = df_osn.columns.tolist()
             for col in original_cols:
@@ -98,7 +86,6 @@ class ReportProcessor:
                         art_col = col
                         logger.info(f"🔍 Нашли колонку артикула по точному совпадению: '{col}'")
                         break
-
         if nm_id_col is None:
             original_cols = df_osn.columns.tolist()
             for col in original_cols:
@@ -106,7 +93,6 @@ class ReportProcessor:
                     nm_id_col = col
                     logger.info(f"🔍 Нашли колонку nm_id по точному совпадению: '{col}'")
                     break
-
         if qty_col is None:
             logger.warning(f"❌ Колонка количества не найдена. Доступные: {list(all_cols.keys())}")
             return result
@@ -116,9 +102,7 @@ class ReportProcessor:
             if possible:
                 art_col = all_cols[possible[0]]
                 logger.info(f"✅ Нашли возможную колонку артикула: '{art_col}'")
-
         logger.info(f"✅ Найдены колонки: количество='{qty_col}', артикул='{art_col}', nm_id='{nm_id_col}'")
-
         for df, key in [(df_osn, 'sales'), (df_vyk, 'vyk')]:
             for bren, mask_func in [
                 ('Цап царапкин', lambda d: (d['Бренд'] == 'Цап царапкин') | (d['Бренд'].isna())),
@@ -132,10 +116,7 @@ class ReportProcessor:
                 if sales.empty:
                     articles = {}
                 else:
-                    agg_dict = {
-                        'quantity': (qty_col, 'sum'),
-                        'revenue': ('Цена розничная', 'sum')
-                    }
+                    agg_dict = {'quantity': (qty_col, 'sum'), 'revenue': ('Цена розничная', 'sum')}
                     if nm_id_col:
                         agg_dict['nm_id'] = (nm_id_col, 'first')
                     agg_sales = sales.groupby(art_col).agg(**agg_dict).to_dict('index')
@@ -147,27 +128,19 @@ class ReportProcessor:
                                 nm_id_val = int(float(nm_id_val))
                             except:
                                 nm_id_val = None
-                        articles[art] = {
-                            'quantity': vals['quantity'],
-                            'revenue': vals['revenue'],
-                            'nm_id': nm_id_val
-                        }
+                        articles[art] = {'quantity': vals['quantity'], 'revenue': vals['revenue'], 'nm_id': nm_id_val}
                 if bren not in result:
                     result[bren] = {}
                 result[bren][key] = articles
-
         logger.info(f"📦 Собрано артикулов: {sum(len(v.get('sales', {})) for v in result.values())}")
         return result
 
     def _calculate_all_values(self, df_osn, df_vyk, date_range):
         values = {'B1': date_range, 'F1': date_range}
-
         mask_carp_sale = ((df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())) & (df_osn['Тип документа'] == 'Продажа')
         values['B4'] = df_osn[mask_carp_sale]['К перечислению Продавцу за реализованный Товар'].sum()
-
         mask_carp_return = ((df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())) & (df_osn['Тип документа'] == 'Возврат')
         values['B5'] = df_osn[mask_carp_return]['К перечислению Продавцу за реализованный Товар'].sum()
-
         mask_carp_all = (df_osn['Бренд'] == 'Цап царапкин') | (df_osn['Бренд'].isna())
         values['B7'] = df_osn[mask_carp_all]['Услуги по доставке товара покупателю'].sum()
         values['B9'] = df_osn[mask_carp_all]['Операции на приемке'].sum()
@@ -176,7 +149,6 @@ class ReportProcessor:
         values['B26'] = df_osn[mask_carp_all]['Хранение'].sum()
         values['B29'] = df_osn[mask_carp_all]['Разовое изменение срока перечисления денежных средств'].sum()
         values['B44'] = df_osn[mask_carp_sale]['Цена розничная'].sum()
-
         mask_hara_sale = (df_osn['Бренд'] == 'Harakiri') & (df_osn['Тип документа'] == 'Продажа')
         values['F4'] = df_osn[mask_hara_sale]['К перечислению Продавцу за реализованный Товар'].sum()
         mask_hara_return = (df_osn['Бренд'] == 'Harakiri') & (df_osn['Тип документа'] == 'Возврат')
@@ -187,7 +159,6 @@ class ReportProcessor:
         values['F10'] = df_osn[mask_hara_all]['Общая сумма штрафов'].sum()
         values['F11'] = df_osn[mask_hara_all]['Удержания'].sum()
         values['B32'] = df_osn[mask_hara_sale]['Цена розничная'].sum()
-
         mask_carp_vyk_sale = ((df_vyk['Бренд'] == 'Цап царапкин') | (df_vyk['Бренд'].isna())) & (df_vyk['Тип документа'] == 'Продажа')
         values['M4'] = df_vyk[mask_carp_vyk_sale]['К перечислению Продавцу за реализованный Товар'].sum()
         mask_carp_vyk_return = ((df_vyk['Бренд'] == 'Цап царапкин') | (df_vyk['Бренд'].isna())) & (df_vyk['Тип документа'] == 'Возврат')
@@ -197,7 +168,6 @@ class ReportProcessor:
         values['M8'] = df_vyk[mask_carp_vyk_all]['Операции на приемке'].sum()
         values['M9'] = df_vyk['Общая сумма штрафов'].sum()
         values['B47'] = df_vyk[mask_carp_vyk_sale]['Цена розничная'].sum()
-
         mask_hara_vyk_sale = (df_vyk['Бренд'] == 'Harakiri') & (df_vyk['Тип документа'] == 'Продажа')
         values['Q4'] = df_vyk[mask_hara_vyk_sale]['К перечислению Продавцу за реализованный Товар'].sum()
         mask_hara_vyk_return = (df_vyk['Бренд'] == 'Harakiri') & (df_vyk['Тип документа'] == 'Возврат')
@@ -207,7 +177,6 @@ class ReportProcessor:
         values['Q8'] = df_vyk[mask_hara_vyk_all]['Операции на приемке'].sum()
         values['Q9'] = df_vyk[mask_hara_vyk_all]['Общая сумма штрафов'].sum()
         values['B41'] = df_vyk[mask_hara_vyk_sale]['Цена розничная'].sum()
-
         col = "Размер компенсации платёжных услуг/Комиссии за интеграцию платёжных сервисов, %"
         if col in df_osn.columns:
             filtered = df_osn[col][df_osn[col].notna() & (df_osn[col] > 0)]
@@ -220,7 +189,6 @@ class ReportProcessor:
                 values['B56'] = values['B59'] = values['B62'] = values['B65'] = 0
         else:
             values['B56'] = values['B59'] = values['B62'] = values['B65'] = 0
-
         return values
 
     def _fill_template(self, template_path, values):
@@ -254,7 +222,6 @@ def prepare_api_dataframe(detail_list):
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
         else:
             df[col] = 0
-
     df['Бренд'] = df.get('brandName', '')
     df['Тип документа'] = df.get('docTypeName', '')
     df['Цена розничная'] = df.get('retailAmount', 0)
@@ -266,7 +233,6 @@ def prepare_api_dataframe(detail_list):
     df['Удержания'] = df.get('deduction', 0)
     df['Разовое изменение срока перечисления денежных средств'] = df.get('additionalPayment', 0)
     df['Количество'] = df.get('quantity', 0).astype(int)
-
     df['acquiring_percent'] = df.get('acquiringPercent', 0)
     df['Размер компенсации платёжных услуг/Комиссии за интеграцию платёжных сервисов, %'] = df['acquiring_percent']
     return df
@@ -275,13 +241,10 @@ def prepare_api_dataframe(detail_list):
 async def process_auto_report(app, osn_detail, vyk_detail, period_str, date_from, date_to):
     all_detail = osn_detail + vyk_detail
     df = prepare_api_dataframe(all_detail)
-
     processor = ReportProcessor()
     values = processor._calculate_all_values(df, df, period_str)
-
     template_path = Path("шаблон.xlsx")
     processor._fill_template(template_path, values)
-
     file_hash = hashlib.md5(f"{date_from}_{date_to}".encode()).hexdigest()
 
     from wb_api import get_buyout_by_brands
