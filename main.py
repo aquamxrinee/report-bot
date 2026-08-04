@@ -49,7 +49,6 @@ def main():
     app.add_handler(CommandHandler("sync_articles", sync_articles_cmd))
     app.add_handler(CommandHandler("set_article", set_article_cmd))
     app.add_handler(CommandHandler("wr", weekly_report_cmd))
-    app.add_handler(CommandHandler("refresh_buyout", refresh_buyout_cmd))
 
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
