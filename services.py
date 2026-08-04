@@ -239,25 +239,40 @@ def prepare_api_dataframe(detail_list):
 
 
 async def process_auto_report(app, osn_detail, vyk_detail, period_str, date_from, date_to, osn_file_name, vyk_file_name):
-    all_detail = osn_detail + vyk_detail
-    df = prepare_api_dataframe(all_detail)
+    df_osn = prepare_api_dataframe(osn_detail)
+    df_vyk = prepare_api_dataframe(vyk_detail)
+    
+    temp_dir = Path(TEMP_DIR)
+    temp_osn_path = temp_dir / f"auto_osn_{period_str}.xlsx"
+    temp_vyk_path = temp_dir / f"auto_vyk_{period_str}.xlsx"
+    
+    cols_to_save = ['Бренд', 'Тип документа', 'Цена розничная', 'К перечислению Продавцу за реализованный Товар',
+                    'Общая сумма штрафов', 'Услуги по доставке товара покупателю', 'Операции на приемке',
+                    'Хранение', 'Удержания', 'Разовое изменение срока перечисления денежных средств',
+                    'Количество', 'Размер компенсации платёжных услуг/Комиссии за интеграцию платёжных сервисов, %']
+    df_osn[cols_to_save].to_excel(temp_osn_path, index=False)
+    df_vyk[cols_to_save].to_excel(temp_vyk_path, index=False)
+    
     processor = ReportProcessor()
-    values = processor._calculate_all_values(df, df, period_str)
     template_path = Path("шаблон.xlsx")
-    processor._fill_template(template_path, values)
+    values, articles, _ = processor.process_files(str(temp_osn_path), str(temp_vyk_path), template_path)
+    
+    temp_osn_path.unlink(missing_ok=True)
+    temp_vyk_path.unlink(missing_ok=True)
+    
     file_hash = hashlib.md5(f"{date_from}_{date_to}".encode()).hexdigest()
-
+    
     from wb_api import get_buyout_by_brands
     buyouts = {}
     try:
         buyouts = get_buyout_by_brands(date_from, date_to)
     except Exception as e:
         logger.error(f"Ошибка получения выкупов в автоотчёте: {e}")
-
+    
     metrics = extract_metrics_from_values(values)
     metrics['buyout_carp'] = buyouts.get('Цап царапкин')
     metrics['buyout_hara'] = buyouts.get('Harakiri')
-
+    
     file_name_to_save = osn_file_name if osn_file_name else f"auto_{period_str}.xlsx"
     success, report_id = save_report_to_db(
         file_name=file_name_to_save,
@@ -267,25 +282,25 @@ async def process_auto_report(app, osn_detail, vyk_detail, period_str, date_from
         end_date=date_to,
         values=values,
         metrics=metrics,
-        articles={}
+        articles=articles
     )
     if not success:
         logger.error("Ошибка сохранения автоотчёта")
         return
-
+    
     report_dir = Path("/data/reports")
     report_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(template_path, report_dir / f"отчёт_{report_id}.xlsx")
-
+    
     def format_number(num):
         if num is None: return "0"
         if isinstance(num, float) and num.is_integer():
             return f"{int(num):,}".replace(",", " ")
         return f"{num:,.2f}".replace(",", " ")
-
+    
     buyout_carp_str = f"{metrics['buyout_carp']:.1f}%" if metrics['buyout_carp'] is not None else "Н/Д"
     buyout_hara_str = f"{metrics['buyout_hara']:.1f}%" if metrics['buyout_hara'] is not None else "Н/Д"
-
+    
     summary = (
         f"📊 Автоматический отчёт за {period_str}\n"
         f"💰 Оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
@@ -297,7 +312,7 @@ async def process_auto_report(app, osn_detail, vyk_detail, period_str, date_from
         f"📦 Выкуп ЦАП: {buyout_carp_str}\n"
         f"📦 Выкуп Harakiri: {buyout_hara_str}\n"
     )
-
+    
     for uid in ALLOWED_USERS:
         try:
             with open(template_path, 'rb') as f:
@@ -312,7 +327,7 @@ async def fetch_reports_for_period(app, date_from, date_to, period_str, force=Fa
     from wb_api import get_weekly_reports, get_report_detail
 
     if not force and get_report_id_by_period(date_from, date_to):
-        msg = f"Отчёт за {period_str} уже существует. Используйте /wr с force для обновления."
+        msg = f"Отчёт за {period_str} уже существует."
         logger.info(msg)
         for uid in ALLOWED_USERS:
             try:
