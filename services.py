@@ -1,5 +1,3 @@
-# services.py
-
 import re
 import shutil
 import logging
@@ -309,11 +307,11 @@ async def process_auto_report(app, osn_detail, vyk_detail, period_str, date_from
             logger.error(f"Не удалось отправить автоотчёт пользователю {uid}: {e}")
 
 
-async def fetch_reports_for_period(app, date_from, date_to, period_str):
+async def fetch_reports_for_period(app, date_from, date_to, period_str, force=False):
     from wb_api import get_weekly_reports, get_report_detail
 
-    if get_report_id_by_period(date_from, date_to):
-        msg = f"Отчёт за {period_str} уже существует."
+    if not force and get_report_id_by_period(date_from, date_to):
+        msg = f"Отчёт за {period_str} уже существует. Используйте /wr с force для обновления."
         logger.info(msg)
         for uid in ALLOWED_USERS:
             try:
@@ -370,7 +368,7 @@ async def fetch_weekly_reports_job(app):
     period_str = f"{last_monday.strftime('%d.%m')}-{last_sunday.strftime('%d.%m')}"
 
     logger.info(f"🔍 Автопроверка отчётов за {period_str}")
-    success = await fetch_reports_for_period(app, date_from, date_to, period_str)
+    success = await fetch_reports_for_period(app, date_from, date_to, period_str, force=False)
 
     if not success:
         scheduler.add_job(
