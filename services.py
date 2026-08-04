@@ -4,6 +4,7 @@ import logging
 import requests
 import pandas as pd
 import openpyxl
+import hashlib
 from datetime import datetime, timedelta
 from pathlib import Path
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -296,7 +297,10 @@ async def process_auto_report(app, osn_detail, vyk_detail, period_str, date_from
     template_path = Path("шаблон.xlsx")
     processor._fill_template(template_path, values)
 
-    file_hash = calculate_file_hash(f"api_{date_from}_{date_to}")
+    # Хеш на основе периода
+    import hashlib
+    file_hash = hashlib.md5(f"{date_from}_{date_to}".encode()).hexdigest()
+    
     metrics = extract_metrics_from_values(values)
     success, report_id = save_report_to_db(
         file_name=f"auto_{period_str}.xlsx",
