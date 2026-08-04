@@ -241,7 +241,7 @@ class ReportProcessor:
         wb.save(template_path)
 
 
-# ===== АВТОМАТИЧЕСКАЯ ЗАГРУЗКА ЕЖЕНЕДЕЛЬНЫХ ОТЧЁТОВ =====
+# ===== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ АВТООТЧЁТОВ =====
 def extract_metrics_from_values(values):
     metrics = {
         'avg_acquiring': values.get('B56', 0),
@@ -254,26 +254,50 @@ def extract_metrics_from_values(values):
     return metrics
 
 
-async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, date_to):
-    """Обработка автоматически загруженных отчётов без участия пользователя."""
+def prepare_api_dataframe(detail_list):
+    """Преобразует список строк детализации API в DataFrame, совместимый с _calculate_all_values."""
+    df = pd.DataFrame(detail_list)
+    # Приводим числовые колонки
+    numeric_cols = ['retailAmount', 'forPay', 'quantity', 'penalty', 'deliveryAmount', 
+                    'paidAcceptance', 'paidStorage', 'deduction', 'acquiringPercent']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        else:
+            df[col] = 0
+
+    # Маппинг названий колонок
+    df['Бренд'] = df.get('brandName', '')
+    df['Тип документа'] = df.get('docTypeName', '')
+    df['Цена розничная'] = df.get('retailAmount', 0)
+    df['К перечислению Продавцу за реализованный Товар'] = df.get('forPay', 0)
+    df['Общая сумма штрафов'] = df.get('penalty', 0)
+    df['Услуги по доставке товара покупателю'] = df.get('deliveryAmount', 0)
+    df['Операции на приемке'] = df.get('paidAcceptance', 0)
+    df['Хранение'] = df.get('paidStorage', 0)
+    df['Удержания'] = df.get('deduction', 0)
+    df['Разовое изменение срока перечисления денежных средств'] = 0  # нет в API
+    df['acquiring_percent'] = df.get('acquiringPercent', 0)
+
+    # Эквайринг в исходной формуле использует колонку "Размер компенсации...", но в API есть acquiringPercent
+    # Мы создадим временную колонку для совместимости
+    df['Размер компенсации платёжных услуг/Комиссии за интеграцию платёжных сервисов, %'] = df['acquiring_percent']
+    return df
+
+
+async def process_auto_report(app, osn_detail, vyk_detail, period_str, date_from, date_to):
+    """Обработка автоматического отчёта по данным из API."""
+    df_osn = prepare_api_dataframe(osn_detail)
+    df_vyk = prepare_api_dataframe(vyk_detail)
+
     processor = ReportProcessor()
+    values = processor._calculate_all_values(df_osn, df_vyk, period_str)
+
     template_path = Path("шаблон.xlsx")
-    values, articles, _ = processor.process_files(osn_path, vyk_path, template_path)
+    processor._fill_template(template_path, values)
 
-    file_hash = calculate_file_hash(osn_path) + calculate_file_hash(vyk_path)
+    file_hash = calculate_file_hash(f"api_{date_from}_{date_to}")
     metrics = extract_metrics_from_values(values)
-
-    # === Загружаем проценты выкупа по брендам через API ===
-    from wb_api import get_buyout_by_brands
-    try:
-        buyouts = get_buyout_by_brands(date_from, date_to)
-        metrics['buyout_carp'] = buyouts.get('Цап царапкин')
-        metrics['buyout_hara'] = buyouts.get('Harakiri')
-    except Exception as e:
-        logger.error(f"Ошибка получения выкупов в автоотчёте: {e}")
-        metrics['buyout_carp'] = None
-        metrics['buyout_hara'] = None
-
     success, report_id = save_report_to_db(
         file_name=f"auto_{period_str}.xlsx",
         file_hash=file_hash,
@@ -282,7 +306,7 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
         end_date=date_to,
         values=values,
         metrics=metrics,
-        articles=articles
+        articles={}
     )
     if not success:
         logger.error("Ошибка сохранения автоотчёта")
@@ -290,17 +314,13 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
 
     report_dir = Path("/data/reports")
     report_dir.mkdir(parents=True, exist_ok=True)
-    report_file = report_dir / f"отчёт_{report_id}.xlsx"
-    shutil.copy2(template_path, report_file)
+    shutil.copy2(template_path, report_dir / f"отчёт_{report_id}.xlsx")
 
     def format_number(num):
         if num is None: return "0"
         if isinstance(num, float) and num.is_integer():
             return f"{int(num):,}".replace(",", " ")
         return f"{num:,.2f}".replace(",", " ")
-
-    buyout_carp_str = f"{metrics['buyout_carp']:.1f}%" if metrics['buyout_carp'] is not None else "Н/Д"
-    buyout_hara_str = f"{metrics['buyout_hara']:.1f}%" if metrics['buyout_hara'] is not None else "Н/Д"
 
     summary = (
         f"📊 Автоматический отчёт за {period_str}\n"
@@ -310,26 +330,21 @@ async def process_auto_report(app, osn_path, vyk_path, period_str, date_from, da
         f"💳 Эквайринг: {metrics.get('avg_acquiring', 0):.2f}%\n"
         f"💵 К выводу ЦАП: {format_number(metrics.get('k_vyvodu_carp', 0))} ₽\n"
         f"💵 К выводу Harakiri: {format_number(metrics.get('k_vyvodu_hara', 0))} ₽\n"
-        f"📦 Выкуп ЦАП: {buyout_carp_str}\n"
-        f"📦 Выкуп Harakiri: {buyout_hara_str}\n"
     )
 
     for uid in ALLOWED_USERS:
         try:
             with open(template_path, 'rb') as f:
-                await app.bot.send_document(
-                    uid, document=f,
-                    filename=f"отчёт_{period_str}.xlsx",
-                    caption=f"✅ Автоматический отчёт за {period_str}"
-                )
+                await app.bot.send_document(uid, document=f, filename=f"отчёт_{period_str}.xlsx",
+                                           caption=f"✅ Автоматический отчёт за {period_str}")
             await app.bot.send_message(uid, summary, parse_mode='Markdown')
         except Exception as e:
             logger.error(f"Не удалось отправить автоотчёт пользователю {uid}: {e}")
 
 
 async def fetch_weekly_reports_job(app):
-    """Проверяет и загружает отчёты за прошлую неделю."""
-    from wb_api import get_weekly_reports, download_report
+    """Проверяет и загружает отчёты за прошлую неделю через API детализации."""
+    from wb_api import get_weekly_reports, get_report_detail
 
     today = datetime.now().date()
     last_monday = today - timedelta(days=today.weekday() + 7)
@@ -361,45 +376,32 @@ async def fetch_weekly_reports_job(app):
                 pass
         return
 
-    temp_files = []
-    for meta in reports_meta:
-        rrdid = meta["rrdid"]
-        content = download_report(rrdid)
-        if not content:
-            continue
-        fname = meta["file_name"] or f"report_{meta['report_type']}.xlsx"
-        temp_path = Path(TEMP_DIR) / f"auto_{datetime.now().timestamp()}_{fname}"
-        with open(temp_path, 'wb') as f:
-            f.write(content)
-        temp_files.append((meta["report_type"], str(temp_path)))
-        logger.info(f"Скачан файл {fname}")
-
-    if len(temp_files) < 2:
-        msg = f"⚠️ Скачано {len(temp_files)} файлов вместо 2 за {period_str}."
+    osn_report = next((r for r in reports_meta if r['report_type'] == 1), None)
+    vyk_report = next((r for r in reports_meta if r['report_type'] == 2), None)
+    if not osn_report or not vyk_report:
+        msg = f"⚠️ Найдены не все типы отчётов за {period_str}."
         logger.warning(msg)
         for uid in ALLOWED_USERS:
             try:
                 await app.bot.send_message(uid, msg)
             except:
                 pass
-        for _, p in temp_files:
-            Path(p).unlink(missing_ok=True)
         return
 
-    osn_path = None
-    vyk_path = None
-    for rtype, path in temp_files:
-        if rtype == 1:
-            osn_path = path
-        elif rtype == 2:
-            vyk_path = path
-    if not osn_path:
-        osn_path = temp_files[0][1]
-    if not vyk_path:
-        vyk_path = temp_files[1][1]
+    detail_osn = get_report_detail(osn_report['report_id'])
+    detail_vyk = get_report_detail(vyk_report['report_id'])
+    if not detail_osn or not detail_vyk:
+        msg = f"❌ Не удалось получить детализацию отчётов за {period_str}"
+        logger.error(msg)
+        for uid in ALLOWED_USERS:
+            try:
+                await app.bot.send_message(uid, msg)
+            except:
+                pass
+        return
 
     try:
-        await process_auto_report(app, osn_path, vyk_path, period_str, date_from, date_to)
+        await process_auto_report(app, detail_osn, detail_vyk, period_str, date_from, date_to)
     except Exception as e:
         logger.error(f"❌ Ошибка обработки автоматического отчёта: {e}")
         for uid in ALLOWED_USERS:
@@ -407,6 +409,3 @@ async def fetch_weekly_reports_job(app):
                 await app.bot.send_message(uid, f"❌ Ошибка при обработке автоотчёта за {period_str}: {e}")
             except:
                 pass
-    finally:
-        for _, p in temp_files:
-            Path(p).unlink(missing_ok=True)
