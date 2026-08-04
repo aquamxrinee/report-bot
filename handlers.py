@@ -1476,7 +1476,37 @@ async def fetch_weekly_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка fetch_weekly_cmd: {e}")
         await update.message.reply_text(f"❌ Ошибка: {e}")
+# handlers.py — добавьте после функции fetch_weekly_cmd
 
+async def weekly_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_access(update):
+        return
+    args = context.args
+    if not args:
+        await update.message.reply_text("Укажите период в формате ДД.ММ-ДД.ММ, например: /wr 27.07-02.08")
+        return
+    period_str = args[0].strip()
+    try:
+        parts = period_str.split('-')
+        start_day, start_month = parts[0].split('.')
+        end_day, end_month = parts[1].split('.')
+        year = datetime.now().year
+        date_from = f"{year}-{start_month}-{start_day}"
+        date_to = f"{year}-{end_month}-{end_day}"
+        datetime.strptime(date_from, "%Y-%m-%d")
+        datetime.strptime(date_to, "%Y-%m-%d")
+    except:
+        await update.message.reply_text("Неверный формат даты. Используйте ДД.ММ-ДД.ММ")
+        return
+
+    await update.message.reply_text(f"Загружаю отчёт за {period_str}...")
+    try:
+        from services import fetch_reports_for_period
+        await fetch_reports_for_period(context.application, date_from, date_to, period_str)
+        await update.message.reply_text("Готово. Проверьте архив.")
+    except Exception as e:
+        logger.error(f"Ошибка weekly_report_cmd: {e}")
+        await update.message.reply_text(f"Ошибка: {e}")
 # ======================== ОБНОВЛЕНИЕ ВЫКУПА ПО КОМАНДЕ ========================
 async def refresh_buyout_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
