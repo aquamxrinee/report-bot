@@ -78,7 +78,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/start — главное меню\n"
         "/help — этот список\n"
         "/wr ДД.ММ-ДД.ММ — загрузить отчёт за период\n"
-        "/refresh_buyout ID — обновить выкуп (недоступно)\n\n"
+        "/refresh_buyout ID — обновить выкуп\n\n"
         "⚙️ Команды мониторинга и аналитики смотрите в разделе «Настройки».",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
@@ -190,7 +190,7 @@ async def cost_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             return
         query = update.callback_query
         await query.answer()
-        article = query.data[9:]  # "cost_edit_"
+        article = query.data[9:]
         current = get_current_cost(article)
         keyboard = [
             [InlineKeyboardButton("➕ Установить новую", callback_data=f"cost_set_{article}")],
@@ -213,7 +213,7 @@ async def cost_set_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     query = update.callback_query
     await query.answer()
-    article = query.data[8:]  # "cost_set_"
+    article = query.data[8:]
     context.user_data['waiting_for_cost'] = article
     await query.edit_message_text(
         "💵 Введите новую себестоимость (только число):\nНапример: 450.50",
@@ -228,7 +228,7 @@ async def cost_history_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
     query = update.callback_query
     await query.answer()
-    article = query.data[12:]  # "cost_history_"
+    article = query.data[12:]
     history = get_cost_history(article)
     if not history:
         await query.edit_message_text(f"📭 Нет истории для `{article}`.", parse_mode='Markdown')
@@ -252,7 +252,7 @@ async def cost_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     query = update.callback_query
     await query.answer()
-    record_id = int(query.data[11:])  # "cost_delete_"
+    record_id = int(query.data[11:])
     success = delete_cost_history(record_id)
     if success:
         await query.edit_message_text("✅ Запись удалена.")
@@ -265,7 +265,7 @@ async def cost_delete_all_callback(update: Update, context: ContextTypes.DEFAULT
         return
     query = update.callback_query
     await query.answer()
-    article = query.data[15:]  # "cost_delete_all_"
+    article = query.data[15:]
     keyboard = [
         [InlineKeyboardButton("✅ Да, удалить всё", callback_data=f"cost_confirm_delete_all_{article}")],
         [InlineKeyboardButton("❌ Отмена", callback_data=f"cost_history_{article}")]
@@ -281,7 +281,7 @@ async def cost_confirm_delete_all_callback(update: Update, context: ContextTypes
         return
     query = update.callback_query
     await query.answer()
-    article = query.data[23:]  # "cost_confirm_delete_all_"
+    article = query.data[23:]
     deleted = delete_all_costs_for_article(article)
     if deleted > 0:
         await query.edit_message_text(f"✅ Удалено {deleted} записей для `{article}`.", parse_mode='Markdown')
@@ -1438,8 +1438,12 @@ async def weekly_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Неверный формат даты. Используйте ДД.ММ-ДД.ММ")
         return
 
-    await update.message.reply_text(
-        "⚠️ Автоматическая загрузка отчётов временно недоступна.\n"
-        "Пожалуйста, загрузите файлы вручную через меню отправки документа.\n"
-        "Требуются основной файл (осн) и файл выкупов (вык)."
-    )
+    await update.message.reply_text(f"Загружаю отчёт за {period_str}...")
+    try:
+        from services import fetch_reports_for_period
+        success = await fetch_reports_for_period(context.application, date_from, date_to, period_str, force=True)
+        if success:
+            await update.message.reply_text("Готово. Проверьте архив.")
+    except Exception as e:
+        logger.error(f"Ошибка weekly_report_cmd: {e}")
+        await update.message.reply_text(f"Ошибка: {e}")
