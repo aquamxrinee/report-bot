@@ -35,12 +35,11 @@ from services import (
 )
 from spp_parser import get_spp_for_article_async
 from spp_monitor import generate_spp_graph, monitor_spp
-from wb_api import get_all_nm_ids_from_api, get_buyout_by_brands
+from wb_api import get_all_nm_ids_from_api
 
 REPORTS_DIR = Path("/data/reports")
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ======================== ПРОВЕРКА ДОСТУПА ========================
 async def check_access(update: Update) -> bool:
     if not ALLOWED_USERS:
         return True
@@ -62,7 +61,6 @@ def get_main_menu():
     ]
     return InlineKeyboardMarkup(keyboard)
 
-# ======================== БАЗОВЫЕ КОМАНДЫ ========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -76,26 +74,16 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
     await update.message.reply_text(
-        "📋 Команды:\n"
-        "/start — начать\n"
-        "/help — помощь\n"
-        "/fetch_weekly — загрузить еженедельный отчёт\n"
-        "/refresh_buyout <report_id> — обновить выкуп\n"
-        "/spp_subscribe <nm_id> [порог] — подписаться\n"
-        "/spp_unsubscribe <nm_id> — отписаться\n"
-        "/spp_list — список подписок\n"
-        "/spp_check — запустить проверку\n"
-        "/spp_status — статус мониторинга\n"
-        "/test_parser <nm_id> — проверить парсер\n"
-        "/test_proxy — проверить прокси\n"
-        "/sync_articles — синхронизировать артикулы\n"
-        "/set_article <nm_id> <артикул> — установить артикул\n\n"
-        "Статистика СПП доступна через меню настроек.",
+        "📋 Основные команды:\n"
+        "/start — главное меню\n"
+        "/help — этот список\n"
+        "/wr ДД.ММ-ДД.ММ — загрузить отчёт за период\n"
+        "/refresh_buyout ID — обновить выкуп (недоступно)\n\n"
+        "⚙️ Команды мониторинга и аналитики смотрите в разделе «Настройки».",
         parse_mode='Markdown',
         reply_markup=get_main_menu()
     )
 
-# ======================== НАВИГАЦИЯ ПО МЕНЮ ========================
 async def menu_analytics_main_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -152,18 +140,18 @@ async def dev_commands_callback(update: Update, context: ContextTypes.DEFAULT_TY
     query = update.callback_query
     await query.answer()
     text = (
-        "🛠 *Команды разработчика*\n\n"
-        "`/spp_check` — запустить проверку СПП сейчас\n"
-        "`/spp_status` — показать статус мониторинга\n"
-        "`/spp_list` — список ваших подписок\n"
-        "`/spp_subscribe <nm_id> [порог]` — подписаться вручную\n"
-        "`/spp_unsubscribe <nm_id>` — отписаться\n"
-        "`/test_parser <nm_id>` — проверить парсер\n"
-        "`/test_proxy` — проверить прокси\n"
-        "`/sync_articles` — синхронизация артикулов из статистики\n"
-        "`/set_article <nm_id> <артикул>` — установить артикул продавца\n"
-        "`/fetch_weekly` — загрузить еженедельный отчёт\n"
-        "`/refresh_buyout <report_id>` — обновить выкуп для отчёта"
+        "🛠 *Служебные команды*\n\n"
+        "`/spp_check` — проверка СПП\n"
+        "`/spp_status` — статус мониторинга\n"
+        "`/spp_list` — список подписок\n"
+        "`/spp_subscribe nm_id [порог]` — подписка\n"
+        "`/spp_unsubscribe nm_id` — отписка\n"
+        "`/test_parser nm_id` — тест парсера\n"
+        "`/test_proxy` — тест прокси\n"
+        "`/sync_articles` — синхронизация nmId\n"
+        "`/set_article nm_id артикул` — установка артикула\n"
+        "`/wr ДД.ММ-ДД.ММ` — запросить отчёт\n"
+        "`/refresh_buyout ID` — обновить выкуп\n"
     )
     await query.edit_message_text(text, parse_mode='Markdown', reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("◀️ Назад", callback_data="menu_settings")]
@@ -529,7 +517,7 @@ async def analytics_show_callback(update: Update, context: ContextTypes.DEFAULT_
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
-# ======================== ИСТОРИЯ (АРХИВ) С АВТООБНОВЛЕНИЕМ ВЫКУПА ========================
+# ======================== ИСТОРИЯ (АРХИВ) ========================
 async def show_history_page(query, context, page):
     reports, total = get_all_reports(page=page, per_page=10)
     if not reports:
@@ -607,7 +595,6 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     report_id = int(query.data.split("_")[-1])
     
-    # Получаем метрики и даты отчёта
     metrics = get_report_metrics(report_id)
     conn = sqlite3.connect(str(DB_PATH))
     cursor = conn.cursor()
@@ -621,28 +608,7 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
         return
     period = row[0] or "неизвестный период"
     file_name = row[1] or "отчёт"
-    start_date = row[2]
-    end_date = row[3]
 
-    # === Автообновление выкупа, если данных нет ===
-    need_update = (metrics.get('buyout_carp') is None or metrics.get('buyout_hara') is None)
-    if need_update and start_date and end_date:
-        await query.message.reply_text("🔄 Обновляю данные по выкупам...")
-        try:
-            buyouts = get_buyout_by_brands(start_date, end_date)
-            metrics['buyout_carp'] = buyouts.get('Цап царапкин')
-            metrics['buyout_hara'] = buyouts.get('Harakiri')
-            # Сохраняем в БД
-            conn = sqlite3.connect(str(DB_PATH))
-            cursor = conn.cursor()
-            cursor.execute("INSERT OR REPLACE INTO report_metrics (report_id, metric_name, metric_value) VALUES (?, 'buyout_carp', ?)", (report_id, metrics['buyout_carp']))
-            cursor.execute("INSERT OR REPLACE INTO report_metrics (report_id, metric_name, metric_value) VALUES (?, 'buyout_hara', ?)", (report_id, metrics['buyout_hara']))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            logger.error(f"Ошибка обновления выкупа для отчёта {report_id}: {e}")
-
-    # Отправляем файл
     report_file = REPORTS_DIR / f"отчёт_{report_id}.xlsx"
     generated = None
     if not report_file.exists():
@@ -660,9 +626,8 @@ async def history_report_callback(update: Update, context: ContextTypes.DEFAULT_
         shutil.copy2(generated, REPORTS_DIR / f"отчёт_{report_id}.xlsx")
         generated.unlink(missing_ok=True)
 
-    # Сводка
-    buyout_carp_str = f"{metrics['buyout_carp']:.1f}%" if metrics.get('buyout_carp') is not None else "Н/Д"
-    buyout_hara_str = f"{metrics['buyout_hara']:.1f}%" if metrics.get('buyout_hara') is not None else "Н/Д"
+    buyout_carp_str = f"{metrics.get('buyout_carp', 0):.1f}%" if metrics.get('buyout_carp') is not None else "Н/Д"
+    buyout_hara_str = f"{metrics.get('buyout_hara', 0):.1f}%" if metrics.get('buyout_hara') is not None else "Н/Д"
     summary = (
         f"📊 *Сводка за {period}*\n"
         f"📄 Файл: {file_name}\n\n"
@@ -793,17 +758,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
         metrics = extract_metrics(values, articles, start_date, end_date)
         
-        # === Загружаем проценты выкупа по брендам через API ===
-        await update.message.reply_text("📡 Загружаю данные по выкупам...")
-        try:
-            buyouts = get_buyout_by_brands(start_date, end_date)
-            metrics['buyout_carp'] = buyouts.get('Цап царапкин')
-            metrics['buyout_hara'] = buyouts.get('Harakiri')
-        except Exception as e:
-            logger.error(f"Ошибка получения выкупов: {e}")
-            metrics['buyout_carp'] = None
-            metrics['buyout_hara'] = None
-        
         success, report_id = save_report_to_db(
             file_name=context.user_data.get('original_file_name', Path(osn_path).name),
             file_hash=file_hash,
@@ -833,8 +787,6 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         temp_template.unlink(missing_ok=True)
         
-        buyout_carp_str = f"{metrics['buyout_carp']:.1f}%" if metrics['buyout_carp'] is not None else "Н/Д"
-        buyout_hara_str = f"{metrics['buyout_hara']:.1f}%" if metrics['buyout_hara'] is not None else "Н/Д"
         summary = (
             f"📊 Сводка за {date_period}\n"
             f"💰 Оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
@@ -843,8 +795,8 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💳 Эквайринг: {metrics.get('avg_acquiring', 0):.2f}%\n"
             f"💵 К выводу ЦАП: {format_number(metrics.get('k_vyvodu_carp', 0))} ₽\n"
             f"💵 К выводу Harakiri: {format_number(metrics.get('k_vyvodu_hara', 0))} ₽\n"
-            f"📦 Выкуп ЦАП: {buyout_carp_str}\n"
-            f"📦 Выкуп Harakiri: {buyout_hara_str}\n"
+            f"📦 Выкуп ЦАП: Н/Д\n"
+            f"📦 Выкуп Harakiri: Н/Д\n"
         )
         await update.message.reply_text(summary, parse_mode='Markdown')
         
@@ -1464,20 +1416,7 @@ async def spp_graph_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         ])
     )
 
-# ======================== РУЧНАЯ ЗАГРУЗКА ЕЖЕНЕДЕЛЬНЫХ ОТЧЁТОВ ========================
-async def fetch_weekly_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    await update.message.reply_text("🔄 Запущена проверка и загрузка еженедельных отчётов...")
-    try:
-        from services import fetch_weekly_reports_job
-        await fetch_weekly_reports_job(context.application)
-        await update.message.reply_text("✅ Проверка завершена. Проверьте результат.")
-    except Exception as e:
-        logger.error(f"Ошибка fetch_weekly_cmd: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {e}")
-# handlers.py — добавьте после функции fetch_weekly_cmd
-
+# ======================== КОМАНДА ЗАГРУЗКИ ОТЧЁТА ПО ПЕРИОДУ ========================
 async def weekly_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_access(update):
         return
@@ -1486,9 +1425,6 @@ async def weekly_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Укажите период в формате ДД.ММ-ДД.ММ, например: /wr 27.07-02.08")
         return
     period_str = args[0].strip()
-    force = False
-    if len(args) > 1 and args[1].strip().lower() == "force":
-        force = True
     try:
         parts = period_str.split('-')
         start_day, start_month = parts[0].split('.')
@@ -1502,58 +1438,8 @@ async def weekly_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Неверный формат даты. Используйте ДД.ММ-ДД.ММ")
         return
 
-    await update.message.reply_text(f"Загружаю отчёт за {period_str}...")
-    try:
-        from services import fetch_reports_for_period
-        success = await fetch_reports_for_period(context.application, date_from, date_to, period_str, force=force)
-        if success:
-            await update.message.reply_text("Готово. Проверьте архив.")
-    except Exception as e:
-        logger.error(f"Ошибка weekly_report_cmd: {e}")
-        await update.message.reply_text(f"Ошибка: {e}")
-# ======================== ОБНОВЛЕНИЕ ВЫКУПА ПО КОМАНДЕ ========================
-async def refresh_buyout_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_access(update):
-        return
-    args = context.args
-    if not args:
-        await update.message.reply_text("❌ Укажите report_id. Пример: /refresh_buyout 42")
-        return
-    try:
-        report_id = int(args[0])
-    except ValueError:
-        await update.message.reply_text("❌ Некорректный report_id.")
-        return
-
-    await update.message.reply_text("🔄 Обновляю данные по выкупам...")
-    try:
-        conn = sqlite3.connect(str(DB_PATH))
-        cursor = conn.cursor()
-        cursor.execute("SELECT start_date, end_date FROM reports WHERE id = ?", (report_id,))
-        row = cursor.fetchone()
-        conn.close()
-        if not row:
-            await update.message.reply_text("❌ Отчёт с таким ID не найден.")
-            return
-        start_date, end_date = row
-        if not start_date or not end_date:
-            await update.message.reply_text("❌ В отчёте не указаны даты начала и конца.")
-            return
-
-        buyouts = get_buyout_by_brands(start_date, end_date)
-        conn = sqlite3.connect(str(DB_PATH))
-        cursor = conn.cursor()
-        cursor.execute("INSERT OR REPLACE INTO report_metrics (report_id, metric_name, metric_value) VALUES (?, 'buyout_carp', ?)",
-                       (report_id, buyouts.get('Цап царапкин')))
-        cursor.execute("INSERT OR REPLACE INTO report_metrics (report_id, metric_name, metric_value) VALUES (?, 'buyout_hara', ?)",
-                       (report_id, buyouts.get('Harakiri')))
-        conn.commit()
-        conn.close()
-        await update.message.reply_text(
-            f"✅ Выкуп для отчёта {report_id} обновлён.\n"
-            f"ЦАП: {buyouts.get('Цап царапкин', 'Н/Д')}%\n"
-            f"Harakiri: {buyouts.get('Harakiri', 'Н/Д')}%"
-        )
-    except Exception as e:
-        logger.error(f"Ошибка refresh_buyout_cmd: {e}")
-        await update.message.reply_text(f"❌ Ошибка: {e}")
+    await update.message.reply_text(
+        "⚠️ Автоматическая загрузка отчётов временно недоступна.\n"
+        "Пожалуйста, загрузите файлы вручную через меню отправки документа.\n"
+        "Требуются основной файл (осн) и файл выкупов (вык)."
+    )
