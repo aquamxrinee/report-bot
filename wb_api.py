@@ -223,7 +223,7 @@ def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
         reports = []
         for item in data:
             rtype = item.get("reportType")
-            if rtype in [1, 2]:  # 1 – продажи (основной), 2 – возвраты (выкупы)
+            if rtype in [1, 2]:
                 reports.append({
                     "report_id": item.get("reportId"),
                     "report_type": rtype,
@@ -258,3 +258,38 @@ def get_report_detail(report_id: int) -> List[Dict]:
     else:
         logger.warning(f"Неожиданный формат детализации отчёта {report_id}: {str(data)[:500]}")
         return []
+
+
+def get_buyout_by_brands(date_from: str, date_to: str, brand_names: List[str] = None) -> Dict[str, Optional[float]]:
+    """Возвращает процент выкупа по брендам через воронку продаж (для старых отчётов)."""
+    if brand_names is None:
+        brand_names = ['Цап царапкин', 'Harakiri']
+
+    funnel_data = get_sales_funnel(date_from=date_from, date_to=date_to, limit=1000)
+    if isinstance(funnel_data, dict) and "error" in funnel_data:
+        logger.error(f"Ошибка получения воронки для выкупов: {funnel_data['error']}")
+        try:
+            nm_ids = get_all_nm_ids_from_api(days_back=90)
+            if nm_ids:
+                funnel_data = get_sales_funnel(nm_ids=nm_ids, date_from=date_from, date_to=date_to, limit=1000)
+        except Exception as e:
+            logger.error(f"Исключение при повторном запросе выкупов: {e}")
+            return {b: None for b in brand_names}
+
+    if isinstance(funnel_data, dict) and "error" in funnel_data:
+        return {b: None for b in brand_names}
+
+    products = funnel_data.get("data", {}).get("products", [])
+    brand_orders = {b: 0 for b in brand_names}
+    brand_purchases = {b: 0 for b in brand_names}
+    for p in products:
+        brand = p.get("product", {}).get("brandName", "")
+        if brand in brand_names:
+            stats = p.get("statistic", {}).get("selected", {})
+            brand_orders[brand] += stats.get("orderCount", 0)
+            brand_purchases[brand] += stats.get("buyoutCount", 0)
+
+    result = {}
+    for b in brand_names:
+        result[b] = round(brand_purchases[b] / brand_orders[b] * 100, 1) if brand_orders[b] > 0 else None
+    return result
