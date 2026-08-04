@@ -732,7 +732,6 @@ async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await process_and_send(update, context)
     else:
         await update.message.reply_text(f"✅ Файл «{file_name}» загружен. Жду второй файл (для {'вык' if report_type == 'osn' else 'осн'}).")
-
 async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     files = context.user_data.get('files', {})
@@ -757,6 +756,17 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         file_hash = calculate_file_hash(osn_path) + calculate_hash(vyk_path)
         metrics = extract_metrics(values, articles, start_date, end_date)
+        
+        # Запрашиваем выкуп через API
+        try:
+            from wb_api import get_buyout_by_brands
+            buyouts = get_buyout_by_brands(start_date, end_date)
+            metrics['buyout_carp'] = buyouts.get('Цап царапкин')
+            metrics['buyout_hara'] = buyouts.get('Harakiri')
+        except Exception as e:
+            logger.error(f"Ошибка получения выкупов: {e}")
+            metrics['buyout_carp'] = None
+            metrics['buyout_hara'] = None
         
         success, report_id = save_report_to_db(
             file_name=context.user_data.get('original_file_name', Path(osn_path).name),
@@ -787,6 +797,8 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         temp_template.unlink(missing_ok=True)
         
+        buyout_carp_str = f"{metrics['buyout_carp']:.1f}%" if metrics.get('buyout_carp') is not None else "Н/Д"
+        buyout_hara_str = f"{metrics['buyout_hara']:.1f}%" if metrics.get('buyout_hara') is not None else "Н/Д"
         summary = (
             f"📊 Сводка за {date_period}\n"
             f"💰 Оборот: {format_number(metrics.get('wb_total', 0))} ₽\n"
@@ -795,8 +807,8 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"💳 Эквайринг: {metrics.get('avg_acquiring', 0):.2f}%\n"
             f"💵 К выводу ЦАП: {format_number(metrics.get('k_vyvodu_carp', 0))} ₽\n"
             f"💵 К выводу Harakiri: {format_number(metrics.get('k_vyvodu_hara', 0))} ₽\n"
-            f"📦 Выкуп ЦАП: Н/Д\n"
-            f"📦 Выкуп Harakiri: Н/Д\n"
+            f"📦 Выкуп ЦАП: {buyout_carp_str}\n"
+            f"📦 Выкуп Harakiri: {buyout_hara_str}\n"
         )
         await update.message.reply_text(summary, parse_mode='Markdown')
         
@@ -809,6 +821,7 @@ async def process_and_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for p in [osn_path, vyk_path]:
             if p and Path(p).exists():
                 Path(p).unlink(missing_ok=True)
+
 
 # ======================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ========================
 def parse_date_from_period(date_period):
