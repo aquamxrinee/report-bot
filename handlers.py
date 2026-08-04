@@ -1486,6 +1486,9 @@ async def weekly_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Укажите период в формате ДД.ММ-ДД.ММ, например: /wr 27.07-02.08")
         return
     period_str = args[0].strip()
+    force = False
+    if len(args) > 1 and args[1].strip().lower() == "force":
+        force = True
     try:
         parts = period_str.split('-')
         start_day, start_month = parts[0].split('.')
@@ -1502,8 +1505,9 @@ async def weekly_report_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Загружаю отчёт за {period_str}...")
     try:
         from services import fetch_reports_for_period
-        await fetch_reports_for_period(context.application, date_from, date_to, period_str)
-        await update.message.reply_text("Готово. Проверьте архив.")
+        success = await fetch_reports_for_period(context.application, date_from, date_to, period_str, force=force)
+        if success:
+            await update.message.reply_text("Готово. Проверьте архив.")
     except Exception as e:
         logger.error(f"Ошибка weekly_report_cmd: {e}")
         await update.message.reply_text(f"Ошибка: {e}")
