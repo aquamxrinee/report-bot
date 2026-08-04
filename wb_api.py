@@ -204,94 +204,57 @@ def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = 
 
 
 def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
-    """
-    Получает список готовых еженедельных отчётов за период.
-    Использует правильный метод из документации WB:
-    POST /api/finance/v1/sales-reports/list
-    Возвращает список словарей с ключами: rrdid, report_type, file_name, download_url
-    """
+    """Получает список готовых еженедельных отчётов реализации за период."""
     url = f"{FINANCE_API}/sales-reports/list"
     payload = {
         "dateFrom": date_from,
         "dateTo": date_to,
-        "limit": 10
+        "limit": 10,
+        "period": "weekly"
     }
-    logger.info(f"Запрос отчётов через POST {url} с параметрами: {payload}")
+    logger.info(f"Запрос списка отчётов через POST {url}")
     data = _safe_request("POST", url, json_data=payload)
 
     if isinstance(data, dict) and "error" in data:
         logger.error(f"Ошибка получения списка отчётов: {data['error']}")
         return []
 
-    if isinstance(data, dict) and "data" in data:
-        # Ответ обёрнут в {"data": [...]}
-        reports_raw = data.get("data", [])
-    elif isinstance(data, list):
-        reports_raw = data
+    if isinstance(data, list):
+        reports = []
+        for item in data:
+            rtype = item.get("reportType")
+            if rtype in [1, 2]:  # 1 – продажи (основной), 2 – возвраты (выкупы)
+                reports.append({
+                    "report_id": item.get("reportId"),
+                    "report_type": rtype,
+                    "date_from": item.get("dateFrom"),
+                    "date_to": item.get("dateTo"),
+                    "create_date": item.get("createDate")
+                })
+        logger.info(f"✅ Найдено отчётов: {len(reports)}")
+        return reports
     else:
-        logger.warning(f"Неожиданный формат ответа от sales-reports/list: {type(data)}. Тело: {str(data)[:500]}")
+        logger.warning(f"Неожиданный ответ от sales-reports/list: {str(data)[:500]}")
         return []
 
-    ready_reports = []
-    for item in reports_raw:
-        rrdid = item.get("id") or item.get("reportId")
-        rtype = item.get("reportType")  # 1 = продажи (осн), 2 = возвраты (вык)
-        fname = item.get("fileName", f"report_{rtype}.xlsx")
-        download_url = item.get("url") or item.get("fileUrl")
-        if rrdid and rtype in [1, 2]:
-            ready_reports.append({
-                "rrdid": rrdid,
-                "report_type": rtype,
-                "file_name": fname,
-                "download_url": download_url
-            })
 
-    logger.info(f"✅ Найдено готовых отчётов за {date_from}–{date_to}: {len(ready_reports)}")
-    return ready_reports
+def get_report_detail(report_id: int) -> List[Dict]:
+    """Получает детализацию (строки) отчёта реализации по его ID."""
+    url = f"{FINANCE_API}/sales-reports/detailed/{report_id}"
+    payload = {
+        "limit": 100000,
+        "rrdId": 0
+    }
+    logger.info(f"Запрос детализации отчёта {report_id}")
+    data = _safe_request("POST", url, json_data=payload)
 
+    if isinstance(data, dict) and "error" in data:
+        logger.error(f"Ошибка получения детализации отчёта {report_id}: {data['error']}")
+        return []
 
-def download_report(rrdid: int) -> Optional[bytes]:
-    """Скачивает файл отчёта по его идентификатору."""
-    url = f"{FINANCE_API}/sales-reports/{rrdid}/download"
-    logger.info(f"Скачивание отчёта {rrdid} по {url}")
-    resp = _safe_request("GET", url, raw=True)
-    if isinstance(resp, requests.Response) and resp.status_code == 200:
-        return resp.content
-    logger.error(f"Не удалось скачать отчёт {rrdid}")
-    return None
-
-
-def get_buyout_by_brands(date_from: str, date_to: str, brand_names: List[str] = None) -> Dict[str, Optional[float]]:
-    """Возвращает процент выкупа по брендам через воронку продаж."""
-    if brand_names is None:
-        brand_names = ['Цап царапкин', 'Harakiri']
-
-    funnel_data = get_sales_funnel(date_from=date_from, date_to=date_to, limit=1000)
-    if isinstance(funnel_data, dict) and "error" in funnel_data:
-        logger.error(f"Ошибка получения воронки для выкупов: {funnel_data['error']}")
-        # Попробуем с nm_ids
-        try:
-            nm_ids = get_all_nm_ids_from_api(days_back=90)
-            if nm_ids:
-                funnel_data = get_sales_funnel(nm_ids=nm_ids, date_from=date_from, date_to=date_to, limit=1000)
-        except Exception as e:
-            logger.error(f"Исключение при повторном запросе выкупов: {e}")
-            return {b: None for b in brand_names}
-
-    if isinstance(funnel_data, dict) and "error" in funnel_data:
-        return {b: None for b in brand_names}
-
-    products = funnel_data.get("data", {}).get("products", [])
-    brand_orders = {b: 0 for b in brand_names}
-    brand_purchases = {b: 0 for b in brand_names}
-    for p in products:
-        brand = p.get("product", {}).get("brandName", "")
-        if brand in brand_names:
-            stats = p.get("statistic", {}).get("selected", {})
-            brand_orders[brand] += stats.get("orderCount", 0)
-            brand_purchases[brand] += stats.get("buyoutCount", 0)
-
-    result = {}
-    for b in brand_names:
-        result[b] = round(brand_purchases[b] / brand_orders[b] * 100, 1) if brand_orders[b] > 0 else None
-    return result
+    if isinstance(data, list):
+        logger.info(f"Получено строк детализации: {len(data)}")
+        return data
+    else:
+        logger.warning(f"Неожиданный формат детализации отчёта {report_id}: {str(data)[:500]}")
+        return []
