@@ -1,3 +1,5 @@
+# services.py
+
 import re
 import shutil
 import logging
@@ -307,9 +309,59 @@ async def process_auto_report(app, osn_detail, vyk_detail, period_str, date_from
             logger.error(f"Не удалось отправить автоотчёт пользователю {uid}: {e}")
 
 
-async def fetch_weekly_reports_job(app):
+async def fetch_reports_for_period(app, date_from, date_to, period_str):
     from wb_api import get_weekly_reports, get_report_detail
 
+    if get_report_id_by_period(date_from, date_to):
+        msg = f"Отчёт за {period_str} уже существует."
+        logger.info(msg)
+        for uid in ALLOWED_USERS:
+            try:
+                await app.bot.send_message(uid, msg)
+            except:
+                pass
+        return True
+
+    reports_meta = get_weekly_reports(date_from, date_to)
+    if not reports_meta:
+        msg = f"Еженедельный отчёт за {period_str} ещё не готов."
+        logger.info(msg)
+        for uid in ALLOWED_USERS:
+            try:
+                await app.bot.send_message(uid, msg)
+            except:
+                pass
+        return False
+
+    osn_report = next((r for r in reports_meta if r['report_type'] == 1), None)
+    vyk_report = next((r for r in reports_meta if r['report_type'] == 2), None)
+    if not osn_report or not vyk_report:
+        msg = f"Найдены не все типы отчётов за {period_str}."
+        logger.warning(msg)
+        for uid in ALLOWED_USERS:
+            try:
+                await app.bot.send_message(uid, msg)
+            except:
+                pass
+        return False
+
+    detail_osn = get_report_detail(osn_report['report_id'])
+    detail_vyk = get_report_detail(vyk_report['report_id'])
+    if not detail_osn or not detail_vyk:
+        msg = f"Не удалось получить детализацию отчётов за {period_str}"
+        logger.error(msg)
+        for uid in ALLOWED_USERS:
+            try:
+                await app.bot.send_message(uid, msg)
+            except:
+                pass
+        return False
+
+    await process_auto_report(app, detail_osn, detail_vyk, period_str, date_from, date_to)
+    return True
+
+
+async def fetch_weekly_reports_job(app):
     today = datetime.now().date()
     last_monday = today - timedelta(days=today.weekday() + 7)
     last_sunday = last_monday + timedelta(days=6)
@@ -318,58 +370,14 @@ async def fetch_weekly_reports_job(app):
     period_str = f"{last_monday.strftime('%d.%m')}-{last_sunday.strftime('%d.%m')}"
 
     logger.info(f"🔍 Автопроверка отчётов за {period_str}")
+    success = await fetch_reports_for_period(app, date_from, date_to, period_str)
 
-    if get_report_id_by_period(date_from, date_to):
-        msg = f"ℹ️ Отчёт за {period_str} уже существует в базе."
-        logger.info(msg)
-        for uid in ALLOWED_USERS:
-            try:
-                await app.bot.send_message(uid, msg)
-            except:
-                pass
-        return
-
-    reports_meta = get_weekly_reports(date_from, date_to)
-    if not reports_meta:
-        msg = f"📭 Еженедельный отчёт за {period_str} ещё не готов."
-        logger.info(msg)
-        for uid in ALLOWED_USERS:
-            try:
-                await app.bot.send_message(uid, msg)
-            except:
-                pass
-        return
-
-    osn_report = next((r for r in reports_meta if r['report_type'] == 1), None)
-    vyk_report = next((r for r in reports_meta if r['report_type'] == 2), None)
-    if not osn_report or not vyk_report:
-        msg = f"⚠️ Найдены не все типы отчётов за {period_str}."
-        logger.warning(msg)
-        for uid in ALLOWED_USERS:
-            try:
-                await app.bot.send_message(uid, msg)
-            except:
-                pass
-        return
-
-    detail_osn = get_report_detail(osn_report['report_id'])
-    detail_vyk = get_report_detail(vyk_report['report_id'])
-    if not detail_osn or not detail_vyk:
-        msg = f"❌ Не удалось получить детализацию отчётов за {period_str}"
-        logger.error(msg)
-        for uid in ALLOWED_USERS:
-            try:
-                await app.bot.send_message(uid, msg)
-            except:
-                pass
-        return
-
-    try:
-        await process_auto_report(app, detail_osn, detail_vyk, period_str, date_from, date_to)
-    except Exception as e:
-        logger.error(f"❌ Ошибка обработки автоматического отчёта: {e}")
-        for uid in ALLOWED_USERS:
-            try:
-                await app.bot.send_message(uid, f"❌ Ошибка при обработке автоотчёта за {period_str}: {e}")
-            except:
-                pass
+    if not success:
+        scheduler.add_job(
+            fetch_weekly_reports_job,
+            'date',
+            run_date=datetime.now() + timedelta(hours=1.5),
+            args=[app],
+            id=f"retry_{period_str}",
+            replace_existing=True
+        )
