@@ -1,5 +1,3 @@
-# main.py
-
 import threading
 import asyncio
 import traceback
@@ -41,9 +39,6 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("osn", lambda u,c: u.message.reply_text("Используйте отправку файлов")))
-    app.add_handler(CommandHandler("vyk", lambda u,c: u.message.reply_text("Используйте отправку файлов")))
-    app.add_handler(CommandHandler("articles", menu_analytics_callback))
     app.add_handler(CommandHandler("spp_subscribe", spp_subscribe_cmd))
     app.add_handler(CommandHandler("spp_unsubscribe", spp_unsubscribe_cmd))
     app.add_handler(CommandHandler("spp_list", spp_list_cmd))
@@ -53,9 +48,8 @@ def main():
     app.add_handler(CommandHandler("test_proxy", test_proxy_cmd))
     app.add_handler(CommandHandler("sync_articles", sync_articles_cmd))
     app.add_handler(CommandHandler("set_article", set_article_cmd))
-    app.add_handler(CommandHandler("fetch_weekly", fetch_weekly_cmd))
-    app.add_handler(CommandHandler("refresh_buyout", refresh_buyout_cmd))
     app.add_handler(CommandHandler("wr", weekly_report_cmd))
+    app.add_handler(CommandHandler("refresh_buyout", refresh_buyout_cmd))
 
     app.add_handler(CallbackQueryHandler(menu_history_callback, pattern="^menu_history$"))
     app.add_handler(CallbackQueryHandler(menu_analytics_callback, pattern="^menu_analytics$"))
