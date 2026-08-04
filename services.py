@@ -238,7 +238,7 @@ def prepare_api_dataframe(detail_list):
     return df
 
 
-async def process_auto_report(app, osn_detail, vyk_detail, period_str, date_from, date_to):
+async def process_auto_report(app, osn_detail, vyk_detail, period_str, date_from, date_to, osn_file_name, vyk_file_name):
     all_detail = osn_detail + vyk_detail
     df = prepare_api_dataframe(all_detail)
     processor = ReportProcessor()
@@ -258,8 +258,9 @@ async def process_auto_report(app, osn_detail, vyk_detail, period_str, date_from
     metrics['buyout_carp'] = buyouts.get('Цап царапкин')
     metrics['buyout_hara'] = buyouts.get('Harakiri')
 
+    file_name_to_save = osn_file_name if osn_file_name else f"auto_{period_str}.xlsx"
     success, report_id = save_report_to_db(
-        file_name=f"auto_{period_str}.xlsx",
+        file_name=file_name_to_save,
         file_hash=file_hash,
         date_period=period_str,
         start_date=date_from,
@@ -355,7 +356,11 @@ async def fetch_reports_for_period(app, date_from, date_to, period_str, force=Fa
                 pass
         return False
 
-    await process_auto_report(app, detail_osn, detail_vyk, period_str, date_from, date_to)
+    await process_auto_report(
+        app, detail_osn, detail_vyk, period_str, date_from, date_to,
+        osn_report.get('file_name', f'auto_{period_str}.xlsx'),
+        vyk_report.get('file_name', f'auto_{period_str}.xlsx')
+    )
     return True
 
 
