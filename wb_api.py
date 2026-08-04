@@ -7,6 +7,7 @@ from config import logger, WB_API_TOKEN
 
 STATISTICS_API = "https://statistics-api.wildberries.ru/api/v1"
 ANALYTICS_API = "https://seller-analytics-api.wildberries.ru/api/analytics"
+FINANCE_API = "https://finance-api.wildberries.ru/api/finance/v1"
 
 _cache = {
     "data": None,
@@ -204,90 +205,93 @@ def get_articles_stats(nm_ids: List[int], date_from: str = None, date_to: str = 
 
 def get_weekly_reports(date_from: str, date_to: str) -> List[Dict]:
     """
-    Пытается получить список еженедельных отчётов за период.
-    Пробует несколько известных методов API.
-    Возвращает список словарей или пустой список.
+    Получает список готовых еженедельных отчётов за период.
+    Использует правильный метод из документации WB:
+    POST /api/finance/v1/sales-reports/list
+    Возвращает список словарей с ключами: rrdid, report_type, file_name, download_url
     """
-    # Вариант 1: POST /supplier/reportDetailByPeriod (основной метод)
-    url1 = f"{STATISTICS_API}/supplier/reportDetailByPeriod"
-    payload1 = {"dateFrom": date_from, "dateTo": date_to, "limit": 10, "rrdid": 0}
-    logger.info(f"Попытка 1: POST {url1}")
-    resp1 = _safe_request("POST", url1, json_data=payload1)
-    if isinstance(resp1, list):
-        reports = []
-        for item in resp1:
-            if item.get("reportType") in [1, 2]:
-                reports.append({
-                    "rrdid": item.get("rrdid"),
-                    "report_type": item.get("reportType"),
-                    "file_name": item.get("fileName", f"report.xlsx"),
-                    "download_url": item.get("url") or item.get("fileUrl")
-                })
-        if reports:
-            return reports
-    else:
-        logger.warning(f"Метод 1 вернул ошибку: {resp1.get('error', '')}. Пробуем следующий...")
+    url = f"{FINANCE_API}/sales-reports/list"
+    payload = {
+        "dateFrom": date_from,
+        "dateTo": date_to,
+        "limit": 10
+    }
+    logger.info(f"Запрос отчётов через POST {url} с параметрами: {payload}")
+    data = _safe_request("POST", url, json_data=payload)
 
-    # Вариант 2: GET /supplier/reports (старый метод)
-    url2 = f"{STATISTICS_API}/supplier/reports"
-    params2 = {"dateFrom": date_from, "dateTo": date_to}
-    logger.info(f"Попытка 2: GET {url2}")
-    resp2 = _safe_request("GET", url2, params=params2)
-    if isinstance(resp2, list):
-        reports = []
-        for item in resp2:
-            if item.get("status") == "ready" and item.get("reportType") in [1, 2]:
-                reports.append({
-                    "rrdid": item.get("rrdid"),
-                    "report_type": item.get("reportType"),
-                    "file_name": item.get("fileName", f"report.xlsx"),
-                    "download_url": None
-                })
-        if reports:
-            return reports
-    else:
-        logger.warning(f"Метод 2 вернул ошибку: {resp2.get('error', '')}")
+    if isinstance(data, dict) and "error" in data:
+        logger.error(f"Ошибка получения списка отчётов: {data['error']}")
+        return []
 
-    logger.error("Все попытки получить список отчётов не удались. API отчётов недоступен.")
-    return []
+    if isinstance(data, dict) and "data" in data:
+        # Ответ обёрнут в {"data": [...]}
+        reports_raw = data.get("data", [])
+    elif isinstance(data, list):
+        reports_raw = data
+    else:
+        logger.warning(f"Неожиданный формат ответа от sales-reports/list: {type(data)}. Тело: {str(data)[:500]}")
+        return []
+
+    ready_reports = []
+    for item in reports_raw:
+        rrdid = item.get("id") or item.get("reportId")
+        rtype = item.get("reportType")  # 1 = продажи (осн), 2 = возвраты (вык)
+        fname = item.get("fileName", f"report_{rtype}.xlsx")
+        download_url = item.get("url") or item.get("fileUrl")
+        if rrdid and rtype in [1, 2]:
+            ready_reports.append({
+                "rrdid": rrdid,
+                "report_type": rtype,
+                "file_name": fname,
+                "download_url": download_url
+            })
+
+    logger.info(f"✅ Найдено готовых отчётов за {date_from}–{date_to}: {len(ready_reports)}")
+    return ready_reports
 
 
 def download_report(rrdid: int) -> Optional[bytes]:
-    """Скачивание файла отчёта по rrdid."""
-    url = f"{STATISTICS_API}/supplier/reportDetailByPeriod/{rrdid}"
+    """Скачивает файл отчёта по его идентификатору."""
+    url = f"{FINANCE_API}/sales-reports/{rrdid}/download"
     logger.info(f"Скачивание отчёта {rrdid} по {url}")
     resp = _safe_request("GET", url, raw=True)
     if isinstance(resp, requests.Response) and resp.status_code == 200:
         return resp.content
+    logger.error(f"Не удалось скачать отчёт {rrdid}")
     return None
 
 
 def get_buyout_by_brands(date_from: str, date_to: str, brand_names: List[str] = None) -> Dict[str, Optional[float]]:
+    """Возвращает процент выкупа по брендам через воронку продаж."""
     if brand_names is None:
         brand_names = ['Цап царапкин', 'Harakiri']
 
     funnel_data = get_sales_funnel(date_from=date_from, date_to=date_to, limit=1000)
     if isinstance(funnel_data, dict) and "error" in funnel_data:
-        logger.error(f"Ошибка получения воронки: {funnel_data['error']}")
+        logger.error(f"Ошибка получения воронки для выкупов: {funnel_data['error']}")
+        # Попробуем с nm_ids
         try:
             nm_ids = get_all_nm_ids_from_api(days_back=90)
             if nm_ids:
                 funnel_data = get_sales_funnel(nm_ids=nm_ids, date_from=date_from, date_to=date_to, limit=1000)
         except Exception as e:
-            logger.error(f"Исключение при повторном запросе: {e}")
+            logger.error(f"Исключение при повторном запросе выкупов: {e}")
             return {b: None for b in brand_names}
 
+    if isinstance(funnel_data, dict) and "error" in funnel_data:
+        return {b: None for b in brand_names}
+
     products = funnel_data.get("data", {}).get("products", [])
-    orders = {b: 0 for b in brand_names}
-    purchases = {b: 0 for b in brand_names}
+    brand_orders = {b: 0 for b in brand_names}
+    brand_purchases = {b: 0 for b in brand_names}
     for p in products:
         brand = p.get("product", {}).get("brandName", "")
         if brand in brand_names:
             stats = p.get("statistic", {}).get("selected", {})
-            orders[brand] += stats.get("orderCount", 0)
-            purchases[brand] += stats.get("buyoutCount", 0)
+            brand_orders[brand] += stats.get("orderCount", 0)
+            brand_purchases[brand] += stats.get("buyoutCount", 0)
 
     result = {}
     for b in brand_names:
-        result[b] = round(purchases[b] / orders[b] * 100, 1) if orders[b] > 0 else None
+        result[b] = round(brand_purchases[b] / brand_orders[b] * 100, 1) if brand_orders[b] > 0 else None
     return result
